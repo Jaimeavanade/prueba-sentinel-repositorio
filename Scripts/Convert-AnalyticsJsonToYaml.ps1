@@ -31,10 +31,11 @@ foreach ($rule in $json.resources) {
         continue
     }
 
-    # ✅ displayName como filename, SOLO quitando caracteres ilegales
-    $safeFileName = $rule.properties.displayName `
-        -replace '[\\\/:\*\?"<>\|]', '' `
-        .Trim()
+    # ✅ displayName como filename (solo quitar caracteres ilegales)
+    $safeFileName = (
+        $rule.properties.displayName `
+            -replace '[\\\/:\*\?"<>\|]', ''
+    ).Trim()
 
     $yamlObject = @{
         id               = $rule.name
