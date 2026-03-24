@@ -3,6 +3,9 @@ name: Convert Analytics JSON to YAML
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write   # ✅ CLAVE PARA PODER HACER git push
+
 jobs:
   convert:
     runs-on: ubuntu-latest
