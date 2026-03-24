@@ -1,25 +1,3 @@
-<#
-.SYNOPSIS
-  Convert Microsoft Sentinel Analytics Rule YAML to ARM JSON compatible with Microsoft Sentinel Repositories.
-
-.DESCRIPTION
-  Generates Repository-compatible ARM JSON:
-    - resources[].type = Microsoft.SecurityInsights/alertRules
-    - resources[].name = GUID literal (no expressions)
-    - properties.alertRuleTemplateName = same GUID
-    - apiVersion fixed to stable '2023-02-01'
-  Also normalizes operators and time formats.
-
-.PARAMETER InputYamlPath
-  Path to a single YAML file.
-
-.PARAMETER OutputJsonPath
-  Output JSON path.
-
-.PARAMETER RuleIdSeed
-  Optional seed string to create deterministic GUID. If not provided, uses YAML 'id' if exists, otherwise InputYamlPath.
-#>
-
 param(
   [Parameter(Mandatory = $true)]
   [string]$InputYamlPath,
@@ -34,6 +12,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# ---------- Helpers ----------
+
 function Ensure-Module {
   param([string]$Name)
   if (-not (Get-Module -ListAvailable -Name $Name)) {
@@ -42,170 +22,133 @@ function Ensure-Module {
   Import-Module $Name -Force
 }
 
-# --- Deterministic GUID (UUIDv5-like using SHA1) ---
+# Lee YAML tanto si es Hashtable como PSCustomObject
+function Get-YamlValue {
+  param($Obj, [string]$Key)
+
+  if ($null -eq $Obj) { return $null }
+
+  if ($Obj -is [System.Collections.IDictionary]) {
+    if ($Obj.Contains($Key)) { return $Obj[$Key] }
+    return $null
+  }
+
+  $p = $Obj.PSObject.Properties[$Key]
+  if ($p) { return $p.Value }
+  return $null
+}
+
+# GUID determinístico (no cambia entre runs)
 function New-DeterministicGuid {
-  param(
-    [Parameter(Mandatory = $true)][Guid]$NamespaceGuid,
-    [Parameter(Mandatory = $true)][string]$Name
-  )
+  param([Guid]$NamespaceGuid, [string]$Name)
+
   $nsBytes = $NamespaceGuid.ToByteArray()
   $nameBytes = [System.Text.Encoding]::UTF8.GetBytes($Name)
 
   $sha1 = [System.Security.Cryptography.SHA1]::Create()
-  try {
-    $hash = $sha1.ComputeHash(($nsBytes + $nameBytes))
-  } finally {
-    $sha1.Dispose()
-  }
+  try { $hash = $sha1.ComputeHash($nsBytes + $nameBytes) }
+  finally { $sha1.Dispose() }
 
-  # First 16 bytes become GUID with version 5 and RFC4122 variant
-  $newBytes = $hash[0..15]
+  $bytes = $hash[0..15]
+  $bytes[6] = ($bytes[6] -band 0x0F) -bor 0x50
+  $bytes[8] = ($bytes[8] -band 0x3F) -bor 0x80
 
-  # Set version to 5 (0101)
-  $newBytes[6] = ($newBytes[6] -band 0x0F) -bor 0x50
-  # Set variant to RFC4122 (10xx)
-  $newBytes[8] = ($newBytes[8] -band 0x3F) -bor 0x80
-
-  return [Guid]::new($newBytes).ToString()
+  return ([Guid]::new($bytes)).ToString()
 }
 
 function Normalize-Operator {
   param([string]$op)
-  if ([string]::IsNullOrWhiteSpace($op)) { return $null }
-  switch ($op.ToLowerInvariant()) {
+  if (-not $op) { return $null }
+  switch ($op.ToLower()) {
     "gt" { "GreaterThan" }
     "ge" { "GreaterThanOrEqual" }
     "lt" { "LessThan" }
     "le" { "LessThanOrEqual" }
     "eq" { "Equals" }
     "ne" { "NotEquals" }
-    default { $op }  # if already in ARM style, keep it
+    default { $op }
   }
 }
 
-function Convert-ToIso8601Duration {
-  param([string]$value)
-  if ([string]::IsNullOrWhiteSpace($value)) { return $null }
-
-  # If already ISO 8601 duration (PT.. or P..), return as-is
-  if ($value -match '^(P(T)?).+') { return $value }
-
-  # YAML style examples: 5m, 1h, 1d, 30s
-  if ($value -match '^(\d+)\s*([smhd])$') {
-    $n = [int]$Matches[1]
-    $u = $Matches[2].ToLowerInvariant()
-    switch ($u) {
+function To-Iso8601 {
+  param([string]$v)
+  if (-not $v) { return $null }
+  if ($v -match '^P') { return $v }
+  if ($v -match '^(\d+)([smhd])$') {
+    $n = $Matches[1]
+    switch ($Matches[2]) {
       "s" { return "PT${n}S" }
       "m" { return "PT${n}M" }
       "h" { return "PT${n}H" }
       "d" { return "P${n}D" }
     }
   }
-
-  # If unknown format, return as-is (better than breaking)
-  return $value
+  return $v
 }
 
-# --- Modules ---
-Ensure-Module -Name "powershell-yaml"
+# ---------- Start ----------
 
-# --- Load YAML ---
-if (-not (Test-Path $InputYamlPath)) {
-  throw "InputYamlPath not found: $InputYamlPath"
-}
+Ensure-Module powershell-yaml
 
 $yamlRaw = Get-Content $InputYamlPath -Raw
-$yaml = $yamlRaw | ConvertFrom-Yaml
+$yamlObj = ConvertFrom-Yaml $yamlRaw
 
-# --- Pull core fields with fallbacks ---
-$displayName = $yaml.name
-if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = $yaml.displayName }
-if ([string]::IsNullOrWhiteSpace($displayName)) {
-  $displayName = [IO.Path]::GetFileNameWithoutExtension($InputYamlPath)
+if ($yamlObj -is [System.Collections.IEnumerable] -and $yamlObj.Count -gt 0) {
+  $yaml = $yamlObj[0]
+} else {
+  $yaml = $yamlObj
 }
 
-$description = $yaml.description
-$severity = $yaml.severity
-$query = $yaml.query
+$displayName = Get-YamlValue $yaml "name"
+if (-not $displayName) { $displayName = Get-YamlValue $yaml "displayName" }
+if (-not $displayName) { $displayName = [IO.Path]::GetFileNameWithoutExtension($InputYamlPath) }
 
-# Scheduled/NRT/etc. (default to Scheduled)
-$kind = $yaml.kind
-if ([string]::IsNullOrWhiteSpace($kind)) { $kind = "Scheduled" }
+$kind = Get-YamlValue $yaml "kind"
+if (-not $kind) { $kind = "Scheduled" }
 
-# Operators / times
-$triggerOperator = Normalize-Operator $yaml.triggerOperator
-$triggerThreshold = $yaml.triggerThreshold
-$queryFrequency = Convert-ToIso8601Duration $yaml.queryFrequency
-$queryPeriod = Convert-ToIso8601Duration $yaml.queryPeriod
-$suppressionDuration = Convert-ToIso8601Duration $yaml.suppressionDuration
+$seed = Get-YamlValue $yaml "id"
+if (-not $seed) { $seed = $RuleIdSeed }
+if (-not $seed) { $seed = $InputYamlPath }
 
-# Techniques and tactics
-$tactics = $yaml.tactics
-$techniques = $yaml.techniques
-if (-not $techniques) { $techniques = $yaml.relevantTechniques }
-
-# Determine deterministic GUID seed:
-# Prefer YAML 'id' if present; else use user RuleIdSeed; else use relative path.
-$seed = $null
-if ($yaml.id) { $seed = [string]$yaml.id }
-elseif ($RuleIdSeed) { $seed = $RuleIdSeed }
-else { $seed = $InputYamlPath.Replace("\","/").ToLowerInvariant() }
-
-# Namespace GUID constant for your repo (any fixed GUID works)
 $namespace = [Guid]"11111111-2222-3333-4444-555555555555"
-$ruleGuid = New-DeterministicGuid -NamespaceGuid $namespace -Name $seed
+$ruleGuid = New-DeterministicGuid $namespace $seed
 
-# --- Build Repositories-compatible ARM template ---
 $resource = @{
   type       = "Microsoft.SecurityInsights/alertRules"
   apiVersion = "2023-02-01"
   name       = $ruleGuid
   kind       = $kind
   properties = @{
-    displayName          = $displayName
-    description          = $description
-    severity             = $severity
-    enabled              = $true
-    query                = $query
-    queryFrequency       = $queryFrequency
-    queryPeriod          = $queryPeriod
-    triggerOperator      = $triggerOperator
-    triggerThreshold     = $triggerThreshold
-    tactics              = $tactics
-    techniques           = $techniques
+    displayName           = $displayName
+    description           = Get-YamlValue $yaml "description"
+    severity              = Get-YamlValue $yaml "severity"
+    enabled               = $true
+    query                 = Get-YamlValue $yaml "query"
+    queryFrequency        = To-Iso8601 (Get-YamlValue $yaml "queryFrequency")
+    queryPeriod           = To-Iso8601 (Get-YamlValue $yaml "queryPeriod")
+    triggerOperator       = Normalize-Operator (Get-YamlValue $yaml "triggerOperator")
+    triggerThreshold      = Get-YamlValue $yaml "triggerThreshold"
+    tactics               = Get-YamlValue $yaml "tactics"
+    techniques            = (Get-YamlValue $yaml "techniques") ?? (Get-YamlValue $yaml "relevantTechniques")
 
-    # REQUIRED by Repositories
+    # 🔑 CLAVE PARA REPOSITORIES
     alertRuleTemplateName = $ruleGuid
   }
 }
 
-# Optional fields if exist
-if ($yaml.templateVersion) { $resource.properties.templateVersion = [string]$yaml.templateVersion }
-elseif ($yaml.version) { $resource.properties.templateVersion = [string]$yaml.version }
-
-if ($yaml.entityMappings) { $resource.properties.entityMappings = $yaml.entityMappings }
-if ($yaml.customDetails) { $resource.properties.customDetails = $yaml.customDetails }
-if ($yaml.eventGroupingSettings) { $resource.properties.eventGroupingSettings = $yaml.eventGroupingSettings }
-if ($yaml.incidentConfiguration) { $resource.properties.incidentConfiguration = $yaml.incidentConfiguration }
-if ($yaml.alertDetailsOverride) { $resource.properties.alertDetailsOverride = $yaml.alertDetailsOverride }
-if ($suppressionDuration) { $resource.properties.suppressionDuration = $suppressionDuration }
-if ($null -ne $yaml.suppressionEnabled) { $resource.properties.suppressionEnabled = [bool]$yaml.suppressionEnabled }
-
-# Create top-level template
 $template = @{
-  '$schema'       = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
-  contentVersion  = "1.0.0.0"
-  parameters      = @{}   # IMPORTANT: no workspaceName param for repositories
-  resources       = @($resource)
+  '$schema'      = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+  contentVersion = "1.0.0.0"
+  parameters     = @{}
+  resources      = @($resource)
 }
 
-# Ensure output folder exists
-$outDir = Split-Path -Parent $OutputJsonPath
-if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
+$outDir = Split-Path $OutputJsonPath -Parent
+if (-not (Test-Path $outDir)) {
+  New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+}
 
-# Write JSON
-$template | ConvertTo-Json -Depth 50 | Out-File -FilePath $OutputJsonPath -Encoding utf8
+# ✅ SIEMPRE SOBREESCRIBE
+$template | ConvertTo-Json -Depth 50 | Out-File $OutputJsonPath -Encoding utf8
 
-Write-Host "✅ Repositories-compatible ARM JSON created:"
-Write-Host "   $OutputJsonPath"
-Write-Host "   Rule GUID: $ruleGuid"
+Write-Host "✅ OK: $OutputJsonPath ($kind)"
