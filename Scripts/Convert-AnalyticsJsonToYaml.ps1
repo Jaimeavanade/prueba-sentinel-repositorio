@@ -10,7 +10,7 @@ if (-not (Test-Path $InputFile)) {
 }
 
 # -------------------------------------------------
-# ✅ Determinar entorno (001 / 002) desde el nombre
+# Detectar entorno (001 / 002) desde el nombre
 # -------------------------------------------------
 $environment = if ($InputFile -match '001') {
     '001'
@@ -31,9 +31,9 @@ if (-not (Test-Path $OutputFolder)) {
     New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
 }
 
-# -------------------------
-# Load JSON
-# -------------------------
+# -------------------------------------------------
+# Cargar JSON
+# -------------------------------------------------
 $json = Get-Content $InputFile -Raw | ConvertFrom-Json
 
 if (-not $json.resources) {
@@ -48,7 +48,7 @@ foreach ($rule in $json.resources) {
     }
 
     # -------------------------------------------------
-    # ✅ displayName como nombre de archivo
+    # displayName como nombre de archivo
     # - mantiene espacios, acentos y guiones
     # - elimina SOLO caracteres problemáticos
     # -------------------------------------------------
