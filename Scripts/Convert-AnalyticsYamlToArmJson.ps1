@@ -20,13 +20,11 @@ function Ensure-Module {
   Import-Module $Name -Force
 }
 
-# ✅ IMPORTANTE: Obj NO puede ser Mandatory porque a veces puede ser $null
 function Get-YamlValue {
   param(
     [Parameter(Mandatory=$false)] $Obj,
     [Parameter(Mandatory=$true)] [string] $Key
   )
-
   if ($null -eq $Obj) { return $null }
 
   if ($Obj -is [System.Collections.IDictionary]) {
@@ -39,7 +37,6 @@ function Get-YamlValue {
   return $null
 }
 
-# GUID determinístico desde string (siempre válido)
 function New-DeterministicGuidFromString {
   param([Parameter(Mandatory=$true)][string]$Name)
 
@@ -72,7 +69,7 @@ function Normalize-Operator {
 function To-Iso8601Duration {
   param([string]$v)
   if ([string]::IsNullOrWhiteSpace($v)) { return $null }
-  if ($v -match '^P') { return $v } # ya ISO8601
+  if ($v -match '^P') { return $v }
   if ($v -match '^(\d+)\s*([smhd])$') {
     $n = $Matches[1]
     switch ($Matches[2].ToLowerInvariant()) {
@@ -85,29 +82,64 @@ function To-Iso8601Duration {
   return $v
 }
 
-# ---------------- MAIN ----------------
+# -------- MAIN --------
 Ensure-Module -Name "powershell-yaml"
 
 if (-not (Test-Path $InputYamlPath)) {
-  throw "InputYamlPath not found: $InputYamlPath"
+  Write-Host "ERROR: InputYamlPath not found: $InputYamlPath"
+  exit 2
 }
 
 $yamlRaw = Get-Content $InputYamlPath -Raw
 
-# ✅ CLAVE: NO usar pipeline; pasar el parámetro -Yaml
-$yamlObj = ConvertFrom-Yaml -Yaml $yamlRaw
-
-# Si devuelve lista, cogemos el primero
-$yaml = $yamlObj
-if ($yamlObj -is [System.Collections.IEnumerable] -and -not ($yamlObj -is [string])) {
-  if ($yamlObj.Count -gt 0) { $yaml = $yamlObj[0] }
+# 1) empty/whitespace => skip (no romper pipeline)
+if ([string]::IsNullOrWhiteSpace($yamlRaw)) {
+  Write-Host "SKIP: YAML empty: $InputYamlPath"
+  exit 0
 }
 
-# ✅ Si aun así es null, el YAML es inválido (o el parser falla); evitamos reventar y damos error claro
+# 2) Normalizaciones típicas para evitar null en parser
+#    - BOM
+#    - Tabs
+#    - CRLF
+$yamlRaw = $yamlRaw -replace "^\uFEFF",""
+$yamlRaw = $yamlRaw -replace "`t","  "
+$yamlRaw = $yamlRaw -replace "`r`n","`n"
+
+# 3) Parse robusto con reintentos
+$yaml = $null
+try {
+  $yamlObj = ConvertFrom-Yaml -Yaml $yamlRaw
+  $yaml = $yamlObj
+  if ($yamlObj -is [System.Collections.IEnumerable] -and -not ($yamlObj -is [string])) {
+    if ($yamlObj.Count -gt 0) { $yaml = $yamlObj[0] }
+  }
+}
+catch {
+  $yaml = $null
+}
+
 if ($null -eq $yaml) {
-  throw "YAML parse returned null for file: $InputYamlPath"
+  # Reintento extra (por si hay caracteres raros)
+  $yamlRaw2 = $yamlRaw.Trim() + "`n"
+  try {
+    $yamlObj2 = ConvertFrom-Yaml -Yaml $yamlRaw2
+    $yaml = $yamlObj2
+    if ($yamlObj2 -is [System.Collections.IEnumerable] -and -not ($yamlObj2 -is [string])) {
+      if ($yamlObj2.Count -gt 0) { $yaml = $yamlObj2[0] }
+    }
+  } catch {
+    $yaml = $null
+  }
 }
 
+if ($null -eq $yaml) {
+  # ✅ Importante: NO hacemos throw. Devolvemos exit code 3 para que el workflow lo registre y continúe.
+  Write-Host "FAIL_PARSE: YAML parse returned null for file: $InputYamlPath"
+  exit 3
+}
+
+# Campos base
 $displayName = Get-YamlValue $yaml "name"
 if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = Get-YamlValue $yaml "displayName" }
 if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = [IO.Path]::GetFileNameWithoutExtension($InputYamlPath) }
@@ -128,14 +160,14 @@ $tactics = Get-YamlValue $yaml "tactics"
 $techniques = Get-YamlValue $yaml "techniques"
 if (-not $techniques) { $techniques = Get-YamlValue $yaml "relevantTechniques" }
 
-# Seed determinístico
+# Seed
 $seed = Get-YamlValue $yaml "id"
 if ([string]::IsNullOrWhiteSpace($seed)) { $seed = $RuleIdSeed }
 if ([string]::IsNullOrWhiteSpace($seed)) { $seed = $InputYamlPath }
 
 $ruleGuid = New-DeterministicGuidFromString -Name $seed
 
-# ARM Repositories compatible
+# ARM Repos-compatible
 $resource = @{
   type       = "Microsoft.SecurityInsights/alertRules"
   apiVersion = "2023-02-01"
@@ -153,8 +185,6 @@ $resource = @{
     triggerThreshold      = $triggerThreshold
     tactics               = $tactics
     techniques            = $techniques
-
-    # REQUIRED by Sentinel Repositories
     alertRuleTemplateName = $ruleGuid
   }
 }
@@ -171,7 +201,7 @@ if ($outDir -and -not (Test-Path $outDir)) {
   New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 }
 
-# ✅ SOBREESCRIBE SIEMPRE
 $template | ConvertTo-Json -Depth 80 | Out-File -FilePath $OutputJsonPath -Encoding utf8
 
-Write-Host "✅ OK: $OutputJsonPath | kind=$kind | guid=$ruleGuid"
+Write-Host "OK: $OutputJsonPath | kind=$kind | guid=$ruleGuid"
+exit 0
