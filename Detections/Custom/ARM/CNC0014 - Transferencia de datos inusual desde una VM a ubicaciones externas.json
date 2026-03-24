@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "Este caso de uso tiene como objetivo detectar posibles transferencias de datos anómalas o potenciales intentos de exfiltración de información desde máquinas virtuales (VMs) hacia ubicaciones externas.\n\nLa detección se basa en alertas de seguridad generadas por los servicios de protección de Microsoft que identifican patrones sospechosos de tráfico saliente, como volúmenes de datos inusualmente altos y destinos poco habituales.\n\n\nLa búsqueda se ejecutará cada 5 min. teniendo en cuenta la última hora.",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT1H",
+        "query": "SecurityAlert\n| where TimeGenerated > ago(7d)\n| where AlertName has_any (\n    \"Unusual outbound traffic\",\n    \"Potential data exfiltration\",\n    \"Suspicious data transfer\",\n    \"Large volume of outbound data\",\n    \"Exfiltration to external location\",\n    \"Data transfer to rare country\",\n    \"Possible command and control (C2) communication\"\n)\nor Description has_any (\"data exfiltration\", \"unusual outbound\", \"external transfer\", \"exfil\", \"rare location\")\n| project TimeGenerated, AlertName, AlertSeverity ,Description, CompromisedEntity, ProductName, ProviderName\n| order by TimeGenerated desc\n",
+        "severity": "High",
+        "tactics": [
+          "CommandAndControl"
+        ],
+        "techniques": [],
+        "displayName": "CNC0014 - Transferencia de datos inusual desde una VM a ubicaciones externas",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "Monitorización de los inicios de sesión en riesgo en AAD.",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "query": "AADUserRiskEvents\r\n| where OperationName == \"User Risk Detection\"\r\n| where RiskLevel != \"low\"\r\n| where Activity == \"signin\"\r\n| where RiskState == \"atRisk\"\r\n| project TimeGenerated, UserDisplayName, UserPrincipalName, RiskState, Activity, IpAddress, Location, DetectionTimingType, RiskEventType ",
+        "severity": "Informational",
+        "tactics": [
+          "InitialAccess"
+        ],
+        "techniques": [
+          "T1133"
+        ],
+        "displayName": "[TEST] SigIn in Risk in AAD",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

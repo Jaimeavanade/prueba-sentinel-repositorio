@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "Este caso de uso detecta configuraciones de VNet Peering potencialmente permisivas que pueden introducir riesgos de exposición o tránsito de tráfico no deseado entre redes virtuales. En concreto, identifica peerings creados o modificados con las siguientes opciones habilitadas simultáneamente:\n\nallowVirtualNetworkAccess = true\n\nallowForwardedTraffic = true\n\nEsta combinación permite conectividad bidireccional ampliada y tránsito de tráfico reenviado, lo que incrementa el riesgo de movimiento lateral entre VNets, rutas no previstas y una expansión del perímetro de confianza.\n\nAdicionalmente, la detección identifica si el peering remoto está asociado a Azure Bastion, con el objetivo de priorizar la revisión de configuraciones que puedan ampliar indirectamente el acceso administrativo.\n\nLa búsqueda se ejecutará cada 5 minutos teniendo en cuenta la última hora.",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT1H",
+        "query": "AzureActivity\n| where TimeGenerated > ago(30d)\n| where OperationNameValue == \"Microsoft.Network / virtualNetworks / virtualNetworkPeerings / write\"\n| extend properties = parse_json(Properties)\n| extend peeringProps = properties.responseBody.properties\n| extend allowVNetAccess = tostring(peeringProps.allowVirtualNetworkAccess)\n| extend allowForwardedTraffic = tostring(peeringProps.allowForwardedTraffic)\n| extend peeringRemoteVNet = tostring(peeringProps.remoteVirtualNetwork.id)\n| extend peeredToBastion = iff(peeringRemoteVNet has \"Microsoft.Network / bastionHosts\", \"Yes\", \"No\")\n| where allowVNetAccess == \"true\" and allowForwardedTraffic == \"true\"\n| project\n    TimeGenerated,\n    ResourceGroup,\n    ResourceId,\n    Caller,\n    peeringRemoteVNet,\n    peeredToBastion,\n    allowVNetAccess,\n    allowForwardedTraffic",
+        "severity": "High",
+        "tactics": [
+          "Discovery",
+          "Reconnaissance"
+        ],
+        "techniques": [],
+        "displayName": "REC0028 - Uso de Redes Virtuales Peering sin Restricciones",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

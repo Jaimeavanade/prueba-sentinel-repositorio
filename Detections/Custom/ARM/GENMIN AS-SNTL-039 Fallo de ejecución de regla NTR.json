@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "Detecta fallos a la hora de ejecutar reglas del tipo NTR.",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT10M",
+        "queryPeriod": "PT10M",
+        "query": "SentinelHealth\n| where OperationName == \"NRT analytics rule run\"\n| where Status == \"Failure\"\n| project TimeGenerated, Object = SentinelResourceName, EventResult = Status, EventMessage = Description",
+        "severity": "Low",
+        "tactics": [],
+        "techniques": [],
+        "displayName": "[GEN][MIN] AS-SNTL-039 Fallo de ejecución de regla NTR",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

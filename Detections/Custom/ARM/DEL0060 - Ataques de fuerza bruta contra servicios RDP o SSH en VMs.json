@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "Este caso de uso detecta posibles ataques de fuerza bruta contra accesos administrativos a VMs realizados a través de Microsoft Azure Bastion, identificando un volumen elevado de intentos fallidos asociados a una misma combinación de usuario, IP origen, VM destino y protocolo (RDP/SSH).",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT1H",
+        "query": "MicrosoftAzureBastionAuditLogs\n| where TimeGenerated > ago(7d)\n| where OperationName contains \"Failed\"\n| summarize FailedAttempts = count(), StartTime = min(TimeGenerated), EndTime = max(TimeGenerated)\n    by UserEmail, ClientIpAddress, TargetVMIPAddress, Protocol\n| where FailedAttempts >= 5\n| order by FailedAttempts desc",
+        "severity": "High",
+        "tactics": [
+          "InitialAccess",
+          "Reconnaissance"
+        ],
+        "techniques": [],
+        "displayName": "DEL0060 - Ataques de fuerza bruta contra servicios RDP o SSH en VMs",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

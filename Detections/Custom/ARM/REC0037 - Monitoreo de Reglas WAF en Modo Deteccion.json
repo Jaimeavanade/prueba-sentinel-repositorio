@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "Identificar intentos de explotación de vulnerabilidades web detectados por el WAF de Azure Application Gateway basado en el conjunto de reglas OWASP 3.2 y Microsoft_BotManagerRuleSet_0.1.",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT1H",
+        "query": "AzureDiagnostics\n| where ResourceType == \"APPLICATIONGATEWAYS\"\n| where Category == \"ApplicationGatewayFirewallLog\"\n| where action_s == \"Detected\"  // Solo eventos en modo detección\n| extend RuleId = tostring(parse_json(Message).ruleId)\n| extend RuleGroup = tostring(parse_json(Message).ruleGroup)\n| extend RuleName = tostring(parse_json(Message).details[0].message)\n| where RuleGroup in (\"OWASP_3.2\", \"Microsoft_BotManagerRuleSet_0.1\")  // Filtrar por reglas relevantes\n| where RuleGroup contains \"KnownBadBots\"\n| where ruleId_s startswith \"91\"  // Filtra solo reglas que comienzan con \"91\" \n| where ruleId_s startswith \"92\"  // Filtra solo reglas que comienzan con \"92\" \n| where ruleId_s startswith \"93\"  // Filtra solo reglas que comienzan con \"93\" \n| where ruleId_s startswith \"94\"  // Filtra solo reglas que comienzan con \"94\" \n| where ruleId_s startswith \"20\"  // Filtra solo reglas que comienzan con \"20\" \n| where ruleId_s startswith \"Known-CVEs\"  // Filtra solo reglas que comienzan con \"Known-CVEs\" \n| summarize Count=count(), UniqueIPs=dcount(clientIp_s) by RuleName, RuleGroup, bin(TimeGenerated, 5m)\n| order by Count desc",
+        "severity": "Medium",
+        "tactics": [
+          "InitialAccess",
+          "Execution",
+          "DefenseEvasion"
+        ],
+        "techniques": [],
+        "displayName": "REC0037 - Monitoreo de Reglas WAF en Modo Deteccion",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

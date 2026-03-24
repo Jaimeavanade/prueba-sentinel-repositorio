@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "Identifica y supervisa actividades críticas relacionadas con grupos y usuarios en Azure Active Directory. En concreto, se centra en detectar eventos como la adición o eliminación de miembros de grupos, las modificaciones de cuentas de usuario y la eliminación de usuarios.",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT5H",
+        "query": "let TimeWindow   = 1h;   // Ventana de detección (última hora)\nlet MinOps       = 5;    // Mínimo de operaciones totales para considerarlo sospechoso\nlet MinTargets   = 3;    // Mínimo de usuarios distintos afectados\nlet CurrentEvents = AuditLogs\n    | where TimeGenerated between (ago(TimeWindow) .. now())\n    | where ActivityDisplayName in (\n        \"Add member to group\",         // Añadir miembro a un grupo\n        \"Remove member from group\",    // Eliminar miembro de un grupo\n        \"Delete user\",                 // Eliminar usuario\n        \"Update user\"                  // Modificar usuario\n        )\n    //| where InitiatedBy !contains \"pidpia\"\n    | extend\n        UserPrincipalName = tostring(InitiatedBy.user.userPrincipalName), // quien hace la acción\n        TargetUserName = tostring(TargetResources[0].userPrincipalName) // Usuario afectado\n    | where isnotempty(UserPrincipalName) and isnotempty(TargetUserName);\n// usuarios sospechosos  detectando muchos cambios sobre varios usuarios\nlet SuspiciousUsers = CurrentEvents\n    | summarize \n        OperationsCount = count(), // num. total de acciones\n        DistinctTargets = dcount(TargetUserName), // num. de usuarios distintos afectados\n        Actions = make_set(ActivityDisplayName)\n        by UserPrincipalName\n    | where OperationsCount >= MinOps and DistinctTargets >= MinTargets;\n// Devolvemos el detalle de las acciones de esos usuarios sospechosos\nSuspiciousUsers\n| join kind=inner (CurrentEvents) on UserPrincipalName\n| project \n    TimeGenerated,     // Hora del evento\n    UserPrincipalName, // Usuario sospechoso que inició la acción\n    ActivityDisplayName,                  // Tipo de actividad\n    TargetUserName,  // Usuario o recurso afectado\n    Identity,                             // Identidad asociada con la acción\n    ResultDescription,                    // Descripción del resultado de la operación\n    Category,                             // Categoría del evento\n    AADOperationType,                     // Tipo de operación en Azure AD\n    InitiatedBy,                          // Información sobre quién inició la acción\n    LoggedByService                       // Servicio que registró la acción\n| order by TimeGenerated desc             // Ordenar por tiempo en orden descendente\n\n",
+        "severity": "Low",
+        "tactics": [
+          "Persistence",
+          "CommandAndControl",
+          "Exfiltration"
+        ],
+        "techniques": [],
+        "displayName": "DEL0046 - Actividad inesperada de usuario de Directorio Activo de Azure",
+        "triggerThreshold": 5
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

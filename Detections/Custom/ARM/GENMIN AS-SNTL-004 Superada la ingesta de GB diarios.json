@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "Detectado ingesta de más de un umbral GB en las ultimas 24h, esto debe indicarse en watchlist: watchlist__AS_STNL_004_overquota, indicando un valor inferior al dailycap configurado en Log Analytics.",
+        "triggerOperator": "GreaterThan",
+        "enabled": false,
+        "queryFrequency": "P1D",
+        "queryPeriod": "P1D",
+        "query": "let watchlist_AS_STNL_004_overquota = toscalar(_GetWatchlist(\"watchlist__AS_STNL_004_overquota\") | project SearchKey);\nUsage\n| where TimeGenerated > ago(1d)\n| where IsBillable == true\n| summarize TotalVolumeGB = sum(Quantity) / 1024\n| where TotalVolumeGB > toint(watchlist_AS_STNL_004_overquota)\n| project-rename SrcBytesGB = TotalVolumeGB\n",
+        "severity": "High",
+        "tactics": [],
+        "techniques": [],
+        "displayName": "[GEN][MIN] AS-SNTL-004 Superada la ingesta de GB diarios",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

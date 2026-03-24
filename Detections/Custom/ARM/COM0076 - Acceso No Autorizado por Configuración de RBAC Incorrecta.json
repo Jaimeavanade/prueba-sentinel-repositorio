@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "Este caso de uso tiene como objetivo detectar situaciones en las que un usuario obtiene privilegios elevados mediante una asignación de roles RBAC y los utiliza de forma inmediata para acceder a recursos críticos, lo que puede indicar una configuración incorrecta de permisos, abuso de privilegios o un compromiso de identidad.\n\nLa detección se basa en la correlación temporal entre cambios en roles privilegiados y el uso efectivo de esos privilegios, concretamente el acceso a máquinas virtuales a través de Microsoft Azure Bastion.",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT1H",
+        "query": "AuditLogs\n| where TimeGenerated > ago(7d)\n| where ActivityDisplayName in (\"Add member to role\", \"Add eligible member to role\")\n| extend TargetUser = tostring(TargetResources[0].userPrincipalName),\n         Role = tostring(parse_json(InitiatedBy.user).role),\n         Actor = tostring(InitiatedBy.user.userPrincipalName),\n         AssignmentTime = TimeGenerated\n| where Role has_any (\"Global Administrator\", \"User Access Administrator\", \"Owner\", \"Contributor\")\n| join kind=inner (\n    MicrosoftAzureBastionAuditLogs\n    | where TimeGenerated > ago(7d)\n    | where OperationName == \"StartSession\"\n    | extend AccessTime = TimeGenerated\n    | extend User = coalesce(UserEmail, UserName)\n) on $left.TargetUser == $right.User\n| where AccessTime between (AssignmentTime .. AssignmentTime + 6h)\n| project AssignmentTime, AccessTime, TargetUser, Role, Actor, ClientIpAddress, TargetVMIPAddress, Protocol\n| order by AccessTime desc\n\n",
+        "severity": "High",
+        "tactics": [
+          "CredentialAccess",
+          "InitialAccess"
+        ],
+        "techniques": [],
+        "displayName": "COM0076 - Acceso No Autorizado por Configuración de RBAC Incorrecta",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

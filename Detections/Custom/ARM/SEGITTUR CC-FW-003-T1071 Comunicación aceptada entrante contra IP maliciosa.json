@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "CC-FW-003-T1071 Comunicación aceptada entrante contra IP maliciosa",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT10M",
+        "queryPeriod": "PT1H",
+        "query": "AzureDiagnostics\n| where ResourceType == \"AZUREFIREWALLS\"\n| where Category == \"AZFWThreatIntel\"\n| where Action_s == \"Allow\"\n| summarize startTime=min(TimeGenerated),endTime=max(TimeGenerated),EventCount = count() by SourceIP, DestinationIp_s,ThreatDescription_s, Action_s\n\n",
+        "severity": "Low",
+        "tactics": [],
+        "techniques": [],
+        "displayName": "[SEGITTUR] CC-FW-003-T1071 Comunicación aceptada entrante contra IP maliciosa",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}

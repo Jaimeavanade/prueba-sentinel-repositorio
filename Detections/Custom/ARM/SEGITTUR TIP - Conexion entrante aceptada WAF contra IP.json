@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "properties": {
+        "description": "[SEGITTUR] TIP - Conexion entrante aceptada WAF contra IP",
+        "triggerOperator": "GreaterThan",
+        "enabled": true,
+        "queryFrequency": "PT5H",
+        "queryPeriod": "P1D",
+        "query": "let ThreatIPs = ThreatIntelIndicators\n| where isnotempty(ObservableValue)\n| where IsDeleted == false;\n//| where Confidence >= 20;\nAzureDiagnostics\n| where Category == \"FrontDoorWebApplicationFirewallLog\"\n| where ResourceType in (\"FRONTDOORS\", \"PROFILES\")\n| where action_s != \"Block\"\n| where requestUri_s contains \"pid.segittur\"\n| where isnotempty(clientIP_s)\n| join kind=inner (\n    ThreatIPs\n) on $left.clientIP_s == $right.ObservableValue\n| project TimeGenerated,\n          clientIP_s,\n          requestUri_s,\n          action_s,\n          ObservableValue,\n          Confidence,\n          ResourceType,\n          Created,\n          ValidUntil",
+        "severity": "High",
+        "tactics": [
+          "InitialAccess",
+          "CommandAndControl"
+        ],
+        "techniques": [
+          "T1190",
+          "T1071"
+        ],
+        "displayName": "[SEGITTUR] TIP - Conexion entrante aceptada WAF contra IP",
+        "triggerThreshold": 0
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "contentVersion": "1.0.0.0"
+}
