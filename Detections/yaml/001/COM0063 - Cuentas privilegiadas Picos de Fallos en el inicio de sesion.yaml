@@ -1,15 +1,7 @@
-queryFrequency: PT5M
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/379504e6-2ac9-477c-9c05-bf6c7975e00b')]"
-queryPeriod: PT1H
-triggerOperator: GreaterThan
-tactics:
-- InitialAccess
-- CredentialAccess
-techniques: []
+description: Detecta patrones anómalos en inicios de sesión de Azure AD, tanto interactivos como no interactivos, mediante la detección de anomalías de series temporales. Correlaciona los inicios de sesión de los usuarios con las asignaciones de roles (mediante registros de auditoría) y enriquece el contexto con información de IP, aplicaciones y recursos. Resulta útil para detectar ataques de fuerza bruta, abuso de credenciales y uso anormal de cuentas con privilegios.
 enabled: true
-name: COM0063 - Cuentas privilegiadas Picos de Fallos en el inicio de sesion
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/379504e6-2ac9-477c-9c05-bf6c7975e00b')]"
 query: |-
   let starttime = 14d;
   let timeframe = 1d;
@@ -56,5 +48,13 @@ query: |-
   ) on UserPrincipalName, $left.AnomalyHour == $right.DateHour
   | project LatestAnomalyTime, OperationName, Category, UserPrincipalName, Roles = todynamic(Roles), UserDisplayName, ResultType, ResultDescription, AppDisplayName, ClientAppUsed, UserAgent, IPAddress, Location, AuthenticationRequirement, ConditionalAccessStatus, ResourceDisplayName, PartialFailedSignins, TotalFailedSignins = HourlyCount, baseline, anomalies, score
   | extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])
-description: Detecta patrones anómalos en inicios de sesión de Azure AD, tanto interactivos como no interactivos, mediante la detección de anomalías de series temporales. Correlaciona los inicios de sesión de los usuarios con las asignaciones de roles (mediante registros de auditoría) y enriquece el contexto con información de IP, aplicaciones y recursos. Resulta útil para detectar ataques de fuerza bruta, abuso de credenciales y uso anormal de cuentas con privilegios.
+tactics:
+- InitialAccess
+- CredentialAccess
+queryFrequency: PT5M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: PT1H
+name: COM0063 - Cuentas privilegiadas Picos de Fallos en el inicio de sesion
+techniques: []
 

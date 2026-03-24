@@ -1,11 +1,5 @@
-queryFrequency: PT10M
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/348b577a-1c13-4f4b-b5ef-0388dc37433c')]"
-enabled: true
 description: CC-FW-003-T1071 Comunicación aceptada entrante contra IP maliciosa
-severity: Low
-queryPeriod: PT1H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/348b577a-1c13-4f4b-b5ef-0388dc37433c')]"
 query: |+
   AzureDiagnostics
   | where ResourceType == "AZUREFIREWALLS"
@@ -13,7 +7,13 @@ query: |+
   | where Action_s == "Allow"
   | summarize startTime=min(TimeGenerated),endTime=max(TimeGenerated),EventCount = count() by SourceIP, DestinationIp_s,ThreatDescription_s, Action_s
 
-techniques: []
+queryFrequency: PT10M
+severity: Low
+queryPeriod: PT1H
 name: '[SEGITTUR] CC-FW-003-T1071 Comunicación aceptada entrante contra IP maliciosa'
+triggerOperator: GreaterThan
+enabled: true
 triggerThreshold: 0
+techniques: []
+tactics: []
 

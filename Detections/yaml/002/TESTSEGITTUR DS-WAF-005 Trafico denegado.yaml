@@ -1,11 +1,5 @@
-queryFrequency: PT10M
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3412992c-15cf-46e1-9f91-529219032215')]"
-enabled: false
 description: Detección de trafico denegado en waf por reglas
-severity: Low
-queryPeriod: PT1H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3412992c-15cf-46e1-9f91-529219032215')]"
 query: |-
   let timeRange = 10m;
   let watchlist_DS_WAF_005 = _GetWatchlist("watchlist_DS_WAF_005");
@@ -16,7 +10,13 @@ query: |-
   | where action_s == "Block"
   | where isnotempty( clientIP_s)
   |summarize by clientIP_s,requestUri_s, ruleName_s
-techniques: []
+queryFrequency: PT10M
+severity: Low
+queryPeriod: PT1H
 name: '[TEST][SEGITTUR] DS-WAF-005 Trafico denegado'
+triggerOperator: GreaterThan
+enabled: false
 triggerThreshold: 20
+techniques: []
+tactics: []
 

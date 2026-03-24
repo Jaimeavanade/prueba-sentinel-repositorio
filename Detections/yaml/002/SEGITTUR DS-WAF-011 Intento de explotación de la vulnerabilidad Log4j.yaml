@@ -1,11 +1,5 @@
-queryFrequency: PT10M
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/310421c4-c8d1-4151-b842-38b5bc83fcdb')]"
-enabled: true
 description: '[SEGITTUR] DS-WAF-011 Intento de explotación de la vulnerabilidad Log4j en Azure WAF'
-severity: High
-queryPeriod: PT5H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/310421c4-c8d1-4151-b842-38b5bc83fcdb')]"
 query: |-
   let log4jioc = dynamic(["jndi","ldap","${::"]);
     AzureDiagnostics
@@ -15,7 +9,13 @@ query: |-
     | extend matchVariableValue_ = tostring(parse_json(details_matches_s)[0].matchVariableValue)
     | project TimeGenerated, matchVariableValue_, requestUri_s, action_s, ruleName_s, OperationName, SubscriptionId 
     | extend timestamp = TimeGenerated
-techniques: []
+queryFrequency: PT10M
+severity: High
+queryPeriod: PT5H
 name: '[SEGITTUR] DS-WAF-011 Intento de explotación de la vulnerabilidad Log4j'
+triggerOperator: GreaterThan
+enabled: true
 triggerThreshold: 0
+techniques: []
+tactics: []
 

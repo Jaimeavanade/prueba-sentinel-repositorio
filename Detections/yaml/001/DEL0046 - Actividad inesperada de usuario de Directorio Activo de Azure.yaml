@@ -1,16 +1,7 @@
-queryFrequency: PT1H
 severity: Low
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/f8443caf-2fd4-41a1-be33-d3fb2dff0504')]"
-queryPeriod: PT5H
-triggerOperator: GreaterThan
-tactics:
-- Persistence
-- CommandAndControl
-- Exfiltration
-techniques: []
+description: Identifica y supervisa actividades críticas relacionadas con grupos y usuarios en Azure Active Directory. En concreto, se centra en detectar eventos como la adición o eliminación de miembros de grupos, las modificaciones de cuentas de usuario y la eliminación de usuarios.
 enabled: true
-name: DEL0046 - Actividad inesperada de usuario de Directorio Activo de Azure
-triggerThreshold: 5
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/f8443caf-2fd4-41a1-be33-d3fb2dff0504')]"
 query: |+
   let TimeWindow   = 1h;   // Ventana de detección (última hora)
   let MinOps       = 5;    // Mínimo de operaciones totales para considerarlo sospechoso
@@ -52,5 +43,14 @@ query: |+
       LoggedByService                       // Servicio que registró la acción
   | order by TimeGenerated desc             // Ordenar por tiempo en orden descendente
 
-description: Identifica y supervisa actividades críticas relacionadas con grupos y usuarios en Azure Active Directory. En concreto, se centra en detectar eventos como la adición o eliminación de miembros de grupos, las modificaciones de cuentas de usuario y la eliminación de usuarios.
+tactics:
+- Persistence
+- CommandAndControl
+- Exfiltration
+queryFrequency: PT1H
+triggerOperator: GreaterThan
+triggerThreshold: 5
+queryPeriod: PT5H
+name: DEL0046 - Actividad inesperada de usuario de Directorio Activo de Azure
+techniques: []
 

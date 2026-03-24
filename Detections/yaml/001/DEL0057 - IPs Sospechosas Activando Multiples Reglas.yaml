@@ -1,16 +1,7 @@
-queryFrequency: PT5M
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8e5a678f-a875-402f-83de-2c16b5e1be82')]"
-queryPeriod: PT1H
-triggerOperator: GreaterThan
-tactics:
-- Reconnaissance
-- CredentialAccess
-- Persistence
-techniques: []
+description: Identifica IPs que activan múltiples reglas OWASP en poco tiempo, indicando escaneo, fuerza bruta o ataques automatizados.
 enabled: true
-name: DEL0057 - IPs Sospechosas Activando Multiples Reglas
-triggerThreshold: 1
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8e5a678f-a875-402f-83de-2c16b5e1be82')]"
 query: |+
   AzureDiagnostics
   | where ResourceType == "APPLICATIONGATEWAYS"
@@ -30,5 +21,14 @@ query: |+
   | where UniqueRules >= 2  // Solo muestra IPs que activaron más de 1 regla en 5 minutos
   | order by Count desc
 
-description: Identifica IPs que activan múltiples reglas OWASP en poco tiempo, indicando escaneo, fuerza bruta o ataques automatizados.
+tactics:
+- Reconnaissance
+- CredentialAccess
+- Persistence
+queryFrequency: PT5M
+triggerOperator: GreaterThan
+triggerThreshold: 1
+queryPeriod: PT1H
+name: DEL0057 - IPs Sospechosas Activando Multiples Reglas
+techniques: []
 

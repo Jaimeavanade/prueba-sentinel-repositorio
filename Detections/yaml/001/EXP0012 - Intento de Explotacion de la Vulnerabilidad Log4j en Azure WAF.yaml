@@ -1,15 +1,9 @@
-queryFrequency: PT5H
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/7332fcbd-d72b-4eaf-aafc-a2566dc0c8fd')]"
-queryPeriod: PT5H
-triggerOperator: GreaterThan
-tactics:
-- InitialAccess
-techniques:
-- T1190
+description: |-
+  Esta consulta alertará sobre una coincidencia de patrón positiva por Azure WAF para el intento de explotación de la vulnerabilidad CVE-2021-44228 log4j. Si es posible, decodifica el comando malicioso para su posterior análisis.
+  Referencia: https://www.microsoft.com/security/blog/2021/12/11/guidance-for-preventing-detecting-and-hunting-for-cve-2021-44228-log4j-2-exploitation/
 enabled: true
-name: EXP0012 - Intento de Explotacion de la Vulnerabilidad Log4j en Azure WAF
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/7332fcbd-d72b-4eaf-aafc-a2566dc0c8fd')]"
 query: |2-
    let log4jioc = dynamic(["jndi","ldap","${::"]);
     AzureDiagnostics
@@ -27,7 +21,13 @@ query: |2-
     ruleSetType_s = column_ifexists("ruleSetType_s", tostring(AdditionalFields.ruleSetType)), OperationName, SubscriptionId, details_message_s = column_ifexists("details_message_s", tostring(AdditionalFields.details_message)), 
     details_file_s = column_ifexists("details_message_s", tostring(AdditionalFields.details_file))
     | extend timestamp = TimeGenerated
-description: |-
-  Esta consulta alertará sobre una coincidencia de patrón positiva por Azure WAF para el intento de explotación de la vulnerabilidad CVE-2021-44228 log4j. Si es posible, decodifica el comando malicioso para su posterior análisis.
-  Referencia: https://www.microsoft.com/security/blog/2021/12/11/guidance-for-preventing-detecting-and-hunting-for-cve-2021-44228-log4j-2-exploitation/
+tactics:
+- InitialAccess
+queryFrequency: PT5H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: PT5H
+name: EXP0012 - Intento de Explotacion de la Vulnerabilidad Log4j en Azure WAF
+techniques:
+- T1190
 

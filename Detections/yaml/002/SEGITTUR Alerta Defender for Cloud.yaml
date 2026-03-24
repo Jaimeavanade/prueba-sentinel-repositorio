@@ -1,11 +1,5 @@
-queryFrequency: PT10M
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/13cba58e-2d7b-46d3-8f24-d6211b6f8066')]"
-enabled: true
 description: '[SEGITTUR] Alerta Defender for Cloud'
-severity: Medium
-queryPeriod: PT1H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/13cba58e-2d7b-46d3-8f24-d6211b6f8066')]"
 query: |+
   SecurityAlert
   | where ProductName == "Azure Security Center"
@@ -19,7 +13,13 @@ query: |+
       EventCount = count()
       by AlertName, Principal_IP_
 
-techniques: []
+queryFrequency: PT10M
+severity: Medium
+queryPeriod: PT1H
 name: '[SEGITTUR] Alerta Defender for Cloud'
+triggerOperator: GreaterThan
+enabled: true
 triggerThreshold: 0
+techniques: []
+tactics: []
 

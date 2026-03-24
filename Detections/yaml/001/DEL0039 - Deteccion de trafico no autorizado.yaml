@@ -1,16 +1,7 @@
-queryFrequency: PT5H
 severity: Low
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/7140a212-926e-43df-814d-c39edfbbc75b')]"
-queryPeriod: P1D
-triggerOperator: GreaterThan
-tactics:
-- Reconnaissance
-- InitialAccess
-- Discovery
-techniques: []
+description: Supervisa los intentos de acceso no autorizados desde direcciones IP no fiables. Esto puede incluir intentos de acceso a puertos restringidos o no utilizados, que pueden indicar intentos de escaneo o ataque.
 enabled: true
-name: DEL0039 - Deteccion de trafico no autorizado
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/7140a212-926e-43df-814d-c39edfbbc75b')]"
 query: |+
   AzureDiagnostics
   | where Category == "AzureFirewallNetworkRule"
@@ -38,5 +29,14 @@ query: |+
   | summarize EventCount = count() by SourceIP// SourcePort, Protocol, DestinationIP, DestinationPort, Action, TimeGenerated
   | where EventCount > 30
 
-description: Supervisa los intentos de acceso no autorizados desde direcciones IP no fiables. Esto puede incluir intentos de acceso a puertos restringidos o no utilizados, que pueden indicar intentos de escaneo o ataque.
+tactics:
+- Reconnaissance
+- InitialAccess
+- Discovery
+queryFrequency: PT5H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: P1D
+name: DEL0039 - Deteccion de trafico no autorizado
+techniques: []
 

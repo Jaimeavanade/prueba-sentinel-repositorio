@@ -1,14 +1,10 @@
-queryFrequency: PT5H
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/58055d89-3777-4599-9b25-b535c02e588b')]"
-queryPeriod: P1D
-triggerOperator: GreaterThan
-tactics:
-- CredentialAccess
-techniques: []
+description: |-
+  Identifica cuándo se asigna un nuevo rol privilegiado a un usuario.  Cualquier cuenta elegible para un rol está recibiendo acceso privilegiado. Si la asignación es inesperada o a un rol que no es responsabilidad del titular de la cuenta, investiga.
+
+  Referencia : https://docs.microsoft.com/azure/active-directory/fundamentals/security-operations-privileged-accounts#things-to-monitor-1
 enabled: true
-name: COM0061 - Identificacion de rol con privilegios asignado a usuario
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/58055d89-3777-4599-9b25-b535c02e588b')]"
 query: |+
   // Define the start and end times based on input values
   let starttime = now() - 1h;
@@ -77,8 +73,12 @@ query: |+
       InitiatorUPNSuffix = tostring(split(InitiatingUserPrincipalName, '@', 1)[0])
   | where TargetUPNSuffix !contains "PIDPIA.onmicrosoft.com"
 
-description: |-
-  Identifica cuándo se asigna un nuevo rol privilegiado a un usuario.  Cualquier cuenta elegible para un rol está recibiendo acceso privilegiado. Si la asignación es inesperada o a un rol que no es responsabilidad del titular de la cuenta, investiga.
-
-  Referencia : https://docs.microsoft.com/azure/active-directory/fundamentals/security-operations-privileged-accounts#things-to-monitor-1
+tactics:
+- CredentialAccess
+queryFrequency: PT5H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: P1D
+name: COM0061 - Identificacion de rol con privilegios asignado a usuario
+techniques: []
 

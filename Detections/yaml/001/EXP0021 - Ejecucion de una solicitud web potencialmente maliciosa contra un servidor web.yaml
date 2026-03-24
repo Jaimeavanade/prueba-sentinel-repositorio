@@ -1,15 +1,10 @@
-queryFrequency: P1D
 severity: Medium
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/92da0019-3dc2-4627-bda4-8cf363b826ed')]"
-queryPeriod: P1D
-triggerOperator: GreaterThan
-tactics:
-- InitialAccess
-techniques:
-- T1190
+description: |-
+  Detecta actividad no obstruida del cortafuegos de aplicaciones web (WAF) en sesiones en las que el WAF bloqueó solicitudes entrantes calculando la proporción entre solicitudes bloqueadas y solicitudes WAF no obstruidas en estas sesiones (métrica BlockvsSuccessRatio).
+     Un valor de ratio alto para una IP de cliente y nombre de host dados requiere una investigación más profunda de los datos del WAF en esa sesión, debido al número significativamente alto de peticiones bloqueadas y unos pocos registros no obstruidos que pueden ser maliciosos pero que han pasado sin ser detectados por el WAF. 
+  La variable successCode define lo que la detección piensa que es un código de estado exitoso y debe ser alterado para ajustarse al entorno
 enabled: true
-name: EXP0021 - Ejecucion de una solicitud web potencialmente maliciosa contra un servidor web
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/92da0019-3dc2-4627-bda4-8cf363b826ed')]"
 query: |+
   let queryperiod = 1d;
   let mode = dynamic(['Blocked', 'Detected']);
@@ -64,8 +59,13 @@ query: |+
       OriginalRequestURIs,
       UserAgents
 
-description: |-
-  Detecta actividad no obstruida del cortafuegos de aplicaciones web (WAF) en sesiones en las que el WAF bloqueó solicitudes entrantes calculando la proporción entre solicitudes bloqueadas y solicitudes WAF no obstruidas en estas sesiones (métrica BlockvsSuccessRatio).
-     Un valor de ratio alto para una IP de cliente y nombre de host dados requiere una investigación más profunda de los datos del WAF en esa sesión, debido al número significativamente alto de peticiones bloqueadas y unos pocos registros no obstruidos que pueden ser maliciosos pero que han pasado sin ser detectados por el WAF. 
-  La variable successCode define lo que la detección piensa que es un código de estado exitoso y debe ser alterado para ajustarse al entorno
+tactics:
+- InitialAccess
+queryFrequency: P1D
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: P1D
+name: EXP0021 - Ejecucion de una solicitud web potencialmente maliciosa contra un servidor web
+techniques:
+- T1190
 

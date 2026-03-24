@@ -1,14 +1,14 @@
-queryFrequency: 
-tactics: 
-triggerOperator: 
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/0db48566-9df0-4512-bb31-5064bffd89d4')]"
-enabled: true
 description: |
   Create incidents based on all alerts generated in Microsoft Defender for Endpoint
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/0db48566-9df0-4512-bb31-5064bffd89d4')]"
+query: 
+queryFrequency: 
 severity: 
 queryPeriod: 
-query: 
-techniques: 
 name: Create incidents based on Microsoft Defender for Endpoint alerts
+triggerOperator: 
+enabled: true
 triggerThreshold: 
+techniques: 
+tactics: 
 

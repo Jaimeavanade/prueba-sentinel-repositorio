@@ -1,21 +1,9 @@
-queryFrequency: PT5H
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/fa8375b2-757f-4d40-ba0b-47aff854c59b')]"
-queryPeriod: P1D
-triggerOperator: GreaterThan
-tactics:
-- DefenseEvasion
-- Execution
-- InitialAccess
-- PrivilegeEscalation
-techniques:
-- T1211
-- T1059
-- T1190
-- T0890
+description: |-
+  Identifica una coincidencia para un ataque de inyección SQL en los registros WAF de App Gateway. El valor del umbral en la consulta se puede cambiar según los requisitos de su infraestructura.
+  Referencias: https://owasp.org/Top10/A03_2021-Injection/
 enabled: true
-name: DEL0055 - Deteccion de SQL Injection mediante el WAF de App Gateway
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/fa8375b2-757f-4d40-ba0b-47aff854c59b')]"
 query: |+
   let Threshold = 5;  
   AzureDiagnostics
@@ -49,7 +37,19 @@ query: |+
       by clientIp_s, Uri, action_s
   | where Total_TransactionId >= Threshold
 
-description: |-
-  Identifica una coincidencia para un ataque de inyección SQL en los registros WAF de App Gateway. El valor del umbral en la consulta se puede cambiar según los requisitos de su infraestructura.
-  Referencias: https://owasp.org/Top10/A03_2021-Injection/
+tactics:
+- DefenseEvasion
+- Execution
+- InitialAccess
+- PrivilegeEscalation
+queryFrequency: PT5H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: P1D
+name: DEL0055 - Deteccion de SQL Injection mediante el WAF de App Gateway
+techniques:
+- T1211
+- T1059
+- T1190
+- T0890
 

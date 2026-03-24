@@ -1,12 +1,5 @@
-queryFrequency: PT1H
-tactics:
-- InitialAccess
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/9b30cf78-ae05-4ef1-9917-f01e83b0ae04')]"
-enabled: true
 description: This use case searches for failed sign-in attempts to disabled accounts summarized by the IP originating IP address.
-severity: Low
-queryPeriod: PT1H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/9b30cf78-ae05-4ef1-9917-f01e83b0ae04')]"
 query: |-
   SigninLogs 
     | where ResultType == "50057" 
@@ -17,8 +10,15 @@ query: |-
     | extend timestamp = StartTime
     | order by numberLoginAttempts desc
     | extend IP_0_Address = IPAddress
+queryFrequency: PT1H
+severity: Low
+queryPeriod: PT1H
+name: '[TEST]IA-AD-00X-T1078 Detect Disabled Account Sign-in Attempts by IP Address'
+triggerOperator: GreaterThan
+enabled: true
+triggerThreshold: 0
 techniques:
 - T1078
-name: '[TEST]IA-AD-00X-T1078 Detect Disabled Account Sign-in Attempts by IP Address'
-triggerThreshold: 0
+tactics:
+- InitialAccess
 

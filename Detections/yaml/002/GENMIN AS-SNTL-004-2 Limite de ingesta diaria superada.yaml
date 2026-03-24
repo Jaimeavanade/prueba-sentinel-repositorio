@@ -1,16 +1,16 @@
-queryFrequency: PT10M
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8c2e46ec-c4bb-4672-8721-f2f292298222')]"
-enabled: false
 description: Se detecta que el límite diario ha sido sobrepasado por la alerta configurada en LogAnalytics
-severity: Medium
-queryPeriod: PT10M
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8c2e46ec-c4bb-4672-8721-f2f292298222')]"
 query: |-
   Operation
   | where Detail has 'OverQuota'
   | project TimeGenerated, Operation = OperationStatus, EventType = Detail, EventSubType = OperationKey, Object = OperationCategory
-techniques: []
+queryFrequency: PT10M
+severity: Medium
+queryPeriod: PT10M
 name: '[GEN][MIN] AS-SNTL-004-2 Limite de ingesta diaria superada'
+triggerOperator: GreaterThan
+enabled: false
 triggerThreshold: 0
+techniques: []
+tactics: []
 

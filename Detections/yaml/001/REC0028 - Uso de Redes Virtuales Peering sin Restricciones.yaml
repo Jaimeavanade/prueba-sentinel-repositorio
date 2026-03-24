@@ -1,15 +1,18 @@
-queryFrequency: PT5M
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8c2cbff9-5d03-479f-b074-08c34e5fa065')]"
-queryPeriod: PT1H
-triggerOperator: GreaterThan
-tactics:
-- Discovery
-- Reconnaissance
-techniques: []
+description: |-
+  Este caso de uso detecta configuraciones de VNet Peering potencialmente permisivas que pueden introducir riesgos de exposición o tránsito de tráfico no deseado entre redes virtuales. En concreto, identifica peerings creados o modificados con las siguientes opciones habilitadas simultáneamente:
+
+  allowVirtualNetworkAccess = true
+
+  allowForwardedTraffic = true
+
+  Esta combinación permite conectividad bidireccional ampliada y tránsito de tráfico reenviado, lo que incrementa el riesgo de movimiento lateral entre VNets, rutas no previstas y una expansión del perímetro de confianza.
+
+  Adicionalmente, la detección identifica si el peering remoto está asociado a Azure Bastion, con el objetivo de priorizar la revisión de configuraciones que puedan ampliar indirectamente el acceso administrativo.
+
+  La búsqueda se ejecutará cada 5 minutos teniendo en cuenta la última hora.
 enabled: true
-name: REC0028 - Uso de Redes Virtuales Peering sin Restricciones
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8c2cbff9-5d03-479f-b074-08c34e5fa065')]"
 query: |-
   AzureActivity
   | where TimeGenerated > ago(30d)
@@ -30,16 +33,13 @@ query: |-
       peeredToBastion,
       allowVNetAccess,
       allowForwardedTraffic
-description: |-
-  Este caso de uso detecta configuraciones de VNet Peering potencialmente permisivas que pueden introducir riesgos de exposición o tránsito de tráfico no deseado entre redes virtuales. En concreto, identifica peerings creados o modificados con las siguientes opciones habilitadas simultáneamente:
-
-  allowVirtualNetworkAccess = true
-
-  allowForwardedTraffic = true
-
-  Esta combinación permite conectividad bidireccional ampliada y tránsito de tráfico reenviado, lo que incrementa el riesgo de movimiento lateral entre VNets, rutas no previstas y una expansión del perímetro de confianza.
-
-  Adicionalmente, la detección identifica si el peering remoto está asociado a Azure Bastion, con el objetivo de priorizar la revisión de configuraciones que puedan ampliar indirectamente el acceso administrativo.
-
-  La búsqueda se ejecutará cada 5 minutos teniendo en cuenta la última hora.
+tactics:
+- Discovery
+- Reconnaissance
+queryFrequency: PT5M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: PT1H
+name: REC0028 - Uso de Redes Virtuales Peering sin Restricciones
+techniques: []
 

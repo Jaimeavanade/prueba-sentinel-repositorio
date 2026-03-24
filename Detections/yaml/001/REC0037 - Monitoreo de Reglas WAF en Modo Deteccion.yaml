@@ -1,16 +1,7 @@
-queryFrequency: PT5M
 severity: Medium
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/537e12f2-d5a8-44ae-8edf-4af79d30afe4')]"
-queryPeriod: PT1H
-triggerOperator: GreaterThan
-tactics:
-- InitialAccess
-- Execution
-- DefenseEvasion
-techniques: []
+description: Identificar intentos de explotación de vulnerabilidades web detectados por el WAF de Azure Application Gateway basado en el conjunto de reglas OWASP 3.2 y Microsoft_BotManagerRuleSet_0.1.
 enabled: true
-name: REC0037 - Monitoreo de Reglas WAF en Modo Deteccion
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/537e12f2-d5a8-44ae-8edf-4af79d30afe4')]"
 query: |-
   AzureDiagnostics
   | where ResourceType == "APPLICATIONGATEWAYS"
@@ -29,5 +20,14 @@ query: |-
   | where ruleId_s startswith "Known-CVEs"  // Filtra solo reglas que comienzan con "Known-CVEs" 
   | summarize Count=count(), UniqueIPs=dcount(clientIp_s) by RuleName, RuleGroup, bin(TimeGenerated, 5m)
   | order by Count desc
-description: Identificar intentos de explotación de vulnerabilidades web detectados por el WAF de Azure Application Gateway basado en el conjunto de reglas OWASP 3.2 y Microsoft_BotManagerRuleSet_0.1.
+tactics:
+- InitialAccess
+- Execution
+- DefenseEvasion
+queryFrequency: PT5M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: PT1H
+name: REC0037 - Monitoreo de Reglas WAF en Modo Deteccion
+techniques: []
 

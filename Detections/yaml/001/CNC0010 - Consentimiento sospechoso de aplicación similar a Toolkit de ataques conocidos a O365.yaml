@@ -1,17 +1,11 @@
-queryFrequency: PT5M
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/9402fe06-678e-4e0b-b1f3-43133a3f6d24')]"
-queryPeriod: PT1H
-triggerOperator: GreaterThan
-tactics:
-- CredentialAccess
-- DefenseEvasion
-techniques:
-- T1528
-- T1550
+description: |-
+  Esta alertará cuando un usuario consienta proporcionar una aplicación de Azure previamente desconocida con los mismos permisos de OAuth utilizados por el kit de herramientas de ataque MDSec O365 (https://github.com/mdsecactivebreach/o365-attack-toolkit).
+  Los permisos y el alcance predeterminados del kit de herramientas de ataque MDSec O365 cambian a veces, pero suelen incluir contacts.read, user.read, mail.read, notes.read.all, mailboxsettings.readwrite, files.readwrite.all, mail.send, files.read y files.read.all.
+
+  Para obtener más información sobre los registros de auditoría, consulte https://docs.microsoft.com/azure/active-directory/reports-monitoring/reference-audit-activities.
 enabled: true
-name: CNC0010 - Consentimiento sospechoso de aplicación similar a Toolkit de ataques conocidos a O365
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/9402fe06-678e-4e0b-b1f3-43133a3f6d24')]"
 query: |
   let detectionTime = 1d;
   let joinLookback = 14d;
@@ -85,9 +79,15 @@ query: |
     ) on CorrelationId
   | project TimeGenerated, GrantConsentType, GrantScope1, GrantInitiatedBy, AppDisplayName, AppReplyURLs, GrantInitiatedByUserPrincipalName, GrantInitiatedByAadUserId, GrantInitiatedByAppName, GrantInitiatedByAppServicePrincipalId, GrantIpAddress, GrantUserAgent, AppClientId, GrantAuthentication, OperationName, GrantOperation, CorrelationId, ConsentFull
   | extend Name = tostring(split(GrantInitiatedByUserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(GrantInitiatedByUserPrincipalName,'@',1)[0])
-description: |-
-  Esta alertará cuando un usuario consienta proporcionar una aplicación de Azure previamente desconocida con los mismos permisos de OAuth utilizados por el kit de herramientas de ataque MDSec O365 (https://github.com/mdsecactivebreach/o365-attack-toolkit).
-  Los permisos y el alcance predeterminados del kit de herramientas de ataque MDSec O365 cambian a veces, pero suelen incluir contacts.read, user.read, mail.read, notes.read.all, mailboxsettings.readwrite, files.readwrite.all, mail.send, files.read y files.read.all.
-
-  Para obtener más información sobre los registros de auditoría, consulte https://docs.microsoft.com/azure/active-directory/reports-monitoring/reference-audit-activities.
+tactics:
+- CredentialAccess
+- DefenseEvasion
+queryFrequency: PT5M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: PT1H
+name: CNC0010 - Consentimiento sospechoso de aplicación similar a Toolkit de ataques conocidos a O365
+techniques:
+- T1528
+- T1550
 

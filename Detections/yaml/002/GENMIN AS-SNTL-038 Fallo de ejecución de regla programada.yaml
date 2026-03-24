@@ -1,11 +1,5 @@
-queryFrequency: P1D
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/996af738-2459-4979-a709-3f40c8911790')]"
-enabled: true
 description: Detecta fallos a la hora de ejecutar reglas del tipo scheduled.
-severity: Low
-queryPeriod: P1D
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/996af738-2459-4979-a709-3f40c8911790')]"
 query: |-
   let failures=SentinelHealth
   | where TimeGenerated >= ago(1d)
@@ -41,7 +35,13 @@ query: |-
   | summarize FirstFailure = min(TimeGenerated), LastFailure = max(TimeGenerated),EventCount = count(), EventResults = make_set(EventResult), EventMessages = make_set(EventMessage) by Object
   | where EventCount >= 2
   | join kind=leftanti (tmp) on Object, FirstFailure, LastFailure
-techniques: []
+queryFrequency: P1D
+severity: Low
+queryPeriod: P1D
 name: '[GEN][MIN] AS-SNTL-038 Fallo de ejecución de regla programada'
+triggerOperator: GreaterThan
+enabled: true
 triggerThreshold: 0
+techniques: []
+tactics: []
 

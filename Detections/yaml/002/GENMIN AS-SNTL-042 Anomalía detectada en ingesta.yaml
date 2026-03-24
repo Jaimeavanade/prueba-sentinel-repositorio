@@ -1,11 +1,5 @@
-queryFrequency: P1D
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/e37a881d-89fe-46d5-8bd2-0c8b34ebc78e')]"
-enabled: true
 description: Detecta ingesta incrementada o en decremento por tablas. Necesario ajustar valor de Percent (40 por defecto) y excepcionar tablas en watchlist que no queremos supervisar.
-severity: Informational
-queryPeriod: P14D
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/e37a881d-89fe-46d5-8bd2-0c8b34ebc78e')]"
 query: |-
   //source: https://techcommunity.microsoft.com/t5/azure-sentinel/ingestion-cost-spike-detection-playbook/ba-p/2591301
   //https://docs.microsoft.com/azure/data-explorer/kusto/query/series-decompose-anomaliesfunction 
@@ -50,7 +44,13 @@ query: |-
   | extend PercentageDecrease = iff(PercentageQty <= PercentDecrease,tostring(PercentageQty),"N/A")//Crea una columna llamada "PercentageDecrease" si el porcentaje es negativo sino indica N/A.
   | where PercentageQty != "-Infinity" and ExpectedQty > 0//Filtra valores que sean "-Infinity" o valores mayor a cero en la columna "ExpectedQty"
   | project Object = DataType, ActualQty, ExpectedQty, PercentageQty, PercentageIncrease, PercentageDecrease
-techniques: []
+queryFrequency: P1D
+severity: Informational
+queryPeriod: P14D
 name: '[GEN][MIN] AS-SNTL-042 Anomalía detectada en ingesta'
+triggerOperator: GreaterThan
+enabled: true
 triggerThreshold: 0
+techniques: []
+tactics: []
 

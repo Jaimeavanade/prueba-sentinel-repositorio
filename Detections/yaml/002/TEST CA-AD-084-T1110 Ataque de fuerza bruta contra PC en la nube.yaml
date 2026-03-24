@@ -1,12 +1,5 @@
-queryFrequency: P1D
-tactics:
-- CredentialAccess
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3589c3d8-2f89-4c50-9500-4b821f516729')]"
-enabled: true
 description: Identifica evidencia de actividad de fuerza bruta contra una PC en la nube con Windows 365 al resaltar múltiples fallas de autenticación y mediante una autenticación exitosa dentro de un período de tiempo determinado.
-severity: Medium
-queryPeriod: P1D
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3589c3d8-2f89-4c50-9500-4b821f516729')]"
 query: |-
   let authenticationWindow = 20m;
   let sensitivity = 2.5;
@@ -41,8 +34,15 @@ query: |-
   | extend IPAddressFirst = tostring(IPAddresses[0])
   | extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])
   | project EventStartTime = StartTime, EventEndTime = EndTime, SrcIpAddr = IPAddressFirst, ActorUsername = UserPrincipalName, ActorUserId = UserId, EventType = Anomalies, Operation = ResultType
+queryFrequency: P1D
+severity: Medium
+queryPeriod: P1D
+name: '[TEST] CA-AD-084-T1110 Ataque de fuerza bruta contra PC en la nube'
+triggerOperator: GreaterThan
+enabled: true
+triggerThreshold: 0
 techniques:
 - T1110
-name: '[TEST] CA-AD-084-T1110 Ataque de fuerza bruta contra PC en la nube'
-triggerThreshold: 0
+tactics:
+- CredentialAccess
 

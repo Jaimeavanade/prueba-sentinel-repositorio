@@ -1,15 +1,7 @@
-queryFrequency: PT10M
 severity: Low
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3f7e2507-65bd-4491-8249-461e50268ec8')]"
-queryPeriod: PT1H
-triggerOperator: GreaterThan
-tactics:
-- Reconnaissance
-- Discovery
-techniques: []
+description: Bloquear tráfico de bots que intentan extraer datos, consumir recursos o explotar vulnerabilidades.
 enabled: true
-name: REC0023 - Actividad de Scraping detectada y bloqueada por el WAF
-triggerThreshold: 50
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3f7e2507-65bd-4491-8249-461e50268ec8')]"
 query: |-
   AzureDiagnostics
   | where Category == "ApplicationGatewayAccessLog"
@@ -20,5 +12,13 @@ query: |-
   | summarize RequestCount = count() by AttackingIP, Port, httpMethod,httpVersion, URL, UserAgent,RuleName,RequestQuery,ErrorInfo, OriginalHost, bin(TimeGenerated, 10m)
   | where RequestCount > 50  // Más de 50 solicitudes en 10 minutos
   | order by RequestCount desc
-description: Bloquear tráfico de bots que intentan extraer datos, consumir recursos o explotar vulnerabilidades.
+tactics:
+- Reconnaissance
+- Discovery
+queryFrequency: PT10M
+triggerOperator: GreaterThan
+triggerThreshold: 50
+queryPeriod: PT1H
+name: REC0023 - Actividad de Scraping detectada y bloqueada por el WAF
+techniques: []
 

@@ -1,12 +1,5 @@
-queryFrequency: PT1H
-tactics:
-- Persistence
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/e7ace4b7-c036-4453-8a10-a0ac5db46bd2')]"
-enabled: true
 description: La consulta de ejemplo siguiente crea una alerta si se agrega un usuario invitado a Azure AD. En algunos entornos esto podría y debería desencadenar una alerta, en otros entornos esto sucede continuamente y no debe usarse (para reducir el ruido).
-severity: Informational
-queryPeriod: PT1H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/e7ace4b7-c036-4453-8a10-a0ac5db46bd2')]"
 query: |+
   AuditLogs
   | where OperationName == "Add user" and Identity == "Microsoft B2B Admin Worker"
@@ -20,9 +13,16 @@ query: |+
   | where Adm != "carlosandres.bejarano.ext@mn8energy.com"
 
 
+queryFrequency: PT1H
+severity: Informational
+queryPeriod: PT1H
+name: '[TEST]PR-CLD-019-T1136.003 Guest account added to Azure AD'
+triggerOperator: GreaterThan
+enabled: true
+triggerThreshold: 0
 techniques:
 - T1136
 - T1078
-name: '[TEST]PR-CLD-019-T1136.003 Guest account added to Azure AD'
-triggerThreshold: 0
+tactics:
+- Persistence
 

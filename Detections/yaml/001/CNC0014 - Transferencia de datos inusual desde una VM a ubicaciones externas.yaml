@@ -1,14 +1,13 @@
-queryFrequency: PT5M
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/c408b5c0-7b6d-4356-b446-7ccbbe696bf1')]"
-queryPeriod: PT1H
-triggerOperator: GreaterThan
-tactics:
-- CommandAndControl
-techniques: []
+description: |-
+  Este caso de uso tiene como objetivo detectar posibles transferencias de datos anómalas o potenciales intentos de exfiltración de información desde máquinas virtuales (VMs) hacia ubicaciones externas.
+
+  La detección se basa en alertas de seguridad generadas por los servicios de protección de Microsoft que identifican patrones sospechosos de tráfico saliente, como volúmenes de datos inusualmente altos y destinos poco habituales.
+
+
+  La búsqueda se ejecutará cada 5 min. teniendo en cuenta la última hora.
 enabled: true
-name: CNC0014 - Transferencia de datos inusual desde una VM a ubicaciones externas
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/c408b5c0-7b6d-4356-b446-7ccbbe696bf1')]"
 query: |
   SecurityAlert
   | where TimeGenerated > ago(7d)
@@ -24,11 +23,12 @@ query: |
   or Description has_any ("data exfiltration", "unusual outbound", "external transfer", "exfil", "rare location")
   | project TimeGenerated, AlertName, AlertSeverity ,Description, CompromisedEntity, ProductName, ProviderName
   | order by TimeGenerated desc
-description: |-
-  Este caso de uso tiene como objetivo detectar posibles transferencias de datos anómalas o potenciales intentos de exfiltración de información desde máquinas virtuales (VMs) hacia ubicaciones externas.
-
-  La detección se basa en alertas de seguridad generadas por los servicios de protección de Microsoft que identifican patrones sospechosos de tráfico saliente, como volúmenes de datos inusualmente altos y destinos poco habituales.
-
-
-  La búsqueda se ejecutará cada 5 min. teniendo en cuenta la última hora.
+tactics:
+- CommandAndControl
+queryFrequency: PT5M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: PT1H
+name: CNC0014 - Transferencia de datos inusual desde una VM a ubicaciones externas
+techniques: []
 

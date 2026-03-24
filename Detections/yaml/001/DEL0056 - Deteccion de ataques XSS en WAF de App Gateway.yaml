@@ -1,18 +1,7 @@
-queryFrequency: PT5H
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/b6396b23-3136-44dc-8307-eccf6793a083')]"
-queryPeriod: P1D
-triggerOperator: GreaterThan
-tactics:
-- InitialAccess
-- Execution
-techniques:
-- T1189
-- T1203
-- T0853
+description: 'Identifica una coincidencia para un ataque XSS en los registros WAF de App Gateway. El valor del umbral en la consulta se puede cambiar según los requisitos de su infraestructura.Referencias: https://owasp.org/www-project-top-ten/2017/A7_2017-Cross-Site_Scripting_(XSS)'
 enabled: true
-name: DEL0056 - Deteccion de ataques XSS en WAF de App Gateway
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/b6396b23-3136-44dc-8307-eccf6793a083')]"
 query: |+
   let Threshold = 3;  
   AzureDiagnostics
@@ -46,5 +35,16 @@ query: |+
       by clientIp_s, Uri, action_s
   | where Total_TransactionId >= Threshold
 
-description: 'Identifica una coincidencia para un ataque XSS en los registros WAF de App Gateway. El valor del umbral en la consulta se puede cambiar según los requisitos de su infraestructura.Referencias: https://owasp.org/www-project-top-ten/2017/A7_2017-Cross-Site_Scripting_(XSS)'
+tactics:
+- InitialAccess
+- Execution
+queryFrequency: PT5H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: P1D
+name: DEL0056 - Deteccion de ataques XSS en WAF de App Gateway
+techniques:
+- T1189
+- T1203
+- T0853
 

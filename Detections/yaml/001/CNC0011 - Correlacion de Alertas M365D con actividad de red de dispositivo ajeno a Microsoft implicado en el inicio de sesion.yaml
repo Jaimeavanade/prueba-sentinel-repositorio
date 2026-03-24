@@ -1,15 +1,7 @@
-queryFrequency: PT5M
 severity: Medium
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/845a5a1b-fe65-4e43-8ee2-578b1c9f275d')]"
-queryPeriod: PT1H
-triggerOperator: GreaterThan
-tactics:
-- PrivilegeEscalation
-- DefenseEvasion
-techniques: []
+description: Este contenido se utiliza para correlacionar las alertas relacionadas con el phishing de Microsoft Defender XDR. Se centra en los casos en los que un usuario se conecta correctamente a una URL de phishing desde un dispositivo de red que no es de Microsoft y, posteriormente, realiza intentos de inicio de sesión con éxito desde la dirección IP de phishing.
 enabled: true
-name: CNC0011 - Correlacion de Alertas M365D con actividad de red de dispositivo ajeno a Microsoft implicado en el inicio de sesion
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/845a5a1b-fe65-4e43-8ee2-578b1c9f275d')]"
 query: |+
   let Alert_List= dynamic([
       "Phishing link click observed in Network Traffic",
@@ -83,5 +75,13 @@ query: |+
               UPNSuffix =tostring(split(UserPrincipalName, "@")[1]))
           on $left.DestinationIP == $right.IPAddress and $left.SourceUserName == $right.UserPrincipalName
       | where SigniningTime between ((AlertTime - 6h) .. (AlertTime + 6h)) and 3plogTime between ((AlertTime - 6h) .. (AlertTime + 6h))
-description: Este contenido se utiliza para correlacionar las alertas relacionadas con el phishing de Microsoft Defender XDR. Se centra en los casos en los que un usuario se conecta correctamente a una URL de phishing desde un dispositivo de red que no es de Microsoft y, posteriormente, realiza intentos de inicio de sesión con éxito desde la dirección IP de phishing.
+tactics:
+- PrivilegeEscalation
+- DefenseEvasion
+queryFrequency: PT5M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: PT1H
+name: CNC0011 - Correlacion de Alertas M365D con actividad de red de dispositivo ajeno a Microsoft implicado en el inicio de sesion
+techniques: []
 

@@ -1,12 +1,5 @@
-queryFrequency: PT5M
-tactics:
-- Execution
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/94e6e0d5-25a1-430f-944d-80964288cf4a')]"
-enabled: true
 description: ""
-severity: Medium
-queryPeriod: PT5M
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/94e6e0d5-25a1-430f-944d-80964288cf4a')]"
 query: |-
   //Modifica nombre de la alerta, por la alerta a excluir
   let watchlist_EX_AV_051_RuleException = _GetWatchlist('watchlist_EX_AV_051_RuleException') | project SearchKey;
@@ -24,8 +17,15 @@ query: |-
       on CompromisedEntity
   //| lookup kind=leftouter _GetWatchlist('watchlist_Device_Asset_Inventory') on $left.CompromisedEntity == $right.HostName
   | project TimeGenerated, EventCount = count_, EventType = DisplayName, ThreatName = AlertName, ThreatRef = AlertType, DvcHostname = CompromisedEntity, EventMessage = Description, EventVendor = VendorName, EventProduct = ProviderName, EventReportUrl = AlertLink, EventOriginalUid = VendorOriginalId, ConfidenceScore, IsIncident, EventStartTime = StartTime, EventEndTime = EndTime, Entities, DvcAction = Status, Tactics, Techniques, SubTechniques, ExtendedProperties
+queryFrequency: PT5M
+severity: Medium
+queryPeriod: PT5M
+name: '[GEN][MIN][MDATP] EX-AV-051-1204.002 Incidente de criticidad ALTA'
+triggerOperator: GreaterThan
+enabled: true
+triggerThreshold: 0
 techniques:
 - T1204
-name: '[GEN][MIN][MDATP] EX-AV-051-1204.002 Incidente de criticidad ALTA'
-triggerThreshold: 0
+tactics:
+- Execution
 

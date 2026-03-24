@@ -1,16 +1,7 @@
-queryFrequency: PT5H
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8f7d2020-6e4b-4835-aa8d-e3810b3fcb2d')]"
-queryPeriod: P1D
-triggerOperator: GreaterThan
-tactics:
-- Reconnaissance
-- InitialAccess
-- DefenseEvasion
-techniques: []
+description: Detectar y correlacionar eventos Matched y Blocked del WAF de Azure Application Gateway, especialmente aquellos relacionados con el Anomaly Score, que se acumulan y terminan en un bloqueo por la regla 949110 (Anomaly score exceeded).
 enabled: true
-name: REC0031 - WAF - Monitorizacion de Eventos Matched y Bloqueo 949110
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8f7d2020-6e4b-4835-aa8d-e3810b3fcb2d')]"
 query: |+
   AzureDiagnostics
   | where Category == "ApplicationGatewayFirewallLog"
@@ -35,5 +26,14 @@ query: |+
   | where Hits >= 5
   | order by PrimerHit
 
-description: Detectar y correlacionar eventos Matched y Blocked del WAF de Azure Application Gateway, especialmente aquellos relacionados con el Anomaly Score, que se acumulan y terminan en un bloqueo por la regla 949110 (Anomaly score exceeded).
+tactics:
+- Reconnaissance
+- InitialAccess
+- DefenseEvasion
+queryFrequency: PT5H
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: P1D
+name: REC0031 - WAF - Monitorizacion de Eventos Matched y Bloqueo 949110
+techniques: []
 

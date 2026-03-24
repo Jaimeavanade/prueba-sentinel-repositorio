@@ -1,16 +1,7 @@
-queryFrequency: PT1H
 severity: Medium
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/956cbc7e-ccb8-4f67-b927-281fa1a87890')]"
-queryPeriod: PT25H
-triggerOperator: GreaterThan
-tactics:
-- InitialAccess
-- Exfiltration
-- CommandAndControl
-techniques: []
+description: Identifica una tasa de denegación anormal para una IP de origen específica a una IP de destino basada en la media normal y la desviación estándar aprendidas durante un periodo configurado. Esto puede indicar una posible exfiltración, acceso inicial o C2, donde el atacante intenta explotar la misma vulnerabilidad en máquinas de la organización, pero está siendo bloqueado por las reglas del cortafuegos.
 enabled: true
-name: EXF0008 - Monitoreo de Picos Anomalos en Denegaciones de Acceso desde una IP de Origen
-triggerThreshold: 15
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/956cbc7e-ccb8-4f67-b927-281fa1a87890')]"
 query: |+
   let LearningPeriod = 1d;
   let RunTime = 1h;
@@ -59,5 +50,14 @@ query: |+
   | where AlertTimeSrcIpDenyRateCount > LearningThreshold
   | project-away SourceIp1, LearningTimeSrcIpDenyRateAvg, LearningTimeSrcIpDenyRateStd
 
-description: Identifica una tasa de denegación anormal para una IP de origen específica a una IP de destino basada en la media normal y la desviación estándar aprendidas durante un periodo configurado. Esto puede indicar una posible exfiltración, acceso inicial o C2, donde el atacante intenta explotar la misma vulnerabilidad en máquinas de la organización, pero está siendo bloqueado por las reglas del cortafuegos.
+tactics:
+- InitialAccess
+- Exfiltration
+- CommandAndControl
+queryFrequency: PT1H
+triggerOperator: GreaterThan
+triggerThreshold: 15
+queryPeriod: PT25H
+name: EXF0008 - Monitoreo de Picos Anomalos en Denegaciones de Acceso desde una IP de Origen
+techniques: []
 

@@ -1,11 +1,5 @@
-queryFrequency: PT2H
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/bff7e44b-9b2e-4ac5-8954-cc65dbb47765')]"
-enabled: true
 description: Detecta si algun conector ha fallado en las ultimas 12 horas
-severity: Medium
-queryPeriod: PT2H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/bff7e44b-9b2e-4ac5-8954-cc65dbb47765')]"
 query: |-
   let lastestStatus = SentinelHealth
   | where TimeGenerated > ago(12h)
@@ -26,7 +20,13 @@ query: |-
   | join kind=inner (nextToLastestStatus) on SentinelResourceName, SentinelResourceId
   | where NextToLastStatus == 'Success' and LastStatus == 'Failure'
   | project TimeGenerated, Object = Friendly_name, ObjectType = SentinelResourceId, EventEndTime = NextToLastStatus
-techniques: []
+queryFrequency: PT2H
+severity: Medium
+queryPeriod: PT2H
 name: '[GEN][MIN] AS-SNTL-003 Detectado conectores sin estado success en las últimas 12 horas'
+triggerOperator: GreaterThan
+enabled: true
 triggerThreshold: 0
+techniques: []
+tactics: []
 

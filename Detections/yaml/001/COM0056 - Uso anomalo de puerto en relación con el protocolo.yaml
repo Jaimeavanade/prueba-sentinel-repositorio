@@ -1,16 +1,7 @@
-queryFrequency: PT1H
 severity: Medium
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/9c0a980e-b53e-4d88-acff-f4c3afafa07f')]"
-queryPeriod: P8D
-triggerOperator: GreaterThan
-tactics:
-- DefenseEvasion
-- Exfiltration
-- CommandAndControl
-techniques: []
+description: Identifica la comunicación de un protocolo conocido a través de un puerto no estándar basándose en la actividad del periodo de aprendizaje. Esto puede indicar comunicación maliciosa (C2) o exfiltración por parte de atacantes que intentan comunicarse a través de puertos conocidos (22:SSH, 80:HTTP) pero no utilizan las cabeceras de protocolo conocidas para que coincidan con el número de puerto.
 enabled: true
-name: COM0056 - Uso anomalo de puerto en relación con el protocolo
-triggerThreshold: 1
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/9c0a980e-b53e-4d88-acff-f4c3afafa07f')]"
 query: |
   let LearningPeriod = 7d;
   let RunTime = 1d;
@@ -58,5 +49,14 @@ query: |
   (AlertTimePortToProtocol3 
   | join kind=leftouter (LearningPortToProtocol3) on $left.AlertTimeDstPort == $right.LearningTimeDstPort
   | where LearningTimeProtocol != AlertTimeProtocol))
-description: Identifica la comunicación de un protocolo conocido a través de un puerto no estándar basándose en la actividad del periodo de aprendizaje. Esto puede indicar comunicación maliciosa (C2) o exfiltración por parte de atacantes que intentan comunicarse a través de puertos conocidos (22:SSH, 80:HTTP) pero no utilizan las cabeceras de protocolo conocidas para que coincidan con el número de puerto.
+tactics:
+- DefenseEvasion
+- Exfiltration
+- CommandAndControl
+queryFrequency: PT1H
+triggerOperator: GreaterThan
+triggerThreshold: 1
+queryPeriod: P8D
+name: COM0056 - Uso anomalo de puerto en relación con el protocolo
+techniques: []
 

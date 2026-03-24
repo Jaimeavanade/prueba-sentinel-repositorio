@@ -1,12 +1,5 @@
-queryFrequency: PT1H
-tactics:
-- CommandAndControl
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/a9ded0b4-a8b8-4121-a04d-705b8e51f427')]"
-enabled: true
 description: This query maps any IP indicators of compromise (IOCs) from threat intelligence (TI), by searching for matches in AzureActivity.
-severity: Medium
-queryPeriod: P14D
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/a9ded0b4-a8b8-4121-a04d-705b8e51f427')]"
 query: |
   let dt_lookBack = 1h; // Look back 1 hour for AzureActivity logs
   let ioc_lookBack = 14d; // Look back 14 days for threat intelligence indicators
@@ -47,8 +40,15 @@ query: |
   | extend Name = iif(Caller has '@', tostring(split(Caller,'@',0)[0]), "")
   | extend UPNSuffix = iif(Caller has '@', tostring(split(Caller,'@',1)[0]), "")
   | extend AadUserId = iif(Caller !has '@', tostring(Caller), "")
+queryFrequency: PT1H
+severity: Medium
+queryPeriod: P14D
+name: '[TEST]TI Map IP Entity to AzureActivity'
+triggerOperator: GreaterThan
+enabled: true
+triggerThreshold: 0
 techniques:
 - T1071
-name: '[TEST]TI Map IP Entity to AzureActivity'
-triggerThreshold: 0
+tactics:
+- CommandAndControl
 

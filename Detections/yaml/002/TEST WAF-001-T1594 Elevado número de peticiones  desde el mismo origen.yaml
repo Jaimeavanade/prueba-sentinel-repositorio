@@ -1,18 +1,18 @@
-queryFrequency: PT5H
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/33e473e5-27dd-447b-a237-34b49acb3cd8')]"
-enabled: true
 description: ""
-severity: Medium
-queryPeriod: PT5H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/33e473e5-27dd-447b-a237-34b49acb3cd8')]"
 query: |-
   let Umbral = 1000;
   AzureDiagnostics
   | where httpMethod_s == "GET"
   | summarize Peticiones = count() by socketIp_s, requestUri_s
   | where Peticiones > Umbral
-techniques: []
+queryFrequency: PT5H
+severity: Medium
+queryPeriod: PT5H
 name: '[TEST] WAF-001-T1594 Elevado número de peticiones  desde el mismo origen'
+triggerOperator: GreaterThan
+enabled: true
 triggerThreshold: 0
+techniques: []
+tactics: []
 

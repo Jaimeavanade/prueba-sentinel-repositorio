@@ -1,16 +1,7 @@
-queryFrequency: PT5H
 severity: Medium
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/5a80964f-b040-462d-be37-cb244bc71db8')]"
-queryPeriod: P1D
-triggerOperator: GreaterThan
-tactics:
-- InitialAccess
-- DefenseEvasion
-- Persistence
-techniques: []
+description: Identificar ataques que intentan eludir las reglas de seguridad del WAF mediante codificación  de caracteres o manipulación de peticiones.
 enabled: true
-name: CNC0012 - Intentos de evasion de reglas del WAF
-triggerThreshold: 1
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/5a80964f-b040-462d-be37-cb244bc71db8')]"
 query: |+
   let LookbackHours = 1;
   let MinRequests = 20;          // Ajusta según ruido
@@ -49,5 +40,14 @@ query: |+
       LastSeen
   | order by TotalRequests desc
 
-description: Identificar ataques que intentan eludir las reglas de seguridad del WAF mediante codificación  de caracteres o manipulación de peticiones.
+tactics:
+- InitialAccess
+- DefenseEvasion
+- Persistence
+queryFrequency: PT5H
+triggerOperator: GreaterThan
+triggerThreshold: 1
+queryPeriod: P1D
+name: CNC0012 - Intentos de evasion de reglas del WAF
+techniques: []
 

@@ -1,15 +1,10 @@
-queryFrequency: PT5M
 severity: High
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/0e6d9a6e-225d-4561-83c7-c935c89b8972')]"
-queryPeriod: PT1H
-triggerOperator: GreaterThan
-tactics:
-- CredentialAccess
-- InitialAccess
-techniques: []
+description: |-
+  Este caso de uso tiene como objetivo detectar situaciones en las que un usuario obtiene privilegios elevados mediante una asignación de roles RBAC y los utiliza de forma inmediata para acceder a recursos críticos, lo que puede indicar una configuración incorrecta de permisos, abuso de privilegios o un compromiso de identidad.
+
+  La detección se basa en la correlación temporal entre cambios en roles privilegiados y el uso efectivo de esos privilegios, concretamente el acceso a máquinas virtuales a través de Microsoft Azure Bastion.
 enabled: true
-name: COM0076 - Acceso No Autorizado por Configuración de RBAC Incorrecta
-triggerThreshold: 0
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/0e6d9a6e-225d-4561-83c7-c935c89b8972')]"
 query: |+
   AuditLogs
   | where TimeGenerated > ago(7d)
@@ -30,8 +25,13 @@ query: |+
   | project AssignmentTime, AccessTime, TargetUser, Role, Actor, ClientIpAddress, TargetVMIPAddress, Protocol
   | order by AccessTime desc
 
-description: |-
-  Este caso de uso tiene como objetivo detectar situaciones en las que un usuario obtiene privilegios elevados mediante una asignación de roles RBAC y los utiliza de forma inmediata para acceder a recursos críticos, lo que puede indicar una configuración incorrecta de permisos, abuso de privilegios o un compromiso de identidad.
-
-  La detección se basa en la correlación temporal entre cambios en roles privilegiados y el uso efectivo de esos privilegios, concretamente el acceso a máquinas virtuales a través de Microsoft Azure Bastion.
+tactics:
+- CredentialAccess
+- InitialAccess
+queryFrequency: PT5M
+triggerOperator: GreaterThan
+triggerThreshold: 0
+queryPeriod: PT1H
+name: COM0076 - Acceso No Autorizado por Configuración de RBAC Incorrecta
+techniques: []
 

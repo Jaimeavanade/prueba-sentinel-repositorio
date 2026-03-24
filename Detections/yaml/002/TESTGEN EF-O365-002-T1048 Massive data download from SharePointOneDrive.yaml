@@ -1,12 +1,5 @@
-queryFrequency: PT10M
-tactics:
-- Exfiltration
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/49117014-ad9a-47ab-a02f-3a353abb2d19')]"
-enabled: false
 description: Detects when a user performs a massive download of data from OneDrive and/or SharePoint, 1000 files in 10 minutes. Provides data on Country, Client IP, and all downloaded files.
-severity: Low
-queryPeriod: PT10M
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/49117014-ad9a-47ab-a02f-3a353abb2d19')]"
 query: |-
   let watchlist_EF_O365_002_T1048_User = (_GetWatchlist('watchlist_EF_O365_002_T1048_User') 
       | project SearchKey); 
@@ -48,8 +41,15 @@ query: |-
   | extend User = iff(isempty(UserUPN), ActorUsername, UserUPN)
   | project-away UserUPN
   | summarize arg_max(TargetUrl,Operation,HttpUserAgent,SrcGeoCountry,EventCount),ListObject = make_set(SrcFileName) by ActorUsername, SrcIpAddr, ActingAppName
+queryFrequency: PT10M
+severity: Low
+queryPeriod: PT10M
+name: '[TEST][GEN] EF-O365-002-T1048 Massive data download from SharePoint/OneDrive'
+triggerOperator: GreaterThan
+enabled: false
+triggerThreshold: 0
 techniques:
 - T1048
-name: '[TEST][GEN] EF-O365-002-T1048 Massive data download from SharePoint/OneDrive'
-triggerThreshold: 0
+tactics:
+- Exfiltration
 

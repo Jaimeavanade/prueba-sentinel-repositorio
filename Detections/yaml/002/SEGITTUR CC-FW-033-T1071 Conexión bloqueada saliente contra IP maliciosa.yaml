@@ -1,11 +1,5 @@
-queryFrequency: PT10M
-tactics: []
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3416efba-0271-4225-87de-3a1c5bb559d9')]"
-enabled: true
 description: CC-FW-033-T1071 Conexión bloqueada saliente contra IP maliciosa
-severity: Low
-queryPeriod: PT1H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3416efba-0271-4225-87de-3a1c5bb559d9')]"
 query: |+
   AzureDiagnostics
   | where ResourceType == "AZUREFIREWALLS"
@@ -13,7 +7,13 @@ query: |+
   | where Action_s != "Alert"
   | summarize startTime=min(TimeGenerated), endTime=max(TimeGenerated), EventCount = count() by SourceIP, DestinationIp_s, ThreatDescription_s, Action_s
 
-techniques: []
+queryFrequency: PT10M
+severity: Low
+queryPeriod: PT1H
 name: '[SEGITTUR] CC-FW-033-T1071 Conexión bloqueada saliente contra IP maliciosa'
+triggerOperator: GreaterThan
+enabled: true
 triggerThreshold: 0
+techniques: []
+tactics: []
 

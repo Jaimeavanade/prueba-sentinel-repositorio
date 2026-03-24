@@ -1,12 +1,5 @@
-queryFrequency: PT1H
-tactics:
-- Persistence
-triggerOperator: GreaterThan
-id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/c46366c5-897a-41a5-b462-49ff474f0897')]"
-enabled: true
 description: Detecta miembro añadido a un grupo sensible definido en watchlist.
-severity: Low
-queryPeriod: PT1H
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/c46366c5-897a-41a5-b462-49ff474f0897')]"
 query: |-
   let watchlist_PR_CLD_031_032_Group = (_GetWatchlist("watchlist_PR_CLD_031_032_Group") | project SearchKey);
   AuditLogs
@@ -20,8 +13,15 @@ query: |-
   | extend ActorUsername = tostring(InitiatedBy.user.userPrincipalName)
   | where isnotempty(ActorUsername)
   | project TimeGenerated, TargetUsername = AddUser, TargetUserScopeId = AddUserId, GroupName, ActorUsername
+queryFrequency: PT1H
+severity: Low
+queryPeriod: PT1H
+name: '[TEST] PR-CLD-032-T1078.004 Miembro añadido a grupo sensible'
+triggerOperator: GreaterThan
+enabled: true
+triggerThreshold: 0
 techniques:
 - T1078
-name: '[TEST] PR-CLD-032-T1078.004 Miembro añadido a grupo sensible'
-triggerThreshold: 0
+tactics:
+- Persistence
 
