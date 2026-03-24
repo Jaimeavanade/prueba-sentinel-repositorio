@@ -1,0 +1,15 @@
+queryFrequency: PT1H
+tactics:
+- InitialAccess
+triggerOperator: GreaterThan
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/85e341d8-0d47-4646-b503-d398573a72ff')]"
+enabled: true
+description: Monitorización de los inicios de sesión en riesgo en AAD.
+severity: Informational
+queryPeriod: PT1H
+query: "AADUserRiskEvents\r\n| where OperationName == \"User Risk Detection\"\r\n| where RiskLevel != \"low\"\r\n| where Activity == \"signin\"\r\n| where RiskState == \"atRisk\"\r\n| project TimeGenerated, UserDisplayName, UserPrincipalName, RiskState, Activity, IpAddress, Location, DetectionTimingType, RiskEventType "
+techniques:
+- T1133
+name: '[TEST] SigIn in Risk in AAD'
+triggerThreshold: 0
+

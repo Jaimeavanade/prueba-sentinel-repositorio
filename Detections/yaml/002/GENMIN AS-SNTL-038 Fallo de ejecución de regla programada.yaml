@@ -1,0 +1,47 @@
+queryFrequency: P1D
+tactics: []
+triggerOperator: GreaterThan
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/996af738-2459-4979-a709-3f40c8911790')]"
+enabled: true
+description: Detecta fallos a la hora de ejecutar reglas del tipo scheduled.
+severity: Low
+queryPeriod: P1D
+query: |-
+  let failures=SentinelHealth
+  | where TimeGenerated >= ago(1d)
+  | where OperationName == "Scheduled analytics rule run"
+  | where Status == "Failure"
+  | project
+      TimeGenerated,
+      Object = SentinelResourceName,
+      EventResult = Status,
+      EventMessage = Description
+  | summarize FirstFailure = min(TimeGenerated), LastFailure = max(TimeGenerated),EventCount = count() by Object //, EventResults = make_set(EventResult), EventMessages = make_set(EventMessage) by Object
+  | where EventCount >= 2
+  | project-away EventCount;
+  let tmp = SentinelHealth
+  | where TimeGenerated >= ago(1d)
+  | where OperationName == "Scheduled analytics rule run"
+  | where Status == "Success"
+  | project
+      SuccessTime = TimeGenerated,
+      Object = SentinelResourceName
+  | join kind=inner (failures) on Object
+  | where SuccessTime between (FirstFailure .. LastFailure)
+  | project-away Object1;
+  SentinelHealth
+  | where TimeGenerated >= ago(1d)
+  | where OperationName == "Scheduled analytics rule run"
+  | where Status == "Failure"
+  | project
+      TimeGenerated,
+      Object = SentinelResourceName,
+      EventResult = Status,
+      EventMessage = Description
+  | summarize FirstFailure = min(TimeGenerated), LastFailure = max(TimeGenerated),EventCount = count(), EventResults = make_set(EventResult), EventMessages = make_set(EventMessage) by Object
+  | where EventCount >= 2
+  | join kind=leftanti (tmp) on Object, FirstFailure, LastFailure
+techniques: []
+name: '[GEN][MIN] AS-SNTL-038 Fallo de ejecución de regla programada'
+triggerThreshold: 0
+

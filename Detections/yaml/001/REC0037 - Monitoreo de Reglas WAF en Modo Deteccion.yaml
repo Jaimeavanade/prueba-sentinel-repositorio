@@ -1,0 +1,33 @@
+queryFrequency: PT5M
+severity: Medium
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/537e12f2-d5a8-44ae-8edf-4af79d30afe4')]"
+queryPeriod: PT1H
+triggerOperator: GreaterThan
+tactics:
+- InitialAccess
+- Execution
+- DefenseEvasion
+techniques: []
+enabled: true
+name: REC0037 - Monitoreo de Reglas WAF en Modo Deteccion
+triggerThreshold: 0
+query: |-
+  AzureDiagnostics
+  | where ResourceType == "APPLICATIONGATEWAYS"
+  | where Category == "ApplicationGatewayFirewallLog"
+  | where action_s == "Detected"  // Solo eventos en modo detección
+  | extend RuleId = tostring(parse_json(Message).ruleId)
+  | extend RuleGroup = tostring(parse_json(Message).ruleGroup)
+  | extend RuleName = tostring(parse_json(Message).details[0].message)
+  | where RuleGroup in ("OWASP_3.2", "Microsoft_BotManagerRuleSet_0.1")  // Filtrar por reglas relevantes
+  | where RuleGroup contains "KnownBadBots"
+  | where ruleId_s startswith "91"  // Filtra solo reglas que comienzan con "91" 
+  | where ruleId_s startswith "92"  // Filtra solo reglas que comienzan con "92" 
+  | where ruleId_s startswith "93"  // Filtra solo reglas que comienzan con "93" 
+  | where ruleId_s startswith "94"  // Filtra solo reglas que comienzan con "94" 
+  | where ruleId_s startswith "20"  // Filtra solo reglas que comienzan con "20" 
+  | where ruleId_s startswith "Known-CVEs"  // Filtra solo reglas que comienzan con "Known-CVEs" 
+  | summarize Count=count(), UniqueIPs=dcount(clientIp_s) by RuleName, RuleGroup, bin(TimeGenerated, 5m)
+  | order by Count desc
+description: Identificar intentos de explotación de vulnerabilidades web detectados por el WAF de Azure Application Gateway basado en el conjunto de reglas OWASP 3.2 y Microsoft_BotManagerRuleSet_0.1.
+

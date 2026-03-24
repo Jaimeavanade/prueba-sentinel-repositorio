@@ -1,0 +1,21 @@
+queryFrequency: PT10M
+tactics: []
+triggerOperator: GreaterThan
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/d38c1688-3759-44fd-86dc-3ac876345d00')]"
+enabled: true
+description: Deteccion multiples errores 500,502,503,504
+severity: Medium
+queryPeriod: PT1H
+query: |-
+  let threshold = 30; 
+  let timeRange = 10m;
+  AzureDiagnostics
+  | where ResourceType in ("FRONTDOORS", "PROFILES")
+  | where httpStatusCode_d in (500,502,503,504)
+  | where TimeGenerated > ago(timeRange)
+  | summarize Message=make_set(Message),startTime=min(TimeGenerated),endTime=max(TimeGenerated),EventCount = count() by httpStatusCode_d,clientIp_s,OperationName,probeUrl_s 
+  | where EventCount>=threshold
+techniques: []
+name: '[SEGITTUR] DS-WAF-002-T1083 Detectados multiples errores 500'
+triggerThreshold: 10
+

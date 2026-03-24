@@ -1,0 +1,45 @@
+queryFrequency: PT1H
+severity: Medium
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/f2e2b17f-7dc8-4bc2-a997-240758e17337')]"
+queryPeriod: PT5H
+triggerOperator: GreaterThan
+tactics:
+- CredentialAccess
+techniques:
+- T1110
+enabled: true
+name: DEL0047 - Deteccion de intentos de cracking de contraseñas en Entra ID
+triggerThreshold: 5
+query: |
+  let s_threshold = 30;
+  let l_threshold = 3;
+  let aadFunc = (tableName:string){
+  table(tableName)
+  | where OperationName =~ "Sign-in activity"
+  // Error codes that we want to look at as they are related to the use of incorrect password.
+  | where ResultType in ("50126", "50053" , "50055", "50056")
+  | extend DeviceDetail = todynamic(DeviceDetail), Status = todynamic(DeviceDetail), LocationDetails = todynamic(LocationDetails)
+  | extend OS = DeviceDetail.operatingSystem, Browser = DeviceDetail.browser
+  | extend StatusCode = tostring(Status.errorCode), StatusDetails = tostring(Status.additionalDetails)
+  | extend LocationString = strcat(tostring(LocationDetails.countryOrRegion), "/", tostring(LocationDetails.state), "/", tostring(LocationDetails.city))
+  | summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), LocationCount=dcount(LocationString), Location = make_set(LocationString,100),
+  IPAddress = make_set(IPAddress,100), IPAddressCount = dcount(IPAddress), AppDisplayName = make_set(AppDisplayName,100), ResultDescription = make_set(ResultDescription,50),
+  Browser = make_set(Browser,20), OS = make_set(OS,20), SigninCount = count() by UserPrincipalName, Type
+  // Setting a generic threshold - Can be different for different environment
+  | where SigninCount > s_threshold and LocationCount >= l_threshold
+  | extend Location = tostring(Location), IPAddress = tostring(IPAddress), AppDisplayName = tostring(AppDisplayName), ResultDescription = tostring(ResultDescription), Browser = tostring(Browser), OS = tostring(OS)
+  | extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])};
+  let aadSignin = aadFunc("SigninLogs");
+  let aadNonInt = aadFunc("AADNonInteractiveUserSignInLogs");
+  union isfuzzy=true aadSignin, aadNonInt
+description: |-
+  Identifica intentos distribuidos de descifrado de contraseñas a partir de los registros de inicio de sesión de Microsoft Entra ID.
+  La consulta busca un número inusualmente alto de intentos fallidos de contraseña procedentes de múltiples ubicaciones para una cuenta de usuario.
+
+  Referencias: https://docs.microsoft.com/azure/active-directory/reports-monitoring/reference-sign-ins-error-codes 
+
+  50053 La cuenta está bloqueada porque el usuario ha intentado iniciar sesión demasiadas veces con un ID de usuario o contraseña incorrectos.
+  50055 Contraseña no válida, ha introducido una contraseña caducada.
+  50056 Contraseña inválida o nula, la contraseña no existe en el almacén para este usuario.
+  50126 Nombre de usuario o contraseña no válidos, o nombre de usuario o contraseña no válidos en las instalaciones.
+

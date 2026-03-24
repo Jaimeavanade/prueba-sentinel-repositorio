@@ -1,0 +1,24 @@
+queryFrequency: PT10M
+severity: Low
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3f7e2507-65bd-4491-8249-461e50268ec8')]"
+queryPeriod: PT1H
+triggerOperator: GreaterThan
+tactics:
+- Reconnaissance
+- Discovery
+techniques: []
+enabled: true
+name: REC0023 - Actividad de Scraping detectada y bloqueada por el WAF
+triggerThreshold: 50
+query: |-
+  AzureDiagnostics
+  | where Category == "ApplicationGatewayAccessLog"
+  | where httpStatus_d == 403 or httpStatus_d == 429 // Acceso bloqueado o demasiadas solicitudes // añadir el 404 también
+  | where userAgent_s !in ("Bingbot", "Googlebot", "Facebookbot") // Excluir bots legítimos 
+  | where userAgent_s contains "Bot"
+  | extend AttackingIP = clientIP_s, Port = clientPort_d, httpMethod = httpMethod_s, httpVersion=httpVersion_s, URL = originalRequestUriWithArgs_s, UserAgent = userAgent_s, InstaceId = instanceId_s, RuleName = ruleName_s, RequestQuery = requestQuery_s, ErrorInfo = error_info_s, OriginalHost = originalHost_s
+  | summarize RequestCount = count() by AttackingIP, Port, httpMethod,httpVersion, URL, UserAgent,RuleName,RequestQuery,ErrorInfo, OriginalHost, bin(TimeGenerated, 10m)
+  | where RequestCount > 50  // Más de 50 solicitudes en 10 minutos
+  | order by RequestCount desc
+description: Bloquear tráfico de bots que intentan extraer datos, consumir recursos o explotar vulnerabilidades.
+

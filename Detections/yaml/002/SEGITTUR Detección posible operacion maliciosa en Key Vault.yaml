@@ -1,0 +1,38 @@
+queryFrequency: PT1H
+tactics: []
+triggerOperator: GreaterThan
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/a30ee796-7294-4bcc-ab61-caaa981d2afe')]"
+enabled: true
+description: '[SEGITTUR] Detección posible operación maliciosa en Key Vault'
+severity: Medium
+queryPeriod: PT3H
+query: |
+  let operationlist = dynamic(
+      ["VaultDelete", "KeyDelete", "SecretDelete", "SecretPurge", "KeyPurge", "SecretBackup", "KeyBackup", "SecretListDeleted", "CertificateCreate", "CertificatePurge"]);
+  AzureDiagnostics
+  | where ResourceType == "VAULTS" and ResultType == "Success" 
+  | where OperationName in (operationlist)
+  | extend
+      JoinIP = tostring(split(CallerIPAddress, ":")[0]),
+      User = coalesce(identity_claim_unique_name_s, identity_claim_upn_s)
+  | join kind=leftouter (
+      DeviceNetworkInfo
+      | mv-expand IPAddresses
+      | extend JoinIP = tostring(IPAddresses.IPAddress)
+      | where isnotempty(JoinIP)
+      | project JoinIP, DeviceName
+  ) on JoinIP
+  | project
+      TimeGenerated,
+      OperationName,
+      IpAddress=JoinIP,
+      User,
+      DeviceName,
+      KeyVaultName = Resource,
+      KeyVaultTarget = id_s,
+      ResourceGroup,
+      SubscriptionId
+techniques: []
+name: '[SEGITTUR] Detección posible operacion maliciosa en Key Vault'
+triggerThreshold: 0
+

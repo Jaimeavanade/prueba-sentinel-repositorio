@@ -1,0 +1,22 @@
+queryFrequency: PT10M
+tactics: []
+triggerOperator: GreaterThan
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/cc953818-931a-47ce-8cbc-1dc8e3a430a0')]"
+enabled: true
+description: Detección de trafico permitido en waf por reglas
+severity: Medium
+queryPeriod: PT1H
+query: |+
+  let timeRange = 10m;
+  AzureDiagnostics
+  | where TimeGenerated > ago(timeRange)
+  | where ResourceType in ("FRONTDOORS", "PROFILES")
+  | where action_s == "Allow"
+  | where isnotempty(clientIP_s)
+  | where policyMode_s <> "prevention"
+  | summarize by clientIP_s, requestUri_s, ruleName_s
+
+techniques: []
+name: '[TEST][SEGITTUR] DS-WAF-005 Trafico permitido'
+triggerThreshold: 0
+

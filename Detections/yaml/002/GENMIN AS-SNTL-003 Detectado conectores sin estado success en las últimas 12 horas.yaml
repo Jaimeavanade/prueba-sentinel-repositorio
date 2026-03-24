@@ -1,0 +1,32 @@
+queryFrequency: PT2H
+tactics: []
+triggerOperator: GreaterThan
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/bff7e44b-9b2e-4ac5-8954-cc65dbb47765')]"
+enabled: true
+description: Detecta si algun conector ha fallado en las ultimas 12 horas
+severity: Medium
+queryPeriod: PT2H
+query: |-
+  let lastestStatus = SentinelHealth
+  | where TimeGenerated > ago(12h)
+  | where OperationName == 'Data fetch status change'
+  | where Status in ('Success', 'Failure')
+  | parse SentinelResourceId with * '/dataConnectors/' Friendly_name
+  | project TimeGenerated, SentinelResourceName, SentinelResourceId, Friendly_name, LastStatus = Status
+  | summarize TimeGenerated = arg_max(TimeGenerated,*) by SentinelResourceName, SentinelResourceId, Friendly_name;
+  let nextToLastestStatus = SentinelHealth
+  | where TimeGenerated > ago(12h)
+  | where OperationName == 'Data fetch status change'
+  | where Status in ('Success', 'Failure')
+  | parse SentinelResourceId with * '/dataConnectors/' Friendly_name
+  | join kind = leftanti (lastestStatus) on SentinelResourceName, SentinelResourceId, TimeGenerated
+  | project TimeGenerated, SentinelResourceName, SentinelResourceId, Friendly_name, NextToLastStatus = Status
+  | summarize TimeGenerated = arg_max(TimeGenerated,*) by SentinelResourceName, SentinelResourceId, Friendly_name;
+  lastestStatus
+  | join kind=inner (nextToLastestStatus) on SentinelResourceName, SentinelResourceId
+  | where NextToLastStatus == 'Success' and LastStatus == 'Failure'
+  | project TimeGenerated, Object = Friendly_name, ObjectType = SentinelResourceId, EventEndTime = NextToLastStatus
+techniques: []
+name: '[GEN][MIN] AS-SNTL-003 Detectado conectores sin estado success en las últimas 12 horas'
+triggerThreshold: 0
+

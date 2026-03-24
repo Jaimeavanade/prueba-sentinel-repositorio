@@ -1,0 +1,63 @@
+queryFrequency: PT1H
+severity: Medium
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/956cbc7e-ccb8-4f67-b927-281fa1a87890')]"
+queryPeriod: PT25H
+triggerOperator: GreaterThan
+tactics:
+- InitialAccess
+- Exfiltration
+- CommandAndControl
+techniques: []
+enabled: true
+name: EXF0008 - Monitoreo de Picos Anomalos en Denegaciones de Acceso desde una IP de Origen
+triggerThreshold: 15
+query: |+
+  let LearningPeriod = 1d;
+  let RunTime = 1h;
+  let StartLearningPeriod = LearningPeriod + RunTime;
+  let EndRunTime = RunTime - 1h;
+  let BinTime = 1h;
+  let NumOfStdsThreshold = 3;
+  let MinThreshold = 5.0;
+  let MinLearningBuckets = 5;
+  let TrafficLogs = (union isfuzzy=true
+      (AzureDiagnostics
+      | where OperationName == "AzureFirewallApplicationRuleLog" or OperationName == "AzureFirewallNetworkRuleLog" 
+      | parse msg_s with * "from " SourceIp ":" SourcePort:int " to " Fqdn ":" DestinationPort:int ". " * "Action: " Action "." *
+      | where Action == "Deny"
+      | where isnotempty(Fqdn) and isnotempty(SourceIp)),
+      (AZFWNetworkRule
+      | extend Fqdn = DestinationIp
+      | where Action == "Deny"
+      | where isnotempty(Fqdn) and isnotempty(SourceIp)),
+      (AZFWFlowTrace
+      | extend Fqdn = DestinationIp
+      | where Action == "Deny"
+      | where isnotempty(Fqdn) and isnotempty(SourceIp)),
+      (AZFWIdpsSignature
+      | extend Fqdn = DestinationIp
+      | where Action == "Deny"
+      | where isnotempty(Fqdn) and isnotempty(SourceIp)),
+      (AZFWApplicationRule
+      | where Action == "Deny"
+      | where isnotempty(Fqdn) and isnotempty(SourceIp))
+  );
+  let LearningSrcIpDenyRate = (TrafficLogs
+  | where TimeGenerated between (ago(StartLearningPeriod) .. ago(RunTime))
+  | summarize count() by SourceIp, bin(TimeGenerated, BinTime), Fqdn
+  | summarize LearningTimeSrcIpDenyRateAvg = avg(count_), LearningTimeSrcIpDenyRateStd = stdev(count_), LearningTimeBuckets = count() by SourceIp, Fqdn
+  | where LearningTimeBuckets > MinLearningBuckets);
+  let AlertTimeSrcIpDenyRate = (TrafficLogs
+  | where TimeGenerated between (ago(RunTime) .. ago(EndRunTime))
+  | summarize AlertTimeSrcIpDenyRateCount = count() by SourceIp);
+  AlertTimeSrcIpDenyRate
+  | join kind=leftouter (LearningSrcIpDenyRate) on SourceIp
+  // Aquí excluimos las IP 10.x 
+  | where SourceIp !startswith "10."
+  //| where SourceIp !startswith "10.0" and SourceIp !startswith "10.30"
+  | extend LearningThreshold = max_of(LearningTimeSrcIpDenyRateAvg + NumOfStdsThreshold * LearningTimeSrcIpDenyRateStd, MinThreshold)
+  | where AlertTimeSrcIpDenyRateCount > LearningThreshold
+  | project-away SourceIp1, LearningTimeSrcIpDenyRateAvg, LearningTimeSrcIpDenyRateStd
+
+description: Identifica una tasa de denegación anormal para una IP de origen específica a una IP de destino basada en la media normal y la desviación estándar aprendidas durante un periodo configurado. Esto puede indicar una posible exfiltración, acceso inicial o C2, donde el atacante intenta explotar la misma vulnerabilidad en máquinas de la organización, pero está siendo bloqueado por las reglas del cortafuegos.
+

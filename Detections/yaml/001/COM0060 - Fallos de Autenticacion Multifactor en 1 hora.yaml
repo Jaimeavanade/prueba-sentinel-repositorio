@@ -1,0 +1,24 @@
+queryFrequency: PT1H
+severity: Medium
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/410f6a71-a36b-4da2-9438-a093368c4e33')]"
+queryPeriod: PT5H
+triggerOperator: GreaterThan
+tactics:
+- CredentialAccess
+techniques:
+- T1621
+enabled: true
+name: COM0060 - Fallos de Autenticacion Multifactor en 1 hora
+triggerThreshold: 0
+query: |
+  // Signin Locations 
+  // Failed and successful sig ins by source location. 
+  SigninLogs
+  //| summarize Successful=countif(ResultType==0), Failed=countif(ResultType!=0) by Location
+  | where NetworkLocationDetails !contains "network"
+  | where Status contains "failure"
+  | where ResultDescription contains "required"
+  | where ConditionalAccessStatus contains "failure"
+  | summarize loginfailures =count() by UserDisplayName, IPAddress
+description: Comprobación de fallos MFA desde IP's externas > 3 por hora
+

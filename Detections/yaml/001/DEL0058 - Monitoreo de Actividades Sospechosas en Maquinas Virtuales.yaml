@@ -1,0 +1,38 @@
+queryFrequency: PT5H
+severity: Medium
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/2578b0e6-8281-4670-985a-eeb17b8184c6')]"
+queryPeriod: PT5H
+triggerOperator: GreaterThan
+tactics:
+- InitialAccess
+- CredentialAccess
+techniques: []
+enabled: false
+name: DEL0058 - Monitoreo de Actividades Sospechosas en Maquinas Virtuales
+triggerThreshold: 0
+query: |
+  MicrosoftAzureBastionAuditLogs
+  //| where TimeGenerated > ago(5m)
+  | extend User = coalesce(UserEmail, UserName)
+  | extend Hour = datetime_part("hour", TimeGenerated)
+  | where OperationName has "Failed" or isnull(SessionEndTime) or Duration > 3600 or Hour < 8 or Hour > 18 // La sesión no tiene registrada una hora de finalización, dura más de 1 hora o se encuentra fuera del horario laboral.
+  | where ClientIpAddress !startswith "10." and ClientIpAddress !startswith "192.168" // Para conexiones desde direcciones IP no corporativas
+  //| where datetime_part("hour", TimeGenerated) < 8 or datetime_part("hour", TimeGenerated) > 19 // Para conexiones fuera del horario laboral. 
+  | extend User = coalesce(UserEmail, UserName)
+  | project
+      TimeGenerated,
+      OperationName,
+      User,
+      ClientIpAddress,
+      Protocol,
+      TargetVMIPAddress,
+      Duration,
+      Message
+  | order by TimeGenerated desc
+description: |-
+  Este caso de uso tiene como objetivo detectar actividades potencialmente sospechosas en máquinas virtuales (VMs) accedidas mediante Microsoft Azure Bastion, enfocándose en patrones de uso anómalos relacionados con el origen de la conexión y el horario de acceso.
+
+  La detección se centra en accesos realizados desde direcciones IP no corporativas y fuera del horario laboral, lo que puede indicar uso indebido de credenciales, accesos no autorizados o actividades administrativas no planificadas.
+
+  La búsqueda se ejecutará cada 5 minutos teniendo en cuenta la última hora.
+

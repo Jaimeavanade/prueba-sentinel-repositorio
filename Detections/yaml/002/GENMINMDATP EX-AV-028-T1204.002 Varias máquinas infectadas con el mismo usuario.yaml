@@ -1,0 +1,43 @@
+queryFrequency: PT1H
+tactics:
+- Execution
+triggerOperator: GreaterThan
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/5fc4e6c1-d5d8-4ad5-96bd-5b6c134f9b4d')]"
+enabled: true
+description: Se detectan varias alertas con el mismo usuario. Configurado para MDATP.
+severity: High
+queryPeriod: PT1H
+query: |-
+  //Excluir alerta en watchlist
+  let watchlist_EX_AV_028_T1204_Alert = (_GetWatchlist('watchlist_EX_AV_028_T1204.002_Alert') 
+      | project SearchKey);
+  SecurityAlert
+  | where ProviderName == 'MDATP'
+  | where Status == 'New'
+  | where AlertName !in (watchlist_EX_AV_028_T1204_Alert)
+  | mv-expand todynamic(Entities)
+  | extend Entitiesparser = parse_json(Entities)
+  | extend Account = iff(Entitiesparser.Type == "account", Entitiesparser.Name, "")
+  | where isnotempty(CompromisedEntity)
+  | where isnotempty(Account)
+  | summarize by tostring(CompromisedEntity), Account
+  | summarize count(), make_set(CompromisedEntity) by Account
+  | where count_ >= 4
+  | join kind=inner (SecurityAlert
+  	| where ProviderName == 'MDATP'
+  	| where Status == 'New'
+  	| mv-expand todynamic(Entities)
+  	| extend Entitiesparser = parse_json(Entities)
+  	| extend Account = iff(Entitiesparser.Type == "account", Entitiesparser.Name, "")
+  	| where isnotempty(CompromisedEntity)
+  	| where isnotempty(Account)
+  	| extend Account = tostring(Account))
+  	on Account
+  | project-away count_, set_CompromisedEntity
+  //| lookup kind=leftouter _GetWatchlist('watchlist_Device_Asset_Inventory') on $left.CompromisedEntity == $right.Host
+  | project TimeGenerated, ActorUsername = Account, EventType = DisplayName, ThreatName = AlertName, ThreatRef = AlertType, DvcHostname = CompromisedEntity, EventMessage = Description, EventVendor = VendorName, EventProduct = ProviderName, EventReportUrl = AlertLink, EventOriginalUid = VendorOriginalId, ConfidenceScore, IsIncident, EventStartTime = StartTime, EventEndTime = EndTime, Entities, DvcAction = Status, Tactics, Techniques, SubTechniques, ExtendedProperties
+techniques:
+- T1204
+name: '[GEN][MIN][MDATP] EX-AV-028-T1204.002 Varias máquinas infectadas con el mismo usuario'
+triggerThreshold: 0
+

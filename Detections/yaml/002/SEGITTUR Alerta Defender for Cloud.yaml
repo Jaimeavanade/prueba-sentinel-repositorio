@@ -1,0 +1,25 @@
+queryFrequency: PT10M
+tactics: []
+triggerOperator: GreaterThan
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/13cba58e-2d7b-46d3-8f24-d6211b6f8066')]"
+enabled: true
+description: '[SEGITTUR] Alerta Defender for Cloud'
+severity: Medium
+queryPeriod: PT1H
+query: |+
+  SecurityAlert
+  | where ProductName == "Azure Security Center"
+  | extend Principal_IP_ = tostring(parse_json(ExtendedProperties).["Principal IP"])
+  | extend Malicious_URL_ = tostring(parse_json(ExtendedProperties).["Malicious URL"])
+  | where Malicious_URL_ !contains "example.com"
+  | summarize
+      Message=make_set(ProviderName),
+      startTime=min(TimeGenerated),
+      endTime=max(TimeGenerated),
+      EventCount = count()
+      by AlertName, Principal_IP_
+
+techniques: []
+name: '[SEGITTUR] Alerta Defender for Cloud'
+triggerThreshold: 0
+

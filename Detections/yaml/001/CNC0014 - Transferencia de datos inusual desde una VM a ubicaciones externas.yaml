@@ -1,0 +1,34 @@
+queryFrequency: PT5M
+severity: High
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/c408b5c0-7b6d-4356-b446-7ccbbe696bf1')]"
+queryPeriod: PT1H
+triggerOperator: GreaterThan
+tactics:
+- CommandAndControl
+techniques: []
+enabled: true
+name: CNC0014 - Transferencia de datos inusual desde una VM a ubicaciones externas
+triggerThreshold: 0
+query: |
+  SecurityAlert
+  | where TimeGenerated > ago(7d)
+  | where AlertName has_any (
+      "Unusual outbound traffic",
+      "Potential data exfiltration",
+      "Suspicious data transfer",
+      "Large volume of outbound data",
+      "Exfiltration to external location",
+      "Data transfer to rare country",
+      "Possible command and control (C2) communication"
+  )
+  or Description has_any ("data exfiltration", "unusual outbound", "external transfer", "exfil", "rare location")
+  | project TimeGenerated, AlertName, AlertSeverity ,Description, CompromisedEntity, ProductName, ProviderName
+  | order by TimeGenerated desc
+description: |-
+  Este caso de uso tiene como objetivo detectar posibles transferencias de datos anómalas o potenciales intentos de exfiltración de información desde máquinas virtuales (VMs) hacia ubicaciones externas.
+
+  La detección se basa en alertas de seguridad generadas por los servicios de protección de Microsoft que identifican patrones sospechosos de tráfico saliente, como volúmenes de datos inusualmente altos y destinos poco habituales.
+
+
+  La búsqueda se ejecutará cada 5 min. teniendo en cuenta la última hora.
+
