@@ -31,9 +31,9 @@ foreach ($rule in $json.resources) {
         continue
     }
 
-    # ✅ displayName como filename
-    # ✅ Mantiene espacios, acentos y guiones
-    # ❌ Elimina SOLO caracteres problemáticos (incluidos [] que rompen PowerShell)
+    # displayName como filename:
+    # - mantiene espacios, acentos y guiones
+    # - elimina SOLO caracteres problemáticos para filesystem / PowerShell
     $safeFileName = (
         $rule.properties.displayName `
             -replace '[\\\/:\*\?"<>\|\[\]]', ''
