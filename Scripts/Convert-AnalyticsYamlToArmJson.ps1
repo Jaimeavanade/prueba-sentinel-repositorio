@@ -12,8 +12,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ---------- Helpers ----------
-
 function Ensure-Module {
   param([string]$Name)
   if (-not (Get-Module -ListAvailable -Name $Name)) {
@@ -24,7 +22,10 @@ function Ensure-Module {
 
 # Lee YAML tanto si es Hashtable como PSCustomObject
 function Get-YamlValue {
-  param($Obj, [string]$Key)
+  param(
+    [Parameter(Mandatory=$true)] $Obj,
+    [Parameter(Mandatory=$true)] [string] $Key
+  )
 
   if ($null -eq $Obj) { return $null }
 
@@ -34,32 +35,38 @@ function Get-YamlValue {
   }
 
   $p = $Obj.PSObject.Properties[$Key]
-  if ($p) { return $p.Value }
+  if ($null -ne $p) { return $p.Value }
   return $null
 }
 
-# GUID determinístico (no cambia entre runs)
-function New-DeterministicGuid {
-  param([Guid]$NamespaceGuid, [string]$Name)
+# GUID determinístico SOLO a partir de string (sin castear nada a Guid)
+# (UUIDv5-like: SHA1 -> 16 bytes -> version/variant)
+function New-DeterministicGuidFromString {
+  param([Parameter(Mandatory=$true)][string]$Name)
 
-  $nsBytes = $NamespaceGuid.ToByteArray()
-  $nameBytes = [System.Text.Encoding]::UTF8.GetBytes($Name)
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($Name)
 
   $sha1 = [System.Security.Cryptography.SHA1]::Create()
-  try { $hash = $sha1.ComputeHash($nsBytes + $nameBytes) }
-  finally { $sha1.Dispose() }
+  try {
+    $hash = $sha1.ComputeHash($bytes)
+  } finally {
+    $sha1.Dispose()
+  }
 
-  $bytes = $hash[0..15]
-  $bytes[6] = ($bytes[6] -band 0x0F) -bor 0x50
-  $bytes[8] = ($bytes[8] -band 0x3F) -bor 0x80
+  $g = $hash[0..15]
 
-  return ([Guid]::new($bytes)).ToString()
+  # version 5
+  $g[6] = ($g[6] -band 0x0F) -bor 0x50
+  # RFC4122 variant
+  $g[8] = ($g[8] -band 0x3F) -bor 0x80
+
+  return ([Guid]::new($g)).ToString()
 }
 
 function Normalize-Operator {
   param([string]$op)
-  if (-not $op) { return $null }
-  switch ($op.ToLower()) {
+  if ([string]::IsNullOrWhiteSpace($op)) { return $null }
+  switch ($op.ToLowerInvariant()) {
     "gt" { "GreaterThan" }
     "ge" { "GreaterThanOrEqual" }
     "lt" { "LessThan" }
@@ -70,13 +77,13 @@ function Normalize-Operator {
   }
 }
 
-function To-Iso8601 {
+function To-Iso8601Duration {
   param([string]$v)
-  if (-not $v) { return $null }
-  if ($v -match '^P') { return $v }
-  if ($v -match '^(\d+)([smhd])$') {
+  if ([string]::IsNullOrWhiteSpace($v)) { return $null }
+  if ($v -match '^P') { return $v } # already ISO8601
+  if ($v -match '^(\d+)\s*([smhd])$') {
     $n = $Matches[1]
-    switch ($Matches[2]) {
+    switch ($Matches[2].ToLowerInvariant()) {
       "s" { return "PT${n}S" }
       "m" { return "PT${n}M" }
       "h" { return "PT${n}H" }
@@ -86,33 +93,58 @@ function To-Iso8601 {
   return $v
 }
 
-# ---------- Start ----------
+# ---------- Main ----------
+Ensure-Module -Name "powershell-yaml"
 
-Ensure-Module powershell-yaml
+if (-not (Test-Path $InputYamlPath)) {
+  throw "InputYamlPath not found: $InputYamlPath"
+}
 
 $yamlRaw = Get-Content $InputYamlPath -Raw
-$yamlObj = ConvertFrom-Yaml $yamlRaw
+$yamlObj = $yamlRaw | ConvertFrom-Yaml
 
-if ($yamlObj -is [System.Collections.IEnumerable] -and $yamlObj.Count -gt 0) {
+# Si viene como lista, cogemos el primero
+if ($yamlObj -is [System.Collections.IEnumerable] -and -not ($yamlObj -is [string]) -and $yamlObj.Count -gt 0) {
   $yaml = $yamlObj[0]
 } else {
   $yaml = $yamlObj
 }
 
+# Campos base (seguros)
 $displayName = Get-YamlValue $yaml "name"
-if (-not $displayName) { $displayName = Get-YamlValue $yaml "displayName" }
-if (-not $displayName) { $displayName = [IO.Path]::GetFileNameWithoutExtension($InputYamlPath) }
+if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = Get-YamlValue $yaml "displayName" }
+if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = [IO.Path]::GetFileNameWithoutExtension($InputYamlPath) }
 
 $kind = Get-YamlValue $yaml "kind"
-if (-not $kind) { $kind = "Scheduled" }
+if ([string]::IsNullOrWhiteSpace($kind)) { $kind = "Scheduled" }  # default
 
+$description = Get-YamlValue $yaml "description"
+$severity    = Get-YamlValue $yaml "severity"
+$query       = Get-YamlValue $yaml "query"
+
+# Operadores / tiempos
+$queryFrequency  = To-Iso8601Duration (Get-YamlValue $yaml "queryFrequency")
+$queryPeriod     = To-Iso8601Duration (Get-YamlValue $yaml "queryPeriod")
+$triggerOperator = Normalize-Operator (Get-YamlValue $yaml "triggerOperator")
+$triggerThreshold = Get-YamlValue $yaml "triggerThreshold"
+
+# Tactics/Techniques (relevantTechniques -> techniques)
+$tactics = Get-YamlValue $yaml "tactics"
+$techniques = Get-YamlValue $yaml "techniques"
+if (-not $techniques) { $techniques = Get-YamlValue $yaml "relevantTechniques" }
+
+# Seed para GUID estable:
+# 1) YAML id (aunque NO sea GUID, lo usamos como string)
+# 2) RuleIdSeed
+# 3) path del YAML
 $seed = Get-YamlValue $yaml "id"
-if (-not $seed) { $seed = $RuleIdSeed }
-if (-not $seed) { $seed = $InputYamlPath }
+if ([string]::IsNullOrWhiteSpace($seed)) { $seed = $RuleIdSeed }
+if ([string]::IsNullOrWhiteSpace($seed)) { $seed = $InputYamlPath }
 
-$namespace = [Guid]"11111111-2222-3333-4444-555555555555"
-$ruleGuid = New-DeterministicGuid $namespace $seed
+# GUID determinístico (siempre válido)
+$ruleGuid = New-DeterministicGuidFromString -Name $seed
 
+# ARM Repositories compatible (sin workspaceName param, sin concat)
 $resource = @{
   type       = "Microsoft.SecurityInsights/alertRules"
   apiVersion = "2023-02-01"
@@ -120,21 +152,34 @@ $resource = @{
   kind       = $kind
   properties = @{
     displayName           = $displayName
-    description           = Get-YamlValue $yaml "description"
-    severity              = Get-YamlValue $yaml "severity"
+    description           = $description
+    severity              = $severity
     enabled               = $true
-    query                 = Get-YamlValue $yaml "query"
-    queryFrequency        = To-Iso8601 (Get-YamlValue $yaml "queryFrequency")
-    queryPeriod           = To-Iso8601 (Get-YamlValue $yaml "queryPeriod")
-    triggerOperator       = Normalize-Operator (Get-YamlValue $yaml "triggerOperator")
-    triggerThreshold      = Get-YamlValue $yaml "triggerThreshold"
-    tactics               = Get-YamlValue $yaml "tactics"
-    techniques            = (Get-YamlValue $yaml "techniques") ?? (Get-YamlValue $yaml "relevantTechniques")
+    query                 = $query
+    queryFrequency        = $queryFrequency
+    queryPeriod           = $queryPeriod
+    triggerOperator       = $triggerOperator
+    triggerThreshold      = $triggerThreshold
+    tactics               = $tactics
+    techniques            = $techniques
 
-    # 🔑 CLAVE PARA REPOSITORIES
+    # REQUIRED by Sentinel Repositories
     alertRuleTemplateName = $ruleGuid
   }
 }
+
+# Opcionales (si existen)
+$incidentConfiguration = Get-YamlValue $yaml "incidentConfiguration"
+if ($incidentConfiguration) { $resource.properties.incidentConfiguration = $incidentConfiguration }
+
+$entityMappings = Get-YamlValue $yaml "entityMappings"
+if ($entityMappings) { $resource.properties.entityMappings = $entityMappings }
+
+$customDetails = Get-YamlValue $yaml "customDetails"
+if ($customDetails) { $resource.properties.customDetails = $customDetails }
+
+$eventGroupingSettings = Get-YamlValue $yaml "eventGroupingSettings"
+if ($eventGroupingSettings) { $resource.properties.eventGroupingSettings = $eventGroupingSettings }
 
 $template = @{
   '$schema'      = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
@@ -143,12 +188,12 @@ $template = @{
   resources      = @($resource)
 }
 
-$outDir = Split-Path $OutputJsonPath -Parent
-if (-not (Test-Path $outDir)) {
+# Crear carpetas y SOBREESCRIBIR siempre
+$outDir = Split-Path -Parent $OutputJsonPath
+if ($outDir -and -not (Test-Path $outDir)) {
   New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 }
 
-# ✅ SIEMPRE SOBREESCRIBE
-$template | ConvertTo-Json -Depth 50 | Out-File $OutputJsonPath -Encoding utf8
+$template | ConvertTo-Json -Depth 80 | Out-File -FilePath $OutputJsonPath -Encoding utf8
 
-Write-Host "✅ OK: $OutputJsonPath ($kind)"
+Write-Host "✅ OK: $OutputJsonPath | kind=$kind | guid=$ruleGuid"
