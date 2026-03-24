@@ -1,0 +1,24 @@
+severity: Low
+name: '[TEST]IA-AD-00X-T1078 Detect Disabled Account Sign-in Attempts by IP Address'
+enabled: true
+triggerOperator: GreaterThan
+query: |-
+  SigninLogs 
+    | where ResultType == "50057" 
+    | where ResultDescription =~ "User account is disabled. The account has been disabled by an administrator." 
+    | summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), numberAccountsTargeted = dcount(UserPrincipalName), 
+    numberApplicationsTargeted = dcount(AppDisplayName), accountSet = make_set(UserPrincipalName, 100), applicationSet=make_set(AppDisplayName, 100), 
+    numberLoginAttempts = count() by IPAddress
+    | extend timestamp = StartTime
+    | order by numberLoginAttempts desc
+    | extend IP_0_Address = IPAddress
+tactics:
+- InitialAccess
+triggerThreshold: 0
+queryFrequency: PT1H
+queryPeriod: PT1H
+techniques:
+- T1078
+description: This use case searches for failed sign-in attempts to disabled accounts summarized by the IP originating IP address.
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/9b30cf78-ae05-4ef1-9917-f01e83b0ae04')]"
+

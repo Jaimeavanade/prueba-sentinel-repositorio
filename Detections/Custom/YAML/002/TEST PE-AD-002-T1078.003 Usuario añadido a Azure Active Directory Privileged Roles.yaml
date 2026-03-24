@@ -1,0 +1,20 @@
+severity: Medium
+name: '[TEST] PE-AD-002-T1078.003 Usuario añadido a Azure Active Directory Privileged Roles'
+enabled: true
+triggerOperator: GreaterThan
+query: "let OperationList = dynamic([\"Add member to role\",\"Add member to role in PIM requested (permanent)\"]);\nlet PrivilegedGroups = dynamic([\"UserAccountAdmins\",\"PrivilegedRoleAdmins\",\"TenantAdmins\"]);\nAuditLogs\n//| where LoggedByService =~ \"Core Directory\"\n| where Category =~ \"RoleManagement\"\n| where OperationName in~ (OperationList)\n| mv-apply TargetResource = TargetResources on \n  (\n      where TargetResource.type =~ \"User\"\n      | extend TargetUserPrincipalName = tostring(TargetResource.userPrincipalName),\n               modProps = TargetResource.modifiedProperties\n  )\n| mv-apply Property = modProps on \n  (\n      where Property.displayName =~ \"Role.WellKnownObjectName\"\n      | extend DisplayName = trim('\"',tostring(Property.displayName)),\n               GroupName = trim('\"',tostring(Property.newValue))\n  )\n| extend InitiatingAppId = InitiatedBy.app.appId\n| extend InitiatingAppName = tostring(InitiatedBy.app.displayName)\n| extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)\n| extend InitiatingAppServicePrincipalName = tostring(InitiatedBy.app.servicePrincipalName)\n| extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)\n| extend InitiatingAadUserId = tostring(InitiatedBy.user.id)\n| extend InitiatingIpAddress = tostring(iff(isnotempty(InitiatedBy.user.ipAddress), InitiatedBy.user.ipAddress, InitiatedBy.app.ipAddress))\n| extend InitiatingUserRoles = InitiatedBy.user.roles\n| where GroupName in~ (PrivilegedGroups)\n// If you don't want to alert for operations from PIM, remove below filtering for MS-PIM.\n| where InitiatingAppName != \"MS-PIM\"\n| project TimeGenerated, AADOperationType, Category, OperationName, AADTenantId, InitiatingUserPrincipalName, InitiatingAadUserId, InitiatingAppId, InitiatingAppName, InitiatingAppServicePrincipalName, InitiatingAppServicePrincipalId, InitiatingIpAddress, DisplayName, GroupName, InitiatingUserRoles, TargetUserPrincipalName\n| extend AccountName = tostring(split(InitiatingUserPrincipalName,'@',0)[0]), AccountUPNSuffix = tostring(split(InitiatingUserPrincipalName,'@',1)[0])\n| extend TargetName = tostring(split(TargetUserPrincipalName,'@',0)[0]), TargetUPNSuffix = tostring(split(TargetUserPrincipalName,'@',1)[0])\n| project TimeGenerated, ActorUsername = AccountName, SrcFQDN = AccountUPNSuffix, ObjectType = Category, EventMessage = DisplayName, GroupName, ActingAppId = InitiatingAppId, ActingAppName = InitiatingAppName, SrcIpAddr = InitiatingIpAddress, SrcAppName = InitiatingAppServicePrincipalName, SrcUsername = InitiatingUserPrincipalName, TargetAppName = TargetName, DstUsername = TargetUserPrincipalName, TargetFQDN = TargetUPNSuffix, ActorUserId = InitiatingAadUserId, TargetAppId = InitiatingAppServicePrincipalId  "
+tactics:
+- Persistence
+- PrivilegeEscalation
+triggerThreshold: 0
+queryFrequency: PT1H
+queryPeriod: PT1H
+techniques:
+- T1098
+- T1078
+description: |-
+  This will alert when a user is added to any of the Privileged Groups.
+  For further information on AuditLogs please see https://docs.microsoft.com/azure/active-directory/reports-monitoring/reference-audit-activities.
+  For Administrator role permissions in Microsoft Entra ID please see https://docs.microsoft.com/azure/active-directory/users-groups-roles/directory-assign-admin-roles
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/7aa02c10-cabb-4b51-9b7d-83a4629b69bf')]"
+

@@ -1,0 +1,53 @@
+name: CNC0012 - Intentos de evasion de reglas del WAF
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/5a80964f-b040-462d-be37-cb244bc71db8')]"
+description: Identificar ataques que intentan eludir las reglas de seguridad del WAF mediante codificación  de caracteres o manipulación de peticiones.
+triggerOperator: GreaterThan
+queryPeriod: P1D
+enabled: true
+queryFrequency: PT5H
+tactics:
+- InitialAccess
+- DefenseEvasion
+- Persistence
+triggerThreshold: 1
+severity: Medium
+query: |+
+  let LookbackHours = 1;
+  let MinRequests = 20;          // Ajusta según ruido
+  AzureDiagnostics
+  | where TimeGenerated >= ago(LookbackHours * 1h)
+  | where Category == "ApplicationGatewayAccessLog"
+  | where httpStatus_d in (400, 403)
+  // Excluir health probes de Azure / tráfico conocido
+  | where userAgent_s !startswith "ApplicationGatewayHealthProbe"
+  | where userAgent_s !startswith "AlwaysOn"
+  // Excluir IPs internas 
+  | where not(ipv4_is_private(clientIP_s))
+  | summarize
+      TotalRequests   = count(),
+      StatusCodes     = make_set(httpStatus_d, 5),           // hasta 5 códigos distintos
+      SampleUrl       = any(originalRequestUriWithArgs_s),   // una URL de ejemplo
+      SampleUserAgent = any(userAgent_s),                    // un UA de ejemplo
+      SamplePorts     = make_set(clientPort_d, 5),           // hasta 5 puertos
+      FirstSeen       = min(TimeGenerated),
+      LastSeen        = max(TimeGenerated)
+      by
+      AttackingIP  = clientIP_s,
+      originalHost_s,
+      bin(TimeGenerated, 1h)
+  | where TotalRequests >= MinRequests
+  | project
+      Fecha = TimeGenerated,
+      AttackingIP,
+      OriginalHost = originalHost_s, // no lo veremos como agrupamos las peticiones por IPs y el host no es el mismo.
+      TotalRequests,
+      StatusCodes,
+      SamplePorts,
+      SampleUrl,
+      SampleUserAgent,
+      FirstSeen,
+      LastSeen
+  | order by TotalRequests desc
+
+techniques: []
+

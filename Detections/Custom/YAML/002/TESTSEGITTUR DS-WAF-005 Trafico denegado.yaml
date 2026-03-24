@@ -1,0 +1,22 @@
+severity: Low
+name: '[TEST][SEGITTUR] DS-WAF-005 Trafico denegado'
+enabled: false
+triggerOperator: GreaterThan
+query: |-
+  let timeRange = 10m;
+  let watchlist_DS_WAF_005 = _GetWatchlist("watchlist_DS_WAF_005");
+  AzureDiagnostics
+  | where TimeGenerated > ago(timeRange)
+  | where ruleName_s !in (watchlist_DS_WAF_005)
+  | where ResourceType in ("FRONTDOORS", "PROFILES")
+  | where action_s == "Block"
+  | where isnotempty( clientIP_s)
+  |summarize by clientIP_s,requestUri_s, ruleName_s
+tactics: []
+triggerThreshold: 20
+queryFrequency: PT10M
+queryPeriod: PT1H
+techniques: []
+description: Detección de trafico denegado en waf por reglas
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/3412992c-15cf-46e1-9f91-529219032215')]"
+

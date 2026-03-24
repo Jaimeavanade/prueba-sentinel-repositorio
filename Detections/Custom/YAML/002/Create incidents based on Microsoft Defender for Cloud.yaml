@@ -1,0 +1,14 @@
+severity: 
+name: Create incidents based on Microsoft Defender for Cloud
+enabled: true
+triggerOperator: 
+query: 
+tactics: 
+triggerThreshold: 
+queryFrequency: 
+queryPeriod: 
+techniques: 
+description: |
+  Create incidents based on all alerts generated in Microsoft Defender for Cloud
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/bac58e0e-c69d-40c2-ab0b-341e39d9ffb1')]"
+

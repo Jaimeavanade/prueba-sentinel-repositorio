@@ -1,0 +1,62 @@
+name: COM0056 - Uso anomalo de puerto en relación con el protocolo
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/9c0a980e-b53e-4d88-acff-f4c3afafa07f')]"
+description: Identifica la comunicación de un protocolo conocido a través de un puerto no estándar basándose en la actividad del periodo de aprendizaje. Esto puede indicar comunicación maliciosa (C2) o exfiltración por parte de atacantes que intentan comunicarse a través de puertos conocidos (22:SSH, 80:HTTP) pero no utilizan las cabeceras de protocolo conocidas para que coincidan con el número de puerto.
+triggerOperator: GreaterThan
+queryPeriod: P8D
+enabled: true
+queryFrequency: PT1H
+tactics:
+- DefenseEvasion
+- Exfiltration
+- CommandAndControl
+triggerThreshold: 1
+severity: Medium
+query: |
+  let LearningPeriod = 7d;
+  let RunTime = 1d;
+  let StartLearningPeriod = LearningPeriod + RunTime;
+  let EndRunTime = RunTime - 1d;
+  let LearningPortToProtocol1 =  (AzureDiagnostics
+  | where OperationName == "AzureFirewallApplicationRuleLog"
+  | where TimeGenerated between (ago(StartLearningPeriod) .. ago(RunTime))
+  | extend msg_s= column_ifexists('msg_s',Message)
+  | parse msg_s with Protocol " request from " SourceIp ":" SourcePort:int " to " Fqdn ":" DestinationPort:int "." *
+  | where isnotempty(DestinationPort)
+  | summarize LearningTimeCount = count() by LearningTimeDstPort = DestinationPort, LearningTimeProtocol = Protocol, SourceIp, Fqdn);
+  let LearningPortToProtocol2 = (AZFWNetworkRule
+  | where TimeGenerated between (ago(StartLearningPeriod) .. ago(RunTime))
+  | where isnotempty(DestinationPort)
+  | extend Fqdn = DestinationIp
+  | summarize LearningTimeCount = count() by LearningTimeDstPort = DestinationPort, LearningTimeProtocol = Protocol, SourceIp, Fqdn);
+  let LearningPortToProtocol3 = (AZFWApplicationRule
+  | where TimeGenerated between (ago(StartLearningPeriod) .. ago(RunTime))
+  | where isnotempty(DestinationPort)
+  | summarize LearningTimeCount = count() by LearningTimeDstPort = DestinationPort, LearningTimeProtocol = Protocol, SourceIp, Fqdn);
+  let AlertTimePortToProtocol1 = (AzureDiagnostics
+  | where TimeGenerated between (ago(RunTime) .. ago(EndRunTime))
+  | where OperationName == "AzureFirewallApplicationRuleLog"
+  | extend msg_s= column_ifexists('msg_s',Message)
+  | parse msg_s with Protocol " request from " SourceIp ":" SourcePort " to " Fqdn ":" DestinationPort:int "." *
+  | where isnotempty(DestinationPort)
+  | summarize AlertTimeCount = count() by AlertTimeDstPort = DestinationPort, AlertTimeProtocol = Protocol);
+  let AlertTimePortToProtocol2 = (AZFWNetworkRule
+  | where TimeGenerated between (ago(RunTime) .. ago(EndRunTime))
+  | where isnotempty(DestinationPort)
+  | extend Fqdn = DestinationIp
+  | summarize AlertTimeCount = count() by AlertTimeDstPort = DestinationPort, AlertTimeProtocol = Protocol);
+  let AlertTimePortToProtocol3 = (AZFWApplicationRule
+  | where TimeGenerated between (ago(RunTime) .. ago(EndRunTime))
+  | where isnotempty(DestinationPort)
+  | summarize AlertTimeCount = count() by AlertTimeDstPort = DestinationPort, AlertTimeProtocol = Protocol);
+  (union isfuzzy=true 
+  (AlertTimePortToProtocol1 
+  | join kind=leftouter (LearningPortToProtocol1) on $left.AlertTimeDstPort == $right.LearningTimeDstPort
+  | where LearningTimeProtocol != AlertTimeProtocol),
+  (AlertTimePortToProtocol2 
+  | join kind=leftouter (LearningPortToProtocol2) on $left.AlertTimeDstPort == $right.LearningTimeDstPort
+  | where LearningTimeProtocol != AlertTimeProtocol),
+  (AlertTimePortToProtocol3 
+  | join kind=leftouter (LearningPortToProtocol3) on $left.AlertTimeDstPort == $right.LearningTimeDstPort
+  | where LearningTimeProtocol != AlertTimeProtocol))
+techniques: []
+

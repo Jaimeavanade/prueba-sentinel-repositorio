@@ -1,0 +1,21 @@
+severity: Medium
+name: '[SEGITTUR] DS-WAF-001-T1083 Detectados multiples errores 400'
+enabled: true
+triggerOperator: GreaterThan
+query: |-
+  let threshold = 30; 
+  let timeRange = 10m;
+  AzureDiagnostics
+  | where ResourceType in ("FRONTDOORS", "PROFILES")
+  | where httpStatusCode_d in (400,401,403,404,405,408)
+  | where TimeGenerated > ago(timeRange)
+  | summarize Message=make_set(Message),startTime=min(TimeGenerated),endTime=max(TimeGenerated),EventCount = count() by httpStatusCode_d,clientIp_s,OperationName,probeUrl_s 
+  | where EventCount>=threshold
+tactics: []
+triggerThreshold: 10
+queryFrequency: PT10M
+queryPeriod: PT1H
+techniques: []
+description: Deteccion multiples errores 400,401,403,404,405,408
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/40359108-97ec-4dd6-b209-3bfed7bf631a')]"
+

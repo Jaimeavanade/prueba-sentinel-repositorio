@@ -1,0 +1,20 @@
+severity: High
+name: '[GEN][MIN] AS-SNTL-004 Superada la ingesta de GB diarios'
+enabled: false
+triggerOperator: GreaterThan
+query: |
+  let watchlist_AS_STNL_004_overquota = toscalar(_GetWatchlist("watchlist__AS_STNL_004_overquota") | project SearchKey);
+  Usage
+  | where TimeGenerated > ago(1d)
+  | where IsBillable == true
+  | summarize TotalVolumeGB = sum(Quantity) / 1024
+  | where TotalVolumeGB > toint(watchlist_AS_STNL_004_overquota)
+  | project-rename SrcBytesGB = TotalVolumeGB
+tactics: []
+triggerThreshold: 0
+queryFrequency: P1D
+queryPeriod: P1D
+techniques: []
+description: 'Detectado ingesta de más de un umbral GB en las ultimas 24h, esto debe indicarse en watchlist: watchlist__AS_STNL_004_overquota, indicando un valor inferior al dailycap configurado en Log Analytics.'
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/91e8e46f-560d-4084-b8af-368e15fc55dc')]"
+

@@ -1,0 +1,14 @@
+name: COM0062 - Intentos de inicio de sesion fallidos detectados
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/d29c5946-1d10-45b1-bbb2-5a388032d7b5')]"
+description: Identifica los inicios de sesión fallidos de usuarios de gran volumen y el resultado debe analizarse para determinar si se trata de un ataque dirigido o simplemente de un error al introducir la contraseña.
+triggerOperator: GreaterThan
+queryPeriod: PT1H
+enabled: true
+queryFrequency: PT5M
+tactics:
+- CredentialAccess
+triggerThreshold: 200
+severity: Low
+query: "SigninLogs\r\n| where ResultType == 50126\r\n| extend Country = tostring(LocationDetails[\"countryOrRegion\"])\r\n| project\r\n    TimeGenerated,\r\n    UserPrincipalName,\r\n    AppDisplayName,\r\n    IPAddress,\r\n    Country,\r\n    AuthenticationDetails,\r\n    DeviceDetail\r\n//| summarize by UserPrincipalName, IPAddress,AuthenticationDetails,Country\r\n| top 5 by UserPrincipalName\r\n| order by UserPrincipalName desc "
+techniques: []
+

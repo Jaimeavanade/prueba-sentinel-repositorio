@@ -1,0 +1,45 @@
+name: REC0028 - Uso de Redes Virtuales Peering sin Restricciones
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8c2cbff9-5d03-479f-b074-08c34e5fa065')]"
+description: |-
+  Este caso de uso detecta configuraciones de VNet Peering potencialmente permisivas que pueden introducir riesgos de exposición o tránsito de tráfico no deseado entre redes virtuales. En concreto, identifica peerings creados o modificados con las siguientes opciones habilitadas simultáneamente:
+
+  allowVirtualNetworkAccess = true
+
+  allowForwardedTraffic = true
+
+  Esta combinación permite conectividad bidireccional ampliada y tránsito de tráfico reenviado, lo que incrementa el riesgo de movimiento lateral entre VNets, rutas no previstas y una expansión del perímetro de confianza.
+
+  Adicionalmente, la detección identifica si el peering remoto está asociado a Azure Bastion, con el objetivo de priorizar la revisión de configuraciones que puedan ampliar indirectamente el acceso administrativo.
+
+  La búsqueda se ejecutará cada 5 minutos teniendo en cuenta la última hora.
+triggerOperator: GreaterThan
+queryPeriod: PT1H
+enabled: true
+queryFrequency: PT5M
+tactics:
+- Discovery
+- Reconnaissance
+triggerThreshold: 0
+severity: High
+query: |-
+  AzureActivity
+  | where TimeGenerated > ago(30d)
+  | where OperationNameValue == "Microsoft.Network / virtualNetworks / virtualNetworkPeerings / write"
+  | extend properties = parse_json(Properties)
+  | extend peeringProps = properties.responseBody.properties
+  | extend allowVNetAccess = tostring(peeringProps.allowVirtualNetworkAccess)
+  | extend allowForwardedTraffic = tostring(peeringProps.allowForwardedTraffic)
+  | extend peeringRemoteVNet = tostring(peeringProps.remoteVirtualNetwork.id)
+  | extend peeredToBastion = iff(peeringRemoteVNet has "Microsoft.Network / bastionHosts", "Yes", "No")
+  | where allowVNetAccess == "true" and allowForwardedTraffic == "true"
+  | project
+      TimeGenerated,
+      ResourceGroup,
+      ResourceId,
+      Caller,
+      peeringRemoteVNet,
+      peeredToBastion,
+      allowVNetAccess,
+      allowForwardedTraffic
+techniques: []
+

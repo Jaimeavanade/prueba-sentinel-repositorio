@@ -1,0 +1,60 @@
+name: COM0063 - Cuentas privilegiadas Picos de Fallos en el inicio de sesion
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/379504e6-2ac9-477c-9c05-bf6c7975e00b')]"
+description: Detecta patrones anómalos en inicios de sesión de Azure AD, tanto interactivos como no interactivos, mediante la detección de anomalías de series temporales. Correlaciona los inicios de sesión de los usuarios con las asignaciones de roles (mediante registros de auditoría) y enriquece el contexto con información de IP, aplicaciones y recursos. Resulta útil para detectar ataques de fuerza bruta, abuso de credenciales y uso anormal de cuentas con privilegios.
+triggerOperator: GreaterThan
+queryPeriod: PT1H
+enabled: true
+queryFrequency: PT5M
+tactics:
+- InitialAccess
+- CredentialAccess
+triggerThreshold: 0
+severity: High
+query: |-
+  let starttime = 14d;
+  let timeframe = 1d;
+  let scorethreshold = 3;
+  let baselinethreshold = 5;
+  // Extraer roles desde AuditLogs (si existen asignaciones)
+  let userRoles = AuditLogs
+  | where TimeGenerated > ago(starttime)
+  | where OperationName has "Add member to role" or OperationName has "Add user to role"
+  | extend AccountUPN = tolower(tostring(TargetResources[0].userPrincipalName))
+  | extend RoleName = tostring(TargetResources[0].displayName)
+  | summarize Roles = make_list(RoleName) by AccountUPN;
+  // Función para enriquecer logs con roles
+  let aadFunc = (tableName:string) {
+       table(tableName)
+       | where TimeGenerated between (startofday(ago(starttime))..startofday(now()))
+       | where ResultType != 0
+       | extend UserPrincipalName = tolower(UserPrincipalName)
+       | join kind=leftouter (userRoles) on $left.UserPrincipalName == $right.AccountUPN
+       | extend timestamp = TimeGenerated, AccountCustomEntity = UserPrincipalName, Roles = tostring(Roles)
+  };
+  // Ejecutar la función con ambas tablas
+  let aadSignin = aadFunc("SigninLogs");
+  let aadNonInt = aadFunc("AADNonInteractiveUserSignInLogs");
+  // Unir ambos tipos de sign-ins
+  let allSignins = union isfuzzy=true aadSignin, aadNonInt;
+  // Detección de anomalías por series temporales
+  let TimeSeriesAlerts =
+  allSignins
+  | make-series HourlyCount=count() on TimeGenerated from startofday(ago(starttime)) to startofday(now()) step 1h by UserPrincipalName, Roles
+  | extend (anomalies, score, baseline) = series_decompose_anomalies(HourlyCount, scorethreshold, -1, 'linefit')
+  | mv-expand HourlyCount to typeof(double), TimeGenerated to typeof(datetime), anomalies to typeof(double), score to typeof(double), baseline to typeof(long)
+  | where anomalies > 0 and baseline > baselinethreshold
+  | extend AnomalyHour = TimeGenerated
+  | project UserPrincipalName, Roles, AnomalyHour, TimeGenerated, HourlyCount, baseline, anomalies, score;
+  // Cruce con eventos individuales para enriquecer contexto
+  TimeSeriesAlerts
+  | where TimeGenerated > startofday(ago(timeframe))
+  | join kind=inner (
+        allSignins
+        | where TimeGenerated > startofday(ago(timeframe))
+        | extend DateHour = bin(TimeGenerated, 1h)
+        | summarize PartialFailedSignins = count(), LatestAnomalyTime = arg_max(TimeGenerated, *) by bin(TimeGenerated, 1h), OperationName, Category, ResultType, ResultDescription, UserPrincipalName, Roles, UserDisplayName, AppDisplayName, ClientAppUsed, IPAddress, ResourceDisplayName
+  ) on UserPrincipalName, $left.AnomalyHour == $right.DateHour
+  | project LatestAnomalyTime, OperationName, Category, UserPrincipalName, Roles = todynamic(Roles), UserDisplayName, ResultType, ResultDescription, AppDisplayName, ClientAppUsed, UserAgent, IPAddress, Location, AuthenticationRequirement, ConditionalAccessStatus, ResourceDisplayName, PartialFailedSignins, TotalFailedSignins = HourlyCount, baseline, anomalies, score
+  | extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])
+techniques: []
+

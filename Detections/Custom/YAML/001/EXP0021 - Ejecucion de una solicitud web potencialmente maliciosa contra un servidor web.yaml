@@ -1,0 +1,71 @@
+name: EXP0021 - Ejecucion de una solicitud web potencialmente maliciosa contra un servidor web
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/92da0019-3dc2-4627-bda4-8cf363b826ed')]"
+description: |-
+  Detecta actividad no obstruida del cortafuegos de aplicaciones web (WAF) en sesiones en las que el WAF bloqueó solicitudes entrantes calculando la proporción entre solicitudes bloqueadas y solicitudes WAF no obstruidas en estas sesiones (métrica BlockvsSuccessRatio).
+     Un valor de ratio alto para una IP de cliente y nombre de host dados requiere una investigación más profunda de los datos del WAF en esa sesión, debido al número significativamente alto de peticiones bloqueadas y unos pocos registros no obstruidos que pueden ser maliciosos pero que han pasado sin ser detectados por el WAF. 
+  La variable successCode define lo que la detección piensa que es un código de estado exitoso y debe ser alterado para ajustarse al entorno
+triggerOperator: GreaterThan
+queryPeriod: P1D
+enabled: true
+queryFrequency: P1D
+tactics:
+- InitialAccess
+triggerThreshold: 0
+severity: Medium
+query: |+
+  let queryperiod = 1d;
+  let mode = dynamic(['Blocked', 'Detected']);
+  let successCode = dynamic(['200', '101', '204', '400', '504', '304', '401', '500']);
+  let sessionBin = 30m;
+  AzureDiagnostics
+  | where TimeGenerated > ago(queryperiod)
+  | where ResourceProvider == 'MICROSOFT.NETWORK'
+      and Category =~ 'ApplicationGatewayFirewallLog'
+      and Action_s in (mode)
+  | sort by originalHost_s asc, clientIP_s asc, TimeGenerated asc
+  | extend SessionBlockedStarted = row_window_session(TimeGenerated, queryperiod, 10m, ((clientIP_s != prev(clientIP_s)) or (originalHost_s != prev(originalHost_s))))
+  | summarize SessionBlockedEnded = max(TimeGenerated), SessionBlockedCount = count() by originalHost_s, clientIP_s, SessionBlockedStarted
+  | extend TimeKey = range(bin(SessionBlockedStarted, sessionBin), bin(SessionBlockedEnded, sessionBin), sessionBin)
+  | mv-expand TimeKey to typeof(datetime)
+  | join kind = inner(
+      AzureDiagnostics
+      | where TimeGenerated > ago(queryperiod)
+      | where Category =~ 'ApplicationGatewayAccessLog' and (isempty(httpStatus_d) or httpStatus_d in (successCode))
+      | extend TimeKey = bin(TimeGenerated, sessionBin)
+      | extend
+          hostname_s = coalesce(originalHost_s, host_s),
+          clientIp_s = coalesce(clientIP_s, clientIP_s)
+      )
+      on TimeKey, originalHost_s, clientIP_s
+  | where TimeGenerated between (SessionBlockedStarted .. SessionBlockedEnded)
+  | extend
+      originalRequestUriWithArgs_s = column_ifexists("originalRequestUriWithArgs_s", ""),
+      serverStatus_s = column_ifexists("serverStatus_s", "")
+  | summarize
+      SuccessfulAccessCount = count(),
+      UserAgents = make_set(userAgent_s, 250),
+      RequestURIs = make_set(requestUri_s, 250),
+      OriginalRequestURIs = make_set(originalRequestUriWithArgs_s, 250),
+      SuccessCodes = make_set(httpStatus_d, 250),
+      SuccessCodes_BackendServer = make_set(serverStatus_s, 250),
+      take_any(SessionBlockedEnded, SessionBlockedCount)
+      by hostname_s, clientIp_s, SessionBlockedStarted
+  | where SessionBlockedCount > SuccessfulAccessCount
+  | extend BlockvsSuccessRatio = SessionBlockedCount / toreal(SuccessfulAccessCount)
+  | sort by BlockvsSuccessRatio desc, SessionBlockedStarted asc
+  | project-reorder
+      SessionBlockedStarted,
+      SessionBlockedEnded,
+      hostname_s,
+      clientIp_s,
+      SessionBlockedCount,
+      SuccessfulAccessCount,
+      BlockvsSuccessRatio,
+      SuccessCodes,
+      RequestURIs,
+      OriginalRequestURIs,
+      UserAgents
+
+techniques:
+- T1190
+

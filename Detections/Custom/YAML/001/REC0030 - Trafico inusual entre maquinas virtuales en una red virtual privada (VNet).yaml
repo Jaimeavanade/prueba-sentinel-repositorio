@@ -1,0 +1,35 @@
+name: REC0030 - Trafico inusual entre maquinas virtuales en una red virtual privada (VNet)
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/6fd7a6f2-245b-4173-8216-9185b3b252c4')]"
+description: |-
+  Este caso de uso detecta comportamientos anómalos de tráfico lateral entre máquinas virtuales dentro de una red virtual privada (VNet), mediante el análisis de NSG Flow Logs. La detección se enfoca en volúmenes o patrones atípicos de comunicación interna sobre puertos sensibles de administración o movimiento lateral (RDP, SMB, SSH, WinRM).
+
+  La búsqueda se ejecutará cada 5 minutos teniendo en cuenta la última hora.
+triggerOperator: GreaterThan
+queryPeriod: PT1H
+enabled: true
+queryFrequency: PT5M
+tactics:
+- Reconnaissance
+- CredentialAccess
+- LateralMovement
+- InitialAccess
+triggerThreshold: 0
+severity: High
+query: |
+  AzureDiagnostics
+  | where TimeGenerated > ago(1h)
+  | where Category == "NetworkSecurityGroupFlowEvent"
+  | where isnotempty(msg_s)
+  | extend flowParts = split(msg_s, "")
+  | extend srcIp = tostring(flowParts[1]),
+           dstIp = tostring(flowParts[2]),
+           srcPort = tostring(flowParts[3]),
+           dstPort = tostring(flowParts[4]),
+           protocol = tostring(flowParts[5]),
+           flowAction = tostring(flowParts[6])
+  | where dstPort in ("3389", "445", "22", "5985")  // RDP, SMB, SSH, WinRM
+  | summarize conexiones = count() by dstIp, srcIp, dstPort, protocol, flowAction, bin(TimeGenerated, 5m)
+  | where conexiones > 50
+  | order by conexiones desc
+techniques: []
+

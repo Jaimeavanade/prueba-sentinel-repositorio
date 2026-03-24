@@ -1,0 +1,17 @@
+severity: Low
+name: '[GEN][MIN] AS-SNTL-039 Fallo de ejecución de regla NTR'
+enabled: true
+triggerOperator: GreaterThan
+query: |-
+  SentinelHealth
+  | where OperationName == "NRT analytics rule run"
+  | where Status == "Failure"
+  | project TimeGenerated, Object = SentinelResourceName, EventResult = Status, EventMessage = Description
+tactics: []
+triggerThreshold: 0
+queryFrequency: PT10M
+queryPeriod: PT10M
+techniques: []
+description: Detecta fallos a la hora de ejecutar reglas del tipo NTR.
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/5268b651-d99e-46af-800b-063c67aa3e09')]"
+

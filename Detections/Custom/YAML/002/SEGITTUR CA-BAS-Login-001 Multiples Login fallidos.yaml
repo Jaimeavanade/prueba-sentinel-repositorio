@@ -1,0 +1,21 @@
+severity: Low
+name: '[SEGITTUR] CA-BAS-Login-001 Multiples Login fallidos'
+enabled: true
+triggerOperator: GreaterThan
+query: |+
+  let threshold = 4; 
+  let timeRange = 2h;
+  MicrosoftAzureBastionAuditLogs
+  | where OperationName == "Microsoft.Network/BastionHost/disconnect"
+  | where Message == "Login Failed"
+  | where TimeGenerated > ago(timeRange) // Filtra por los eventos ocurridos en los últimos 10 minutos
+  | summarize Message=make_set(Message),startTime=min(TimeGenerated),endTime=max(TimeGenerated),EventCount = count() by UserName,UserEmail,TargetVMIPAddress 
+  | where EventCount>=threshold
+tactics: []
+triggerThreshold: 0
+queryFrequency: PT10M
+queryPeriod: PT3H
+techniques: []
+description: Detección de fuerza bruta de un usuario
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/c91b7696-c54d-4832-9bba-662caa645d65')]"
+

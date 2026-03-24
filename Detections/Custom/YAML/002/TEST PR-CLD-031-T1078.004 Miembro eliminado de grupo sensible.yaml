@@ -1,0 +1,25 @@
+severity: Low
+name: '[TEST] PR-CLD-031-T1078.004 Miembro eliminado de grupo sensible'
+enabled: true
+triggerOperator: GreaterThan
+query: |-
+  let watchlist_PR_CLD_031_032_Group = (_GetWatchlist("watchlist_PR_CLD_031_032_Group") | project SearchKey);
+  AuditLogs
+  | where OperationName == "Remove member from group"
+  | extend GroupName = tostring((TargetResources[0].modifiedProperties)[1].oldValue)
+  | where GroupName in~ (watchlist_PR_CLD_031_032_Group) // Grupos sensibles, modificar whatchlist
+  | extend RemovedUser = tostring(TargetResources[0].userPrincipalName)
+  | extend RemovedUserId = tostring((TargetResources[0].modifiedProperties)[0].oldValue)
+  | extend ActorUsername = tostring(InitiatedBy.user.userPrincipalName)
+  | where isnotempty(ActorUsername)
+  | project TimeGenerated, TargetUsername = RemovedUser, TargetUserScopeId = RemovedUserId, GroupName, ActorUsername
+tactics:
+- Persistence
+triggerThreshold: 0
+queryFrequency: PT1H
+queryPeriod: PT1H
+techniques:
+- T1078
+description: Detecta miembro eliminado de un grupo sensible definido en watchlist.
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/09cc3c91-c380-43b8-ba64-cce5f3f2ff5c')]"
+

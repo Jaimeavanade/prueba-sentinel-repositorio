@@ -1,0 +1,24 @@
+name: EXP0013 - Software Obsoleto en Maquinas Virtuales
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/fb4005f5-948e-4550-9b99-bfef860f9071')]"
+description: |-
+  Este caso de uso permite identificar máquinas virtuales con cumplimiento/estado de configuración relacionadas con Guest Configuration o Azure Policy, con el fin de priorizar VMs que puedan tener software obsoleto o desviaciones de configuración que incrementen el riesgo de vulnerabilidades.
+
+  La búsqueda se ejecutará cada 5 min. teniendo en cuenta la última hora.
+triggerOperator: GreaterThan
+queryPeriod: PT1H
+enabled: true
+queryFrequency: PT5M
+tactics:
+- Impact
+- InitialAccess
+triggerThreshold: 0
+severity: Medium
+query: |+
+  AzureDiagnostics
+  | where ResourceType == "VIRTUALMACHINES" or ResourceType contains "Microsoft.Compute/virtualMachines"
+  | where Category == "GuestConfiguration" or Category == "Policy"
+  | summarize lastSeen = max(TimeGenerated) by Resource, ResourceGroup, SubscriptionId
+  | order by lastSeen asc
+
+techniques: []
+

@@ -1,0 +1,34 @@
+name: DEL0057 - IPs Sospechosas Activando Multiples Reglas
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8e5a678f-a875-402f-83de-2c16b5e1be82')]"
+description: Identifica IPs que activan múltiples reglas OWASP en poco tiempo, indicando escaneo, fuerza bruta o ataques automatizados.
+triggerOperator: GreaterThan
+queryPeriod: PT1H
+enabled: true
+queryFrequency: PT5M
+tactics:
+- Reconnaissance
+- CredentialAccess
+- Persistence
+triggerThreshold: 1
+severity: High
+query: |+
+  AzureDiagnostics
+  | where ResourceType == "APPLICATIONGATEWAYS"
+  | where Category == "ApplicationGatewayFirewallLog"
+  | where action_s == "Detected"
+  | extend RuleId = tostring(parse_json(Message).ruleId)
+  | extend RuleName = tostring(parse_json(Message).details[0].message)
+  | extend RuleGroup = tostring(parse_json(Message).ruleGroup)
+  | where RuleGroup in ("OWASP_3.2", "Microsoft_BotManagerRuleSet_0.1")  // Filtrar por reglas relevantes
+  | where ruleId_s startswith "91"  // Filtra solo reglas que comienzan con "91" 
+  | where ruleId_s startswith "92"  // Filtra solo reglas que comienzan con "92" 
+  | where ruleId_s startswith "93"  // Filtra solo reglas que comienzan con "93" 
+  | where ruleId_s startswith "94"  // Filtra solo reglas que comienzan con "94" 
+  | where ruleId_s startswith "20"  // Filtra solo reglas que comienzan con "20" 
+  | where ruleId_s startswith "Known-CVEs"  // Filtra solo reglas que comienzan con "Known-CVEs" 
+  | summarize Count=count(), RuleList=make_set(RuleName), UniqueRules=dcount(RuleName) by clientIp_s, bin(TimeGenerated, 5m)
+  | where UniqueRules >= 2  // Solo muestra IPs que activaron más de 1 regla en 5 minutos
+  | order by Count desc
+
+techniques: []
+

@@ -1,0 +1,24 @@
+severity: Low
+name: '[GEN][MIN] AS-SNTL-041 Regla programada modificada o eliminada'
+enabled: true
+triggerOperator: GreaterThan
+query: |-
+  let opValues = dynamic(["Microsoft.SecurityInsights/alertRules/Write", "Microsoft.SecurityInsights/alertRules/Delete"]);
+  // Azure Sentinel Analytics - Rule Create / Delete
+  let watchlist_AS_SNTL_041_User = (_GetWatchlist('watchlist_AS_SNTL_041_User')
+  | project SearchKey);
+  SentinelAudit
+  | where OperationName in (opValues)
+  | sort by TimeGenerated desc
+  | extend CallerName = tostring(ExtendedProperties.CallerName)
+  | extend CallerIpAddress = tostring(ExtendedProperties.CallerIpAddress)
+  | where CallerName !in (watchlist_AS_SNTL_041_User)
+  | project TimeGenerated, ActorUsername = CallerName, SrcIpAddr = CallerIpAddress, Object = SentinelResourceName, ObjectType = SentinelResourceKind, Operation = OperationName, EventResultDetails = Status
+tactics: []
+triggerThreshold: 0
+queryFrequency: PT30M
+queryPeriod: PT30M
+techniques: []
+description: Necesario excepcionar usuarios permitidos en watchlist. Este cdu detecta cuando se modifica o elimina una regla de Sentinel.
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/5816bc84-3294-4849-ac76-443802039214')]"
+

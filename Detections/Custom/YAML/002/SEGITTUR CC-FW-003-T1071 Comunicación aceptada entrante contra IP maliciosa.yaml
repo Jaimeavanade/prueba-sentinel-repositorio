@@ -1,0 +1,19 @@
+severity: Low
+name: '[SEGITTUR] CC-FW-003-T1071 Comunicación aceptada entrante contra IP maliciosa'
+enabled: true
+triggerOperator: GreaterThan
+query: |+
+  AzureDiagnostics
+  | where ResourceType == "AZUREFIREWALLS"
+  | where Category == "AZFWThreatIntel"
+  | where Action_s == "Allow"
+  | summarize startTime=min(TimeGenerated),endTime=max(TimeGenerated),EventCount = count() by SourceIP, DestinationIp_s,ThreatDescription_s, Action_s
+
+tactics: []
+triggerThreshold: 0
+queryFrequency: PT10M
+queryPeriod: PT1H
+techniques: []
+description: CC-FW-003-T1071 Comunicación aceptada entrante contra IP maliciosa
+id: "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/348b577a-1c13-4f4b-b5ef-0388dc37433c')]"
+
