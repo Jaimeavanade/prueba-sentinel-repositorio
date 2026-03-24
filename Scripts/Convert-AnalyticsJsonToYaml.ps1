@@ -1,23 +1,39 @@
 param (
     [Parameter(Mandatory = $true)]
-    [string]$InputFile,
-
-    [Parameter(Mandatory = $true)]
-    [string]$OutputFolder
+    [string]$InputFile
 )
 
 Write-Host "Input file: $InputFile"
-Write-Host "Output folder: $OutputFolder"
 
 if (-not (Test-Path $InputFile)) {
     throw "Input file not found: $InputFile"
 }
 
+# -------------------------------------------------
+# ✅ Determinar entorno (001 / 002) desde el nombre
+# -------------------------------------------------
+$environment = if ($InputFile -match '001') {
+    '001'
+}
+elseif ($InputFile -match '002') {
+    '002'
+}
+else {
+    throw "Cannot determine environment (001/002) from input file name"
+}
+
+$OutputFolder = "Detections/Custom/YAML/$environment"
+
+Write-Host "Detected environment: $environment"
+Write-Host "Output folder: $OutputFolder"
+
 if (-not (Test-Path $OutputFolder)) {
     New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
 }
 
+# -------------------------
 # Load JSON
+# -------------------------
 $json = Get-Content $InputFile -Raw | ConvertFrom-Json
 
 if (-not $json.resources) {
@@ -31,9 +47,11 @@ foreach ($rule in $json.resources) {
         continue
     }
 
-    # displayName como filename:
+    # -------------------------------------------------
+    # ✅ displayName como nombre de archivo
     # - mantiene espacios, acentos y guiones
-    # - elimina SOLO caracteres problemáticos para filesystem / PowerShell
+    # - elimina SOLO caracteres problemáticos
+    # -------------------------------------------------
     $safeFileName = (
         $rule.properties.displayName `
             -replace '[\\\/:\*\?"<>\|\[\]]', ''
