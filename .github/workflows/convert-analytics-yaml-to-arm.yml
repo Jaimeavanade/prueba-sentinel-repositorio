@@ -16,16 +16,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install PowerShell YAML module
+      - name: Install PowerShell YAML module (pinned)
         shell: pwsh
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+          Install-Module powershell-yaml -RequiredVersion 0.4.11 -Scope CurrentUser -Force -AllowClobber
+          Import-Module powershell-yaml -Force
 
-      - name: Convert YAML to ARM (overwrite + keep subfolders)
+      - name: Convert Analytics Rules (YAML → ARM JSON)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -34,29 +35,30 @@ jobs:
           $armRoot  = "Detections/Custom/ARM"
 
           if (-not (Test-Path $yamlRoot)) {
-            Write-Host "No YAML found in $yamlRoot"
+            Write-Host "No YAML files found in $yamlRoot"
             exit 0
           }
 
           $yamlRootPath = (Resolve-Path $yamlRoot).Path
 
           Get-ChildItem $yamlRoot -Recurse -Include *.yaml, *.yml | ForEach-Object {
-            $rel = $_.FullName.Substring($yamlRootPath.Length).TrimStart('/','\')
 
-            $outDir = Join-Path $armRoot (Split-Path $rel -Parent)
-            New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+            $relPath = $_.FullName.Substring($yamlRootPath.Length).TrimStart('/','\')
+            $targetDir = Join-Path $armRoot (Split-Path $relPath -Parent)
 
-            $outFile = Join-Path $outDir ($_.BaseName + ".json")
+            New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
 
-            Write-Host "▶ $rel -> $outFile"
+            $outFile = Join-Path $targetDir ($_.BaseName + ".json")
+
+            Write-Host "▶ $relPath -> $outFile"
 
             pwsh -File Scripts/Convert-AnalyticsYamlToArmJson.ps1 `
               -InputYamlPath $_.FullName `
               -OutputJsonPath $outFile `
-              -RuleIdSeed $rel
+              -RuleIdSeed $relPath
           }
 
-      - name: Commit ARM files
+      - name: Commit generated ARM files
         shell: bash
         run: |
           git config user.name "github-actions"
@@ -65,9 +67,9 @@ jobs:
           git add Detections/Custom/ARM/**/*.json || true
 
           if git diff --cached --quiet; then
-            echo "No changes"
+            echo "No changes to commit."
             exit 0
           fi
 
-          git commit -m "chore: regenerate analytics ARM (Repositories compatible)"
+          git commit -m "chore: regenerate Analytics Rules ARM (Repositories compatible)"
           git push
