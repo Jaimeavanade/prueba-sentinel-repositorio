@@ -17,32 +17,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Setup PowerShell
-        uses: azure/powershell@v2
-        with:
-          azPSVersion: "latest"
-          inlineScript: |
-            pwsh -NoLogo -NoProfile -Command '$PSVersionTable'
-
-      - name: Install PowerShell modules
+      - name: Show PowerShell version
         shell: pwsh
         run: |
-          Set-PSRepository -Name "PSGallery" -InstallationPolicy Trusted
+          $PSVersionTable
+
+      - name: Install required PowerShell modules
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+          Get-Module -ListAvailable powershell-yaml
 
-      - name: Convert YAML to ARM JSON (Repositories compatible)
+      - name: Convert Analytics Rules (YAML → ARM JSON)
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $yamlRoot = "Detections/Custom/YAML"
           $outRoot  = "Detections/Custom/ARM"
 
           if (-not (Test-Path $yamlRoot)) {
-            Write-Host "YAML root folder not found: $yamlRoot"
+            Write-Host "⚠️ YAML folder not found: $yamlRoot"
             exit 0
           }
 
@@ -50,17 +49,17 @@ jobs:
 
           Get-ChildItem $yamlRoot -Recurse -Include *.yaml, *.yml | ForEach-Object {
             $inFile = $_.FullName
-            $rel = $inFile.Substring((Resolve-Path $yamlRoot).Path.Length).TrimStart('\','/')
-            $baseName = [IO.Path]::GetFileNameWithoutExtension($inFile)
-
-            # Output: keep same name, flat in ARM folder (or preserve subfolders if you want)
+            $baseName = [IO.Path]::GetFileNameWithoutExtension($_.Name)
             $outFile = Join-Path $outRoot ($baseName + ".json")
 
-            Write-Host "Converting: $inFile -> $outFile"
-            ./Scripts/Convert-AnalyticsYamlToArmJson.ps1 -InputYamlPath $inFile -OutputJsonPath $outFile -RuleIdSeed $rel
+            Write-Host "▶ Converting $inFile"
+            pwsh -File Scripts/Convert-AnalyticsYamlToArmJson.ps1 `
+              -InputYamlPath $inFile `
+              -OutputJsonPath $outFile `
+              -RuleIdSeed $inFile
           }
 
-      - name: Commit changes (if any)
+      - name: Commit generated ARM templates
         shell: bash
         run: |
           set -e
