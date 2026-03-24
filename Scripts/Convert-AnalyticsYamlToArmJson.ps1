@@ -1,12 +1,15 @@
 param (
-    # Carpeta raíz donde están los YAML
+    # Carpeta donde están los YAML
     [Parameter(Mandatory = $true)]
     [string]$YamlInputPath,
 
-    # Carpeta raíz donde se generarán los ARM JSON
+    # Carpeta donde se dejarán TODOS los ARM JSON
     [Parameter(Mandatory = $true)]
     [string]$ArmOutputPath
 )
+
+Write-Host "YAML input path: $YamlInputPath"
+Write-Host "ARM output path: $ArmOutputPath"
 
 # -------------------------------------------------
 # Requisitos
@@ -53,32 +56,12 @@ foreach ($yamlFile in $yamlFiles) {
         continue
     }
 
-    # -------------------------------------------------
-    # Normalizar campos ISO-8601
-    # -------------------------------------------------
+    # Normalizar ISO-8601 (CRÍTICO PARA SENTINEL)
     $queryFrequency = Normalize-Iso8601 $yaml.queryFrequency
     $queryPeriod    = Normalize-Iso8601 $yaml.queryPeriod
 
     # -------------------------------------------------
-    # Detectar entorno (001 / 002) por la ruta
-    # -------------------------------------------------
-    $environment = if ($yamlFile.FullName -match '\\001\\') {
-        '001'
-    }
-    elseif ($yamlFile.FullName -match '\\002\\') {
-        '002'
-    }
-    else {
-        'GEN'
-    }
-
-    $envOutputPath = Join-Path $ArmOutputPath $environment
-    if (-not (Test-Path $envOutputPath)) {
-        New-Item -ItemType Directory -Path $envOutputPath -Force | Out-Null
-    }
-
-    # -------------------------------------------------
-    # ARM Template (Scheduled Rule)
+    # ARM Template – Scheduled Analytics Rule
     # -------------------------------------------------
     $armTemplate = @{
         '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'
@@ -111,7 +94,7 @@ foreach ($yamlFile in $yamlFiles) {
         )
     }
 
-    $outputFile = Join-Path $envOutputPath ($yamlFile.BaseName + ".json")
+    $outputFile = Join-Path $ArmOutputPath ($yamlFile.BaseName + ".json")
 
     $armTemplate | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8 $outputFile
 
