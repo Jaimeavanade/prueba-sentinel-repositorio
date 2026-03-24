@@ -1,0 +1,38 @@
+name: Convert Sentinel Analytics JSON to YAML
+
+on:
+  push:
+    paths:
+      - "*.json"
+      - "Scripts/*.ps1"
+  workflow_dispatch:
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Run conversion script (001)
+      shell: pwsh
+      run: |
+        ./Scripts/Convert-AnalyticsJsonToYaml.ps1 `
+          -InputFile Azure_Sentinel_001analytics_rules.json `
+          -OutputFolder Detections/Custom/YAML
+
+    - name: Run conversion script (002)
+      shell: pwsh
+      run: |
+        ./Scripts/Convert-AnalyticsJsonToYaml.ps1 `
+          -InputFile Azure_Sentinel002_analytics_rules.json `
+          -OutputFolder Detections/Custom/YAML
+
+    - name: Commit generated YAML files
+      run: |
+        git config user.name "github-actions"
+        git config user.email "github-actions@github.com"
+        git add Detections/Custom/YAML
+        git commit -m "Auto-generate Sentinel analytic rules YAML" || echo "No changes"
+        git push
