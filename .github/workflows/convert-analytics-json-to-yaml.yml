@@ -3,7 +3,7 @@ name: Convert Analytics JSON to YAML
 on:
   workflow_dispatch:
 
-# ✅ CLAVE para que github-actions pueda hacer push
+# ✅ Permisos necesarios para hacer push a main
 permissions:
   contents: write
 
@@ -24,20 +24,18 @@ jobs:
       shell: pwsh
       run: |
         ./Scripts/Convert-AnalyticsJsonToYaml.ps1 `
-          -InputFile "Detections/Azure_Sentinel_001analytics_rules.json" `
-          -OutputFolder "Detections/yaml/001"
+          -InputFile "Detections/Azure_Sentinel_001analytics_rules.json"
 
     - name: Convert Azure Sentinel 002 analytics rules
       shell: pwsh
       run: |
         ./Scripts/Convert-AnalyticsJsonToYaml.ps1 `
-          -InputFile "Detections/Azure_Sentinel002_analytics_rules.json" `
-          -OutputFolder "Detections/yaml/002"
+          -InputFile "Detections/Azure_Sentinel002_analytics_rules.json"
 
-    - name: Commit generated YAML files
+    - name: Commit and push generated YAML files
       run: |
         git config user.name "github-actions"
         git config user.email "github-actions@github.com"
-        git add Detections/yaml
+        git add Detections/Custom/YAML
         git commit -m "Convert Sentinel analytics JSON to YAML" || echo "No changes to commit"
         git push
