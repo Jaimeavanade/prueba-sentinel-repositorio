@@ -11,6 +11,11 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Install powershell-yaml module
+      shell: pwsh
+      run: |
+        Install-Module powershell-yaml -Force -Scope CurrentUser
+
     - name: Convert Azure Sentinel 001 analytics rules
       shell: pwsh
       run: |
