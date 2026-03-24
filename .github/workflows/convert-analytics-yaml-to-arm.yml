@@ -1,0 +1,48 @@
+name: Convert Sentinel Analytics YAML to ARM JSON
+
+on:
+  workflow_dispatch:
+
+# ✅ Permisos necesarios para poder hacer push al repo
+permissions:
+  contents: write
+
+jobs:
+  convert-yaml-to-arm:
+    runs-on: ubuntu-latest
+
+    steps:
+    # ---------------------------------------------
+    # Checkout del repositorio
+    # ---------------------------------------------
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # ---------------------------------------------
+    # Instalar módulo necesario para YAML
+    # ---------------------------------------------
+    - name: Install powershell-yaml module
+      shell: pwsh
+      run: |
+        Install-Module powershell-yaml -Force -Scope CurrentUser
+
+    # ---------------------------------------------
+    # Convertir YAML -> ARM JSON
+    # ---------------------------------------------
+    - name: Convert Analytics YAML to ARM JSON
+      shell: pwsh
+      run: |
+        ./Scripts/Convert-AnalyticsYamlToArmJson.ps1 `
+          -YamlInputPath "Detections/Custom/YAML" `
+          -ArmOutputPath "Detections/Custom/ARM"
+
+    # ---------------------------------------------
+    # Commit y push de los ARM generados
+    # ---------------------------------------------
+    - name: Commit and push ARM templates
+      run: |
+        git config user.name "github-actions"
+        git config user.email "github-actions@github.com"
+        git add Detections/Custom/ARM
+        git commit -m "Convert Sentinel analytics YAML to ARM templates" || echo "No changes to commit"
+        git push
