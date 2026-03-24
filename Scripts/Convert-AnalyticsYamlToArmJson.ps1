@@ -46,8 +46,8 @@ function New-DeterministicGuidFromString {
   finally { $sha1.Dispose() }
 
   $g = $hash[0..15]
-  $g[6] = ($g[6] -band 0x0F) -bor 0x50  # v5
-  $g[8] = ($g[8] -band 0x3F) -bor 0x80  # RFC4122
+  $g[6] = ($g[6] -band 0x0F) -bor 0x50
+  $g[8] = ($g[8] -band 0x3F) -bor 0x80
 
   return ([Guid]::new($g)).ToString()
 }
@@ -82,64 +82,73 @@ function To-Iso8601Duration {
   return $v
 }
 
-# -------- MAIN --------
+# ----- MAIN -----
 Ensure-Module -Name "powershell-yaml"
 
-if (-not (Test-Path $InputYamlPath)) {
-  Write-Host "ERROR: InputYamlPath not found: $InputYamlPath"
-  exit 2
-}
-
-$yamlRaw = Get-Content $InputYamlPath -Raw
-
-# 1) empty/whitespace => skip (no romper pipeline)
-if ([string]::IsNullOrWhiteSpace($yamlRaw)) {
-  Write-Host "SKIP: YAML empty: $InputYamlPath"
+$raw = Get-Content $InputYamlPath -Raw
+if ([string]::IsNullOrWhiteSpace($raw)) {
+  Write-Host "SKIP_EMPTY: $InputYamlPath"
   exit 0
 }
 
-# 2) Normalizaciones típicas para evitar null en parser
-#    - BOM
-#    - Tabs
-#    - CRLF
-$yamlRaw = $yamlRaw -replace "^\uFEFF",""
-$yamlRaw = $yamlRaw -replace "`t","  "
-$yamlRaw = $yamlRaw -replace "`r`n","`n"
+# Normaliza BOM/tabs/CRLF
+$raw = $raw -replace "^\uFEFF",""
+$raw = $raw -replace "`t","  "
+$raw = $raw -replace "`r`n","`n"
 
-# 3) Parse robusto con reintentos
+# 1) Intento YAML
 $yaml = $null
 try {
-  $yamlObj = ConvertFrom-Yaml -Yaml $yamlRaw
-  $yaml = $yamlObj
-  if ($yamlObj -is [System.Collections.IEnumerable] -and -not ($yamlObj -is [string])) {
-    if ($yamlObj.Count -gt 0) { $yaml = $yamlObj[0] }
+  $obj = ConvertFrom-Yaml -Yaml $raw
+  $yaml = $obj
+  if ($obj -is [System.Collections.IEnumerable] -and -not ($obj -is [string])) {
+    if ($obj.Count -gt 0) { $yaml = $obj[0] }
   }
-}
-catch {
+} catch {
   $yaml = $null
 }
 
+# 2) Fallback: si no parsea YAML, prueba JSON (a veces tus ".yaml" son JSON renombrado)
 if ($null -eq $yaml) {
-  # Reintento extra (por si hay caracteres raros)
-  $yamlRaw2 = $yamlRaw.Trim() + "`n"
   try {
-    $yamlObj2 = ConvertFrom-Yaml -Yaml $yamlRaw2
-    $yaml = $yamlObj2
-    if ($yamlObj2 -is [System.Collections.IEnumerable] -and -not ($yamlObj2 -is [string])) {
-      if ($yamlObj2.Count -gt 0) { $yaml = $yamlObj2[0] }
+    $j = $raw | ConvertFrom-Json -ErrorAction Stop
+    if ($j.resources -and $j.resources.Count -gt 0 -and $j.resources[0].type -match "Microsoft\.SecurityInsights/alertRules") {
+      # Convertir este ARM "UI-import" a Repos-compatible
+      $seed = $RuleIdSeed
+      if ([string]::IsNullOrWhiteSpace($seed)) { $seed = $InputYamlPath }
+      $guid = New-DeterministicGuidFromString -Name $seed
+
+      foreach ($r in $j.resources) {
+        if ($r.type -match "Microsoft\.SecurityInsights/alertRules") {
+          $r.apiVersion = "2023-02-01"
+          $r.name = $guid
+          if (-not $r.kind) { $r.kind = "Scheduled" }
+          if (-not $r.properties) { $r.properties = @{} }
+          $r.properties.alertRuleTemplateName = $guid
+          if (-not $r.properties.techniques -and $r.properties.relevantTechniques) {
+            $r.properties.techniques = $r.properties.relevantTechniques
+          }
+        }
+      }
+
+      if ($j.parameters) { $j.PSObject.Properties.Remove("parameters") }
+
+      $outDir = Split-Path -Parent $OutputJsonPath
+      if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
+
+      $j | ConvertTo-Json -Depth 80 | Out-File -FilePath $OutputJsonPath -Encoding utf8
+      Write-Host "OK_JSON_FALLBACK: $OutputJsonPath"
+      exit 0
     }
   } catch {
-    $yaml = $null
+    # ignore
   }
-}
 
-if ($null -eq $yaml) {
-  # ✅ Importante: NO hacemos throw. Devolvemos exit code 3 para que el workflow lo registre y continúe.
   Write-Host "FAIL_PARSE: YAML parse returned null for file: $InputYamlPath"
   exit 3
 }
 
-# Campos base
+# Campos YAML normales
 $displayName = Get-YamlValue $yaml "name"
 if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = Get-YamlValue $yaml "displayName" }
 if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = [IO.Path]::GetFileNameWithoutExtension($InputYamlPath) }
@@ -147,27 +156,12 @@ if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = [IO.Path]::GetF
 $kind = Get-YamlValue $yaml "kind"
 if ([string]::IsNullOrWhiteSpace($kind)) { $kind = "Scheduled" }
 
-$description = Get-YamlValue $yaml "description"
-$severity    = Get-YamlValue $yaml "severity"
-$query       = Get-YamlValue $yaml "query"
+$seed2 = Get-YamlValue $yaml "id"
+if ([string]::IsNullOrWhiteSpace($seed2)) { $seed2 = $RuleIdSeed }
+if ([string]::IsNullOrWhiteSpace($seed2)) { $seed2 = $InputYamlPath }
 
-$queryFrequency   = To-Iso8601Duration (Get-YamlValue $yaml "queryFrequency")
-$queryPeriod      = To-Iso8601Duration (Get-YamlValue $yaml "queryPeriod")
-$triggerOperator  = Normalize-Operator (Get-YamlValue $yaml "triggerOperator")
-$triggerThreshold = Get-YamlValue $yaml "triggerThreshold"
+$ruleGuid = New-DeterministicGuidFromString -Name $seed2
 
-$tactics = Get-YamlValue $yaml "tactics"
-$techniques = Get-YamlValue $yaml "techniques"
-if (-not $techniques) { $techniques = Get-YamlValue $yaml "relevantTechniques" }
-
-# Seed
-$seed = Get-YamlValue $yaml "id"
-if ([string]::IsNullOrWhiteSpace($seed)) { $seed = $RuleIdSeed }
-if ([string]::IsNullOrWhiteSpace($seed)) { $seed = $InputYamlPath }
-
-$ruleGuid = New-DeterministicGuidFromString -Name $seed
-
-# ARM Repos-compatible
 $resource = @{
   type       = "Microsoft.SecurityInsights/alertRules"
   apiVersion = "2023-02-01"
@@ -175,16 +169,16 @@ $resource = @{
   kind       = $kind
   properties = @{
     displayName           = $displayName
-    description           = $description
-    severity              = $severity
+    description           = Get-YamlValue $yaml "description"
+    severity              = Get-YamlValue $yaml "severity"
     enabled               = $true
-    query                 = $query
-    queryFrequency        = $queryFrequency
-    queryPeriod           = $queryPeriod
-    triggerOperator       = $triggerOperator
-    triggerThreshold      = $triggerThreshold
-    tactics               = $tactics
-    techniques            = $techniques
+    query                 = Get-YamlValue $yaml "query"
+    queryFrequency        = To-Iso8601Duration (Get-YamlValue $yaml "queryFrequency")
+    queryPeriod           = To-Iso8601Duration (Get-YamlValue $yaml "queryPeriod")
+    triggerOperator       = Normalize-Operator (Get-YamlValue $yaml "triggerOperator")
+    triggerThreshold      = Get-YamlValue $yaml "triggerThreshold"
+    tactics               = Get-YamlValue $yaml "tactics"
+    techniques            = (Get-YamlValue $yaml "techniques") ?? (Get-YamlValue $yaml "relevantTechniques")
     alertRuleTemplateName = $ruleGuid
   }
 }
@@ -196,12 +190,9 @@ $template = @{
   resources      = @($resource)
 }
 
-$outDir = Split-Path -Parent $OutputJsonPath
-if ($outDir -and -not (Test-Path $outDir)) {
-  New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-}
+$outDir2 = Split-Path -Parent $OutputJsonPath
+if ($outDir2 -and -not (Test-Path $outDir2)) { New-Item -ItemType Directory -Force -Path $outDir2 | Out-Null }
 
 $template | ConvertTo-Json -Depth 80 | Out-File -FilePath $OutputJsonPath -Encoding utf8
-
-Write-Host "OK: $OutputJsonPath | kind=$kind | guid=$ruleGuid"
+Write-Host "OK: $OutputJsonPath"
 exit 0
