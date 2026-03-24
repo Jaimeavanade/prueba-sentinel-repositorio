@@ -1,0 +1,35 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "AzureDiagnostics\n| where TimeGenerated > ago(1h)\n| where Category == \"NetworkSecurityGroupFlowEvent\"\n| where isnotempty(msg_s)\n| extend flowParts = split(msg_s, \"\")\n| extend srcIp = tostring(flowParts[1]),\n         dstIp = tostring(flowParts[2]),\n         srcPort = tostring(flowParts[3]),\n         dstPort = tostring(flowParts[4]),\n         protocol = tostring(flowParts[5]),\n         flowAction = tostring(flowParts[6])\n| where dstPort in (\"3389\", \"445\", \"22\", \"5985\")  // RDP, SMB, SSH, WinRM\n| summarize conexiones = count() by dstIp, srcIp, dstPort, protocol, flowAction, bin(TimeGenerated, 5m)\n| where conexiones > 50\n| order by conexiones desc\n",
+        "severity": "High",
+        "queryFrequency": "PT5M",
+        "description": "Este caso de uso detecta comportamientos anómalos de tráfico lateral entre máquinas virtuales dentro de una red virtual privada (VNet), mediante el análisis de NSG Flow Logs. La detección se enfoca en volúmenes o patrones atípicos de comunicación interna sobre puertos sensibles de administración o movimiento lateral (RDP, SMB, SSH, WinRM).\n\nLa búsqueda se ejecutará cada 5 minutos teniendo en cuenta la última hora.",
+        "triggerThreshold": 0,
+        "enabled": true,
+        "triggerOperator": "GreaterThan",
+        "tactics": [
+          "Reconnaissance",
+          "CredentialAccess",
+          "LateralMovement",
+          "InitialAccess"
+        ],
+        "queryPeriod": "PT1H",
+        "techniques": [],
+        "displayName": "REC0030 - Trafico inusual entre maquinas virtuales en una red virtual privada (VNet)"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

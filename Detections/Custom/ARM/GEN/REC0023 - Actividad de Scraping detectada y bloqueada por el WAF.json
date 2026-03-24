@@ -1,0 +1,33 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "AzureDiagnostics\n| where Category == \"ApplicationGatewayAccessLog\"\n| where httpStatus_d == 403 or httpStatus_d == 429 // Acceso bloqueado o demasiadas solicitudes // añadir el 404 también\n| where userAgent_s !in (\"Bingbot\", \"Googlebot\", \"Facebookbot\") // Excluir bots legítimos \n| where userAgent_s contains \"Bot\"\n| extend AttackingIP = clientIP_s, Port = clientPort_d, httpMethod = httpMethod_s, httpVersion=httpVersion_s, URL = originalRequestUriWithArgs_s, UserAgent = userAgent_s, InstaceId = instanceId_s, RuleName = ruleName_s, RequestQuery = requestQuery_s, ErrorInfo = error_info_s, OriginalHost = originalHost_s\n| summarize RequestCount = count() by AttackingIP, Port, httpMethod,httpVersion, URL, UserAgent,RuleName,RequestQuery,ErrorInfo, OriginalHost, bin(TimeGenerated, 10m)\n| where RequestCount > 50  // Más de 50 solicitudes en 10 minutos\n| order by RequestCount desc",
+        "severity": "Low",
+        "queryFrequency": "PT10M",
+        "description": "Bloquear tráfico de bots que intentan extraer datos, consumir recursos o explotar vulnerabilidades.",
+        "triggerThreshold": 50,
+        "enabled": true,
+        "triggerOperator": "GreaterThan",
+        "tactics": [
+          "Reconnaissance",
+          "Discovery"
+        ],
+        "queryPeriod": "PT1H",
+        "techniques": [],
+        "displayName": "REC0023 - Actividad de Scraping detectada y bloqueada por el WAF"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

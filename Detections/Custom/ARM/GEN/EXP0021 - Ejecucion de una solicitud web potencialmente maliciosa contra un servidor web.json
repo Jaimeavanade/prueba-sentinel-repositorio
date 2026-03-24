@@ -1,0 +1,34 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "let queryperiod = 1d;\nlet mode = dynamic(['Blocked', 'Detected']);\nlet successCode = dynamic(['200', '101', '204', '400', '504', '304', '401', '500']);\nlet sessionBin = 30m;\nAzureDiagnostics\n| where TimeGenerated > ago(queryperiod)\n| where ResourceProvider == 'MICROSOFT.NETWORK'\n    and Category =~ 'ApplicationGatewayFirewallLog'\n    and Action_s in (mode)\n| sort by originalHost_s asc, clientIP_s asc, TimeGenerated asc\n| extend SessionBlockedStarted = row_window_session(TimeGenerated, queryperiod, 10m, ((clientIP_s != prev(clientIP_s)) or (originalHost_s != prev(originalHost_s))))\n| summarize SessionBlockedEnded = max(TimeGenerated), SessionBlockedCount = count() by originalHost_s, clientIP_s, SessionBlockedStarted\n| extend TimeKey = range(bin(SessionBlockedStarted, sessionBin), bin(SessionBlockedEnded, sessionBin), sessionBin)\n| mv-expand TimeKey to typeof(datetime)\n| join kind = inner(\n    AzureDiagnostics\n    | where TimeGenerated > ago(queryperiod)\n    | where Category =~ 'ApplicationGatewayAccessLog' and (isempty(httpStatus_d) or httpStatus_d in (successCode))\n    | extend TimeKey = bin(TimeGenerated, sessionBin)\n    | extend\n        hostname_s = coalesce(originalHost_s, host_s),\n        clientIp_s = coalesce(clientIP_s, clientIP_s)\n    )\n    on TimeKey, originalHost_s, clientIP_s\n| where TimeGenerated between (SessionBlockedStarted .. SessionBlockedEnded)\n| extend\n    originalRequestUriWithArgs_s = column_ifexists(\"originalRequestUriWithArgs_s\", \"\"),\n    serverStatus_s = column_ifexists(\"serverStatus_s\", \"\")\n| summarize\n    SuccessfulAccessCount = count(),\n    UserAgents = make_set(userAgent_s, 250),\n    RequestURIs = make_set(requestUri_s, 250),\n    OriginalRequestURIs = make_set(originalRequestUriWithArgs_s, 250),\n    SuccessCodes = make_set(httpStatus_d, 250),\n    SuccessCodes_BackendServer = make_set(serverStatus_s, 250),\n    take_any(SessionBlockedEnded, SessionBlockedCount)\n    by hostname_s, clientIp_s, SessionBlockedStarted\n| where SessionBlockedCount > SuccessfulAccessCount\n| extend BlockvsSuccessRatio = SessionBlockedCount / toreal(SuccessfulAccessCount)\n| sort by BlockvsSuccessRatio desc, SessionBlockedStarted asc\n| project-reorder\n    SessionBlockedStarted,\n    SessionBlockedEnded,\n    hostname_s,\n    clientIp_s,\n    SessionBlockedCount,\n    SuccessfulAccessCount,\n    BlockvsSuccessRatio,\n    SuccessCodes,\n    RequestURIs,\n    OriginalRequestURIs,\n    UserAgents\n\n",
+        "severity": "Medium",
+        "queryFrequency": "P1D",
+        "description": "Detecta actividad no obstruida del cortafuegos de aplicaciones web (WAF) en sesiones en las que el WAF bloqueó solicitudes entrantes calculando la proporción entre solicitudes bloqueadas y solicitudes WAF no obstruidas en estas sesiones (métrica BlockvsSuccessRatio).\n   Un valor de ratio alto para una IP de cliente y nombre de host dados requiere una investigación más profunda de los datos del WAF en esa sesión, debido al número significativamente alto de peticiones bloqueadas y unos pocos registros no obstruidos que pueden ser maliciosos pero que han pasado sin ser detectados por el WAF. \nLa variable successCode define lo que la detección piensa que es un código de estado exitoso y debe ser alterado para ajustarse al entorno",
+        "triggerThreshold": 0,
+        "enabled": true,
+        "triggerOperator": "GreaterThan",
+        "tactics": [
+          "InitialAccess"
+        ],
+        "queryPeriod": "P1D",
+        "techniques": [
+          "T1190"
+        ],
+        "displayName": "EXP0021 - Ejecucion de una solicitud web potencialmente maliciosa contra un servidor web"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

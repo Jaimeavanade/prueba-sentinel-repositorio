@@ -1,0 +1,30 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "let failures=SentinelHealth\n| where TimeGenerated >= ago(1d)\n| where OperationName == \"Scheduled analytics rule run\"\n| where Status == \"Failure\"\n| project\n    TimeGenerated,\n    Object = SentinelResourceName,\n    EventResult = Status,\n    EventMessage = Description\n| summarize FirstFailure = min(TimeGenerated), LastFailure = max(TimeGenerated),EventCount = count() by Object //, EventResults = make_set(EventResult), EventMessages = make_set(EventMessage) by Object\n| where EventCount >= 2\n| project-away EventCount;\nlet tmp = SentinelHealth\n| where TimeGenerated >= ago(1d)\n| where OperationName == \"Scheduled analytics rule run\"\n| where Status == \"Success\"\n| project\n    SuccessTime = TimeGenerated,\n    Object = SentinelResourceName\n| join kind=inner (failures) on Object\n| where SuccessTime between (FirstFailure .. LastFailure)\n| project-away Object1;\nSentinelHealth\n| where TimeGenerated >= ago(1d)\n| where OperationName == \"Scheduled analytics rule run\"\n| where Status == \"Failure\"\n| project\n    TimeGenerated,\n    Object = SentinelResourceName,\n    EventResult = Status,\n    EventMessage = Description\n| summarize FirstFailure = min(TimeGenerated), LastFailure = max(TimeGenerated),EventCount = count(), EventResults = make_set(EventResult), EventMessages = make_set(EventMessage) by Object\n| where EventCount >= 2\n| join kind=leftanti (tmp) on Object, FirstFailure, LastFailure",
+        "severity": "Low",
+        "queryFrequency": "P1D",
+        "description": "Detecta fallos a la hora de ejecutar reglas del tipo scheduled.",
+        "triggerThreshold": 0,
+        "enabled": true,
+        "triggerOperator": "GreaterThan",
+        "tactics": [],
+        "queryPeriod": "P1D",
+        "techniques": [],
+        "displayName": "[GEN][MIN] AS-SNTL-038 Fallo de ejecución de regla programada"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

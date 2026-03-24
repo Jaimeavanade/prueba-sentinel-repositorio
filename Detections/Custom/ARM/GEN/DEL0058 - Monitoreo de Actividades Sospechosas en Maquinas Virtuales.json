@@ -1,0 +1,33 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "MicrosoftAzureBastionAuditLogs\n//| where TimeGenerated > ago(5m)\n| extend User = coalesce(UserEmail, UserName)\n| extend Hour = datetime_part(\"hour\", TimeGenerated)\n| where OperationName has \"Failed\" or isnull(SessionEndTime) or Duration > 3600 or Hour < 8 or Hour > 18 // La sesión no tiene registrada una hora de finalización, dura más de 1 hora o se encuentra fuera del horario laboral.\n| where ClientIpAddress !startswith \"10.\" and ClientIpAddress !startswith \"192.168\" // Para conexiones desde direcciones IP no corporativas\n//| where datetime_part(\"hour\", TimeGenerated) < 8 or datetime_part(\"hour\", TimeGenerated) > 19 // Para conexiones fuera del horario laboral. \n| extend User = coalesce(UserEmail, UserName)\n| project\n    TimeGenerated,\n    OperationName,\n    User,\n    ClientIpAddress,\n    Protocol,\n    TargetVMIPAddress,\n    Duration,\n    Message\n| order by TimeGenerated desc\n",
+        "severity": "Medium",
+        "queryFrequency": "PT5H",
+        "description": "Este caso de uso tiene como objetivo detectar actividades potencialmente sospechosas en máquinas virtuales (VMs) accedidas mediante Microsoft Azure Bastion, enfocándose en patrones de uso anómalos relacionados con el origen de la conexión y el horario de acceso.\n\nLa detección se centra en accesos realizados desde direcciones IP no corporativas y fuera del horario laboral, lo que puede indicar uso indebido de credenciales, accesos no autorizados o actividades administrativas no planificadas.\n\nLa búsqueda se ejecutará cada 5 minutos teniendo en cuenta la última hora.",
+        "triggerThreshold": 0,
+        "enabled": false,
+        "triggerOperator": "GreaterThan",
+        "tactics": [
+          "InitialAccess",
+          "CredentialAccess"
+        ],
+        "queryPeriod": "PT5H",
+        "techniques": [],
+        "displayName": "DEL0058 - Monitoreo de Actividades Sospechosas en Maquinas Virtuales"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

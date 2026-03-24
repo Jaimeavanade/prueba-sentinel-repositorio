@@ -1,0 +1,30 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "SecurityAlert\n| where ProductName == \"Azure Security Center\"\n| extend Principal_IP_ = tostring(parse_json(ExtendedProperties).[\"Principal IP\"])\n| extend Malicious_URL_ = tostring(parse_json(ExtendedProperties).[\"Malicious URL\"])\n| where Malicious_URL_ !contains \"example.com\"\n| summarize\n    Message=make_set(ProviderName),\n    startTime=min(TimeGenerated),\n    endTime=max(TimeGenerated),\n    EventCount = count()\n    by AlertName, Principal_IP_\n\n",
+        "severity": "Medium",
+        "queryFrequency": "PT10M",
+        "description": "[SEGITTUR] Alerta Defender for Cloud",
+        "triggerThreshold": 0,
+        "enabled": true,
+        "triggerOperator": "GreaterThan",
+        "tactics": [],
+        "queryPeriod": "PT1H",
+        "techniques": [],
+        "displayName": "[SEGITTUR] Alerta Defender for Cloud"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

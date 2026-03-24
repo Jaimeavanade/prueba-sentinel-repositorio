@@ -1,0 +1,30 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "let threshold = 4; \nlet timeRange = 2h;\nMicrosoftAzureBastionAuditLogs\n| where OperationName == \"Microsoft.Network/BastionHost/disconnect\"\n| where Message == \"Login Failed\"\n| where TimeGenerated > ago(timeRange) // Filtra por los eventos ocurridos en los últimos 10 minutos\n| summarize Message=make_set(Message),startTime=min(TimeGenerated),endTime=max(TimeGenerated),EventCount = count() by UserName,UserEmail,TargetVMIPAddress \n| where EventCount>=threshold\n",
+        "severity": "Low",
+        "queryFrequency": "PT10M",
+        "description": "Detección de fuerza bruta de un usuario",
+        "triggerThreshold": 0,
+        "enabled": true,
+        "triggerOperator": "GreaterThan",
+        "tactics": [],
+        "queryPeriod": "PT3H",
+        "techniques": [],
+        "displayName": "[SEGITTUR] CA-BAS-Login-001 Multiples Login fallidos"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

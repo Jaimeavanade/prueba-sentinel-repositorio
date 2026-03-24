@@ -1,0 +1,33 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "AzureDiagnostics\n| where ResourceType == \"VIRTUALMACHINES\" or ResourceType contains \"Microsoft.Compute/virtualMachines\"\n| where Category == \"GuestConfiguration\" or Category == \"Policy\"\n| summarize lastSeen = max(TimeGenerated) by Resource, ResourceGroup, SubscriptionId\n| order by lastSeen asc\n\n",
+        "severity": "Medium",
+        "queryFrequency": "PT5M",
+        "description": "Este caso de uso permite identificar máquinas virtuales con cumplimiento/estado de configuración relacionadas con Guest Configuration o Azure Policy, con el fin de priorizar VMs que puedan tener software obsoleto o desviaciones de configuración que incrementen el riesgo de vulnerabilidades.\n\nLa búsqueda se ejecutará cada 5 min. teniendo en cuenta la última hora.",
+        "triggerThreshold": 0,
+        "enabled": true,
+        "triggerOperator": "GreaterThan",
+        "tactics": [
+          "Impact",
+          "InitialAccess"
+        ],
+        "queryPeriod": "PT1H",
+        "techniques": [],
+        "displayName": "EXP0013 - Software Obsoleto en Maquinas Virtuales"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

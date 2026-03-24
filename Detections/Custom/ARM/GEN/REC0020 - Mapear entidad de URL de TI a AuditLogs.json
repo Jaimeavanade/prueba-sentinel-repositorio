@@ -1,0 +1,34 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "let dt_lookBack = 1h;\nlet ioc_lookBack = 14d;\nlet AuditEvents = materialize(AuditLogs\n  | where TimeGenerated >= ago(dt_lookBack)\n  // Extract the URL that is contained within the JSON data\n  | extend Url = extract(\"(http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\\\(\\\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+)\", 1,tostring(TargetResources))\n  | where isnotempty(Url)\n  | extend userPrincipalName = tostring(parse_json(tostring(InitiatedBy.user)).userPrincipalName)\n  | extend TargetResourceDisplayName = tostring(TargetResources[0].displayName)\n  | extend Audit_TimeGenerated = TimeGenerated);\nlet AuditUrls = AuditEvents | distinct Url = tolower(Url) | summarize make_list(Url);\nThreatIntelligenceIndicator\n| where isnotempty(Url)\n| where TimeGenerated >= ago(ioc_lookBack)\n| where tolower(Url) in (AuditUrls)\n| summarize LatestIndicatorTime = arg_max(TimeGenerated, *) by IndicatorId\n| where Active == true and ExpirationDateTime > now()\n| where Description !contains_cs \"State: inactive;\" and Description !contains_cs \"State: falsepos;\"\n// using innerunique to keep perf fast and result set low, we only need one match to indicate potential malicious activity that needs to be investigated\n| join kind=innerunique (AuditEvents) on Url\n| where Audit_TimeGenerated < ExpirationDateTime\n| summarize Audit_TimeGenerated = arg_max(Audit_TimeGenerated, *) by IndicatorId, Url\n| project Audit_TimeGenerated, Description, ActivityGroupNames, IndicatorId, ThreatType, ExpirationDateTime, ConfidenceScore,\nOperationName, Identity, userPrincipalName, TargetResourceDisplayName, Url\n| extend AccountName = tostring(split(userPrincipalName, \"@\")[0]), AccountUPNSuffix = tostring(split(userPrincipalName, \"@\")[1])\n| extend HostName = tostring(split(TargetResourceDisplayName, \".\")[0]), DomainIndex = toint(indexof(TargetResourceDisplayName, '.'))\n| extend HostNameDomain = iff(DomainIndex != -1, substring(TargetResourceDisplayName, DomainIndex + 1), TargetResourceDisplayName)\n",
+        "severity": "Medium",
+        "queryFrequency": "PT1H",
+        "description": "Esta consulta identifica cualquier indicador de compromiso de URL (IOC) a partir de la inteligencia de amenazas (TI) mediante la búsqueda de coincidencias en AuditLogs.",
+        "triggerThreshold": 0,
+        "enabled": true,
+        "triggerOperator": "GreaterThan",
+        "tactics": [
+          "CommandAndControl"
+        ],
+        "queryPeriod": "P14D",
+        "techniques": [
+          "T1071"
+        ],
+        "displayName": "REC0020 - Mapear entidad de URL de TI a AuditLogs"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

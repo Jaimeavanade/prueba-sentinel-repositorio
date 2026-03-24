@@ -1,0 +1,34 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "//Modifica nombre de la alerta, por la alerta a excluir\nlet watchlist_EX_AV_051_RuleException = _GetWatchlist('watchlist_EX_AV_051_RuleException') | project SearchKey;\nSecurityAlert\n| where ProviderName == 'MDATP'\n| where AlertSeverity == 'Medium'\n| where Status == 'New'\n| where AlertName !in (watchlist_EX_AV_051_RuleException)\n| summarize count() by CompromisedEntity\n| where count_ >= 1\n| join kind=inner (SecurityAlert\n    | where ProviderName == 'MDATP'\n    | where AlertSeverity == 'Medium'\n    | where Status == 'New')\n    on CompromisedEntity\n//| lookup kind=leftouter _GetWatchlist('watchlist_Device_Asset_Inventory') on $left.CompromisedEntity == $right.HostName\n| project TimeGenerated, EventCount = count_, EventType = DisplayName, ThreatName = AlertName, ThreatRef = AlertType, DvcHostname = CompromisedEntity, EventMessage = Description, EventVendor = VendorName, EventProduct = ProviderName, EventReportUrl = AlertLink, EventOriginalUid = VendorOriginalId, ConfidenceScore, IsIncident, EventStartTime = StartTime, EventEndTime = EndTime, Entities, DvcAction = Status, Tactics, Techniques, SubTechniques, ExtendedProperties",
+        "severity": "Medium",
+        "queryFrequency": "PT5M",
+        "description": "",
+        "triggerThreshold": 0,
+        "enabled": true,
+        "triggerOperator": "GreaterThan",
+        "tactics": [
+          "Execution"
+        ],
+        "queryPeriod": "PT5M",
+        "techniques": [
+          "T1204"
+        ],
+        "displayName": "[GEN][MIN][MDATP] EX-AV-051-1204.002 Incidente de criticidad ALTA"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}

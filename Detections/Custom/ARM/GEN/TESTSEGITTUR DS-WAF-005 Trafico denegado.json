@@ -1,0 +1,30 @@
+{
+  "parameters": {
+    "workspaceName": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'),'/',System.Collections.Hashtable.id)]",
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "kind": "Scheduled",
+      "properties": {
+        "query": "let timeRange = 10m;\nlet watchlist_DS_WAF_005 = _GetWatchlist(\"watchlist_DS_WAF_005\");\nAzureDiagnostics\n| where TimeGenerated > ago(timeRange)\n| where ruleName_s !in (watchlist_DS_WAF_005)\n| where ResourceType in (\"FRONTDOORS\", \"PROFILES\")\n| where action_s == \"Block\"\n| where isnotempty( clientIP_s)\n|summarize by clientIP_s,requestUri_s, ruleName_s",
+        "severity": "Low",
+        "queryFrequency": "PT10M",
+        "description": "Detección de trafico denegado en waf por reglas",
+        "triggerThreshold": 20,
+        "enabled": false,
+        "triggerOperator": "GreaterThan",
+        "tactics": [],
+        "queryPeriod": "PT1H",
+        "techniques": [],
+        "displayName": "[TEST][SEGITTUR] DS-WAF-005 Trafico denegado"
+      },
+      "apiVersion": "2022-12-01-preview"
+    }
+  ],
+  "contentVersion": "1.0.0.0",
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+}
