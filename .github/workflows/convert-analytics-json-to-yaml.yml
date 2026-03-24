@@ -3,8 +3,9 @@ name: Convert Analytics JSON to YAML
 on:
   workflow_dispatch:
 
+# ✅ CLAVE para que github-actions pueda hacer push
 permissions:
-  contents: write   # ✅ CLAVE PARA PODER HACER git push
+  contents: write
 
 jobs:
   convert:
