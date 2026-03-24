@@ -31,10 +31,12 @@ foreach ($rule in $json.resources) {
         continue
     }
 
-    # ✅ displayName como filename (solo quitar caracteres ilegales)
+    # ✅ displayName como filename
+    # ✅ Mantiene espacios, acentos y guiones
+    # ❌ Elimina SOLO caracteres problemáticos (incluidos [] que rompen PowerShell)
     $safeFileName = (
         $rule.properties.displayName `
-            -replace '[\\\/:\*\?"<>\|]', ''
+            -replace '[\\\/:\*\?"<>\|\[\]]', ''
     ).Trim()
 
     $yamlObject = @{
