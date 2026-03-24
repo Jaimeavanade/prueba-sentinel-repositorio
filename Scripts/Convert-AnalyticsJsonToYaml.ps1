@@ -32,18 +32,18 @@ foreach ($rule in $json.resources) {
     }
 
     $yamlObject = @{
-        id          = $rule.name
-        name        = $rule.properties.displayName
-        description = $rule.properties.description
-        severity    = $rule.properties.severity
-        enabled     = $rule.properties.enabled
-        query       = $rule.properties.query
-        queryFrequency = $rule.properties.queryFrequency
-        queryPeriod    = $rule.properties.queryPeriod
-        triggerOperator = $rule.properties.triggerOperator
-        triggerThreshold = $rule.properties.triggerThreshold
-        tactics     = $rule.properties.tactics
-        techniques  = $rule.properties.techniques
+        id                  = $rule.name
+        name                = $rule.properties.displayName
+        description         = $rule.properties.description
+        severity            = $rule.properties.severity
+        enabled             = $rule.properties.enabled
+        query               = $rule.properties.query
+        queryFrequency      = $rule.properties.queryFrequency
+        queryPeriod         = $rule.properties.queryPeriod
+        triggerOperator     = $rule.properties.triggerOperator
+        triggerThreshold    = $rule.properties.triggerThreshold
+        tactics             = $rule.properties.tactics
+        techniques          = $rule.properties.techniques
     }
 
     $yamlContent = $yamlObject | ConvertTo-Yaml
@@ -54,5 +54,7 @@ foreach ($rule in $json.resources) {
 
     Write-Host "Generated YAML: $outputFile"
 }
+
+Write-Host "✅ Conversion completed successfully"
 
 Write-Host "✅ Conversion completed successfully"
