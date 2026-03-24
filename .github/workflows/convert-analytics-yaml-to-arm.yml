@@ -1,48 +1,78 @@
-name: Convert Sentinel Analytics YAML to ARM JSON
+name: Convert Analytics YAML to Repos-compatible ARM JSON
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "Detections/Custom/YAML/**.yml"
+      - "Detections/Custom/YAML/**.yaml"
+      - "Scripts/Convert-AnalyticsYamlToArmJson.ps1"
 
-# Permiso necesario para hacer push
 permissions:
   contents: write
 
 jobs:
-  convert-yaml-to-arm:
+  convert:
     runs-on: ubuntu-latest
 
     steps:
-    # ---------------------------------------------
-    # Checkout
-    # ---------------------------------------------
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    # ---------------------------------------------
-    # Instalar módulo powershell-yaml
-    # ---------------------------------------------
-    - name: Install powershell-yaml module
-      shell: pwsh
-      run: |
-        Install-Module powershell-yaml -Force -Scope CurrentUser
+      - name: Setup PowerShell
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: "latest"
+          inlineScript: |
+            pwsh -NoLogo -NoProfile -Command '$PSVersionTable'
 
-    # ---------------------------------------------
-    # Convertir YAML -> ARM
-    # ---------------------------------------------
-    - name: Convert Analytics YAML to ARM JSON
-      shell: pwsh
-      run: |
-        ./Scripts/Convert-AnalyticsYamlToArmJson.ps1 `
-          -YamlInputPath "Detections/Custom/YAML" `
-          -ArmOutputPath "Detections/Custom/ARM"
+      - name: Install PowerShell modules
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name "PSGallery" -InstallationPolicy Trusted
+          Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
 
-    # ---------------------------------------------
-    # Commit y push
-    # ---------------------------------------------
-    - name: Commit and push ARM templates
-      run: |
-        git config user.name "github-actions"
-        git config user.email "github-actions@github.com"
-        git add Detections/Custom/ARM
-        git commit -m "Convert Sentinel analytics YAML to ARM templates" || echo "No changes to commit"
-        git push
+      - name: Convert YAML to ARM JSON (Repositories compatible)
+        shell: pwsh
+        run: |
+          $yamlRoot = "Detections/Custom/YAML"
+          $outRoot  = "Detections/Custom/ARM"
+
+          if (-not (Test-Path $yamlRoot)) {
+            Write-Host "YAML root folder not found: $yamlRoot"
+            exit 0
+          }
+
+          New-Item -ItemType Directory -Force -Path $outRoot | Out-Null
+
+          Get-ChildItem $yamlRoot -Recurse -Include *.yaml, *.yml | ForEach-Object {
+            $inFile = $_.FullName
+            $rel = $inFile.Substring((Resolve-Path $yamlRoot).Path.Length).TrimStart('\','/')
+            $baseName = [IO.Path]::GetFileNameWithoutExtension($inFile)
+
+            # Output: keep same name, flat in ARM folder (or preserve subfolders if you want)
+            $outFile = Join-Path $outRoot ($baseName + ".json")
+
+            Write-Host "Converting: $inFile -> $outFile"
+            ./Scripts/Convert-AnalyticsYamlToArmJson.ps1 -InputYamlPath $inFile -OutputJsonPath $outFile -RuleIdSeed $rel
+          }
+
+      - name: Commit changes (if any)
+        shell: bash
+        run: |
+          set -e
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add Detections/Custom/ARM/*.json || true
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: generate Repos-compatible ARM JSON for analytics rules"
+          git push
