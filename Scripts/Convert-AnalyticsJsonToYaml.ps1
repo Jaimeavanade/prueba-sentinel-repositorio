@@ -26,10 +26,17 @@ if (-not $json.resources) {
 
 foreach ($rule in $json.resources) {
 
-    if (-not $rule.name) {
-        Write-Warning "Skipping rule without name"
+    if (-not $rule.properties.displayName) {
+        Write-Warning "Skipping rule without displayName"
         continue
     }
+
+    # ✅ Use displayName as filename (SANITIZED)
+    $safeFileName = $rule.properties.displayName `
+        -replace '[\\\/:\*\?"<>\|\[\]\(\)]', '_' `
+        -replace '\s+', '_' `
+        -replace '_+', '_' `
+        .Trim('_')
 
     $yamlObject = @{
         id               = $rule.name
@@ -48,7 +55,7 @@ foreach ($rule in $json.resources) {
 
     $yamlContent = $yamlObject | ConvertTo-Yaml
 
-    $outputFile = Join-Path $OutputFolder "$($rule.name).yaml"
+    $outputFile = Join-Path $OutputFolder "$safeFileName.yaml"
 
     $yamlContent | Out-File -FilePath $outputFile -Encoding utf8
 
