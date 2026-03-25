@@ -8,7 +8,7 @@
   - Genera ARM templates JSON en Detections/Custom/ARM (por defecto)
   - Normaliza duraciones a ISO 8601 ESTRICTO en MAYÚSCULAS:
       queryFrequency, queryPeriod, suppressionDuration, lookbackDuration, etc.
-  - properties.displayName (ARM) = SIEMPRE el campo 'name' del YAML
+  - properties.displayName (ARM) = SIEMPRE el NOMBRE DEL ARCHIVO YAML (sin extensión)
   - Construye el resource name ARM:
       [concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-<Slug>')]
 
@@ -33,11 +33,11 @@ function Remove-Diacritics {
 
 function New-RuleSlug {
   param(
-    [Parameter(Mandatory)][string]$NameFromYaml,
+    [Parameter(Mandatory)][string]$BaseName,
     [Parameter(Mandatory)][string]$InputFilePath
   )
 
-  $base = (Remove-Diacritics $NameFromYaml).Trim()
+  $base = (Remove-Diacritics $BaseName).Trim()
   $base = $base -replace '[\s_]+', '-'            # espacios/underscore -> guión
   $base = $base -replace '[^A-Za-z0-9\-]', ''     # quitar caracteres raros
   $base = $base -replace '\-+', '-'               # colapsar guiones
@@ -55,7 +55,7 @@ function New-RuleSlug {
 function Convert-DurationToIsoUpper {
   <#
     Acepta:
-      - ISO8601 (cualquier casing) -> lo devuelve en MAYÚSCULAS
+      - ISO8601 (cualquier casing) -> devuelve MAYÚSCULAS
       - Formatos YAML típicos: 5m, 1h, 2d, 1h30m, 2d1h30m, 15s, 1w, 2w3d4h5m6s
     Devuelve:
       - ISO8601 ESTRICTO en MAYÚSCULAS (P..T..)
@@ -155,16 +155,13 @@ function Convert-OneYamlToArmJson {
   }
 
   # --------------------------------------------------------------------
-  # displayName ARM: SIEMPRE usar el campo 'name' del YAML (obligatorio)
+  # ✅ Requisito del usuario:
+  # properties.displayName = SIEMPRE el NOMBRE DEL ARCHIVO YAML (sin extensión)
   # --------------------------------------------------------------------
-  $displayName = $null
-  if ($y.PSObject.Properties.Name -contains 'name') {
-    $displayName = [string]$y.name
-  }
+  $displayName = [IO.Path]::GetFileNameWithoutExtension($InputFilePath).Trim()
   if ([string]::IsNullOrWhiteSpace($displayName)) {
-    throw "El YAML no contiene el campo obligatorio 'name' (requerido para asignar displayName). Archivo: $InputFilePath"
+    throw "No se pudo determinar displayName desde el nombre del archivo. Archivo: $InputFilePath"
   }
-  $displayName = $displayName.Trim()
 
   # Campos base
   $description = ""
@@ -242,8 +239,8 @@ function Convert-OneYamlToArmJson {
     $techniques = @($y.relevantTechniques)
   }
 
-  # ARM resource name: Custom-<slug>
-  $slug = New-RuleSlug -NameFromYaml $displayName -InputFilePath $InputFilePath
+  # ARM resource name: Custom-<slug> (basado en displayName=nombre de archivo)
+  $slug = New-RuleSlug -BaseName $displayName -InputFilePath $InputFilePath
   $armRuleName = "$NamePrefix$slug"
 
   # incidentConfiguration + lookbackDuration normalizado si existe
@@ -256,7 +253,7 @@ function Convert-OneYamlToArmJson {
         Convert-DurationToIsoUpper ([string]$incidentConfiguration.groupingConfiguration.lookbackDuration)
     }
   } else {
-    # Default razonable (similar a tu ejemplo)
+    # Default razonable
     $incidentConfiguration = [pscustomobject]@{
       createIncident = $true
       groupingConfiguration = [pscustomobject]@{
@@ -399,7 +396,7 @@ function Convert-AnalyticsYamlFolderToArmJson {
   Write-Host "✅ Conversión completada: OK=$ok / TOTAL=$($yamlFiles.Count). Report: $ReportPath"
 }
 
-# Permite ejecutar el script directamente sin importar funciones
+# Ejecutar directamente
 if ($MyInvocation.InvocationName -ne '.') {
   Convert-AnalyticsYamlFolderToArmJson
 }
