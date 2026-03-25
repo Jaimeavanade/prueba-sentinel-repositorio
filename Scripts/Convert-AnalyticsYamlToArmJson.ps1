@@ -9,6 +9,7 @@
   - Normaliza duraciones a ISO 8601 ESTRICTO en MAYÚSCULAS:
       queryFrequency, queryPeriod, suppressionDuration, lookbackDuration, etc.
   - properties.displayName (ARM) = SIEMPRE el NOMBRE DEL ARCHIVO YAML (sin extensión)
+  - Extrae query aunque esté definida como bloque YAML: |-, |, |+, |2+, |2-
   - Construye el resource name ARM:
       [concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-<Slug>')]
 
@@ -38,49 +39,37 @@ function New-RuleSlug {
   )
 
   $base = (Remove-Diacritics $BaseName).Trim()
-  $base = $base -replace '[\s_]+', '-'            # espacios/underscore -> guión
-  $base = $base -replace '[^A-Za-z0-9\-]', ''     # quitar caracteres raros
-  $base = $base -replace '\-+', '-'               # colapsar guiones
+  $base = $base -replace '[\s_]+', '-'
+  $base = $base -replace '[^A-Za-z0-9\-]', ''
+  $base = $base -replace '\-+', '-'
   $base = $base.Trim('-')
 
   if ([string]::IsNullOrWhiteSpace($base)) {
     $base = "Rule"
   }
 
-  # Sufijo corto determinista para evitar colisiones
   $hash = (Get-FileHash -Algorithm SHA1 -Path $InputFilePath).Hash.Substring(0,8)
   return "$base-$hash"
 }
 
 function Convert-DurationToIsoUpper {
-  <#
-    Acepta:
-      - ISO8601 (cualquier casing) -> devuelve MAYÚSCULAS
-      - Formatos YAML típicos: 5m, 1h, 2d, 1h30m, 2d1h30m, 15s, 1w, 2w3d4h5m6s
-    Devuelve:
-      - ISO8601 ESTRICTO en MAYÚSCULAS (P..T..)
-  #>
   param([AllowNull()][string]$Value)
 
   if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
 
   $v = $Value.Trim()
 
-  # Ya parece ISO 8601 (P...) -> forzar MAYÚSCULAS
   if ($v -match '^[Pp]') {
     return $v.ToUpperInvariant()
   }
 
-  # Normalizar sin espacios
   $compact = ($v -replace '\s+', '').ToLowerInvariant()
 
-  # Secuencia de grupos número+unidad (w,d,h,m,s)
   if ($compact -notmatch '^(\d+[wdhms])+$') {
     throw "Duración no reconocida: '$Value' (se esperaba ISO8601 o formato tipo '5m', '1h30m', '2d1h')."
   }
 
   $weeks=0; $days=0; $hours=0; $mins=0; $secs=0
-
   [regex]::Matches($compact, '(\d+)([wdhms])') | ForEach-Object {
     $n = [int]$_.Groups[1].Value
     switch ($_.Groups[2].Value) {
@@ -135,6 +124,83 @@ function Map-TriggerOperator {
   return $o
 }
 
+function Extract-QueryFromYamlRaw {
+  <#
+    Extrae el bloque query: |-, |, |+, |2+, |2- desde texto YAML sin depender del parser.
+    Devuelve string con el KQL (sin el marcador |...).
+  #>
+  param(
+    [Parameter(Mandatory)][string]$YamlRaw
+  )
+
+  $lines = $YamlRaw -split "`r?`n"
+  $idx = -1
+  $baseIndent = 0
+  $headerRegex = '^(?<indent>\s*)query\s*:\s*\|(?<ind>\d+)?(?<chomp>[+-])?\s*$'
+
+  for ($i=0; $i -lt $lines.Length; $i++) {
+    if ($lines[$i] -match $headerRegex) {
+      $idx = $i
+      $baseIndent = $Matches['indent'].Length
+      break
+    }
+  }
+
+  if ($idx -lt 0) {
+    return $null
+  }
+
+  # Buscar primera línea de contenido no vacía para deducir indentación del bloque
+  $contentIndent = $null
+  for ($j = $idx + 1; $j -lt $lines.Length; $j++) {
+    $l = $lines[$j]
+    if ($l -match '^\s*$') { continue } # línea vacía
+    $leading = ($l -replace '^(?<sp>\s*).*$', '${sp}').Length
+    if ($leading -le $baseIndent) {
+      # llegó otro top-level / fin del bloque sin contenido real
+      return ""
+    }
+    $contentIndent = $leading
+    break
+  }
+
+  if ($null -eq $contentIndent) {
+    return ""
+  }
+
+  $out = New-Object System.Collections.Generic.List[string]
+  for ($k = $idx + 1; $k -lt $lines.Length; $k++) {
+    $l = $lines[$k]
+
+    if ($l -match '^\s*$') {
+      # mantener líneas vacías dentro del bloque
+      $out.Add("")
+      continue
+    }
+
+    $leading = ($l -replace '^(?<sp>\s*).*$', '${sp}').Length
+    if ($leading -lt $contentIndent) {
+      # fin del bloque
+      break
+    }
+
+    # quitar indentación común del bloque
+    if ($l.Length -ge $contentIndent) {
+      $out.Add($l.Substring($contentIndent))
+    } else {
+      $out.Add("")
+    }
+  }
+
+  # Unir y limpiar trailing whitespace
+  $q = ($out -join "`n").TrimEnd()
+
+  # Seguridad extra: si por algún motivo el query empezase por un marcador |... lo quitamos
+  $q = $q -replace '^\|\d*[+-]?\s*`n', ''
+
+  return $q
+}
+
 function Convert-OneYamlToArmJson {
   param(
     [Parameter(Mandatory)][string]$InputFilePath,
@@ -154,32 +220,42 @@ function Convert-OneYamlToArmJson {
     throw "El YAML no se pudo parsear o está vacío. Archivo: $InputFilePath"
   }
 
-  # --------------------------------------------------------------------
-  # ✅ Requisito del usuario:
-  # properties.displayName = SIEMPRE el NOMBRE DEL ARCHIVO YAML (sin extensión)
-  # --------------------------------------------------------------------
+  # displayName ARM = nombre del archivo YAML
   $displayName = [IO.Path]::GetFileNameWithoutExtension($InputFilePath).Trim()
   if ([string]::IsNullOrWhiteSpace($displayName)) {
     throw "No se pudo determinar displayName desde el nombre del archivo. Archivo: $InputFilePath"
   }
 
-  # Campos base
+  # description
   $description = ""
   if ($y.PSObject.Properties.Name -contains 'description' -and $null -ne $y.description) {
     $description = ([string]$y.description).TrimEnd()
   }
 
+  # severity
   $severity = "Medium"
   if ($y.PSObject.Properties.Name -contains 'severity' -and -not [string]::IsNullOrWhiteSpace([string]$y.severity)) {
     $severity = [string]$y.severity
   }
 
+  # query (con fallback robusto para |-, |, |+, |2+, |2-)
   $query = $null
-  if ($y.PSObject.Properties.Name -contains 'query') {
+  if ($y.PSObject.Properties.Name -contains 'query' -and -not [string]::IsNullOrWhiteSpace([string]$y.query)) {
     $query = [string]$y.query
+  } else {
+    $query = Extract-QueryFromYamlRaw -YamlRaw $yamlRaw
   }
+
   if ([string]::IsNullOrWhiteSpace($query)) {
-    throw "El YAML no contiene 'query' (obligatorio). Archivo: $InputFilePath"
+    # Este es exactamente el error que ves en el run actual [1]()
+    throw "No se pudo obtener 'query'. El YAML no contiene 'query' parseable (ni bloque |...). Archivo: $InputFilePath"
+  }
+
+  # Si la query empieza por '|...' por algún artefacto, lo quitamos
+  $query = $query.TrimStart()
+  if ($query -match '^\|\d*[+-]?$') {
+    $query = $query -replace '^\|\d*[+-]?\s*', ''
+    $query = $query.TrimStart()
   }
 
   # Duraciones (ISO estricto MAYÚSCULAS)
@@ -187,7 +263,6 @@ function Convert-OneYamlToArmJson {
   if ($y.PSObject.Properties.Name -contains 'queryFrequency') {
     $queryFrequency = Convert-DurationToIsoUpper ([string]$y.queryFrequency)
   }
-
   $queryPeriod = $null
   if ($y.PSObject.Properties.Name -contains 'queryPeriod') {
     $queryPeriod = Convert-DurationToIsoUpper ([string]$y.queryPeriod)
@@ -239,11 +314,11 @@ function Convert-OneYamlToArmJson {
     $techniques = @($y.relevantTechniques)
   }
 
-  # ARM resource name: Custom-<slug> (basado en displayName=nombre de archivo)
+  # ARM resource name
   $slug = New-RuleSlug -BaseName $displayName -InputFilePath $InputFilePath
   $armRuleName = "$NamePrefix$slug"
 
-  # incidentConfiguration + lookbackDuration normalizado si existe
+  # incidentConfiguration + lookbackDuration
   $incidentConfiguration = $null
   if ($y.PSObject.Properties.Name -contains 'incidentConfiguration' -and $null -ne $y.incidentConfiguration) {
     $incidentConfiguration = $y.incidentConfiguration | ConvertTo-Json -Depth 50 | ConvertFrom-Json
@@ -253,7 +328,6 @@ function Convert-OneYamlToArmJson {
         Convert-DurationToIsoUpper ([string]$incidentConfiguration.groupingConfiguration.lookbackDuration)
     }
   } else {
-    # Default razonable
     $incidentConfiguration = [pscustomobject]@{
       createIncident = $true
       groupingConfiguration = [pscustomobject]@{
@@ -284,7 +358,7 @@ function Convert-OneYamlToArmJson {
     $customDetails = $y.customDetails | ConvertTo-Json -Depth 50 | ConvertFrom-Json
   }
 
-  # Validaciones mínimas: queryFrequency/queryPeriod obligatorios en Scheduled
+  # Validaciones mínimas
   if ([string]::IsNullOrWhiteSpace($queryFrequency)) {
     throw "Falta queryFrequency (o no se pudo convertir). Archivo: $InputFilePath"
   }
@@ -292,7 +366,6 @@ function Convert-OneYamlToArmJson {
     throw "Falta queryPeriod (o no se pudo convertir). Archivo: $InputFilePath"
   }
 
-  # Construir plantilla ARM
   $template = [pscustomobject]@{
     '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'
     contentVersion = '1.0.0.0'
@@ -328,11 +401,9 @@ function Convert-OneYamlToArmJson {
     )
   }
 
-  # Asegurar carpeta destino
   $outDir = Split-Path -Parent $OutputFilePath
   if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
 
-  # Serializar JSON
   $json = $template | ConvertTo-Json -Depth 100
   Set-Content -Path $OutputFilePath -Value $json -Encoding UTF8
 }
@@ -364,8 +435,6 @@ function Convert-AnalyticsYamlFolderToArmJson {
 
   foreach ($f in $yamlFiles) {
     $inPath = $f.FullName
-
-    # Mantener estructura relativa desde InputFolder
     $root = (Resolve-Path $InputFolder).Path
     $rel  = $inPath.Substring($root.Length).TrimStart('\','/')
     $outFile = Join-Path $OutputFolder ($rel -replace '\.ya?ml$', '.json')
@@ -396,7 +465,6 @@ function Convert-AnalyticsYamlFolderToArmJson {
   Write-Host "✅ Conversión completada: OK=$ok / TOTAL=$($yamlFiles.Count). Report: $ReportPath"
 }
 
-# Ejecutar directamente
 if ($MyInvocation.InvocationName -ne '.') {
   Convert-AnalyticsYamlFolderToArmJson
 }
