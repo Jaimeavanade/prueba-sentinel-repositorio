@@ -1,0 +1,144 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/6fd7a6f2-245b-4173-8216-9185b3b252c4')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/6fd7a6f2-245b-4173-8216-9185b3b252c4')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "AUTO DISABLED REC0030 - Trafico inusual entre maquinas virtuales en una red virtual privada (VNet)",
+                "description": "The alert rule was disabled due to too many consecutive failures. Reason: This rule was automatically disabled due to insufficient permissions. The rule requires permissions which are different from those held by the user who created the rule at the time of rule creation. This often happens due to changes in functions used or references to external data. Please edit and re-save the rule with a user that can execute the query in it. For troubleshooting guidance, see: https://aka.ms/AnalyticsAutoDisabledRules Este caso de uso detecta comportamientos anómalos de tráfico lateral entre máquinas virtuales dentro de una red virtual privada (VNet), mediante el análisis de NSG Flow Logs. La detección se enfoca en volúmenes o patrones atípicos de comunicación interna sobre puertos sensibles de administración o movimiento lateral (RDP, SMB, SSH, WinRM).\n\nLa búsqueda se ejecutará cada 5 minutos teniendo en cuenta la última hora.",
+                "severity": "High",
+                "enabled": false,
+                "query": "AzureDiagnostics\n| where TimeGenerated > ago(1h)\n| where Category == \"NetworkSecurityGroupFlowEvent\"\n| where isnotempty(msg_s)\n| extend flowParts = split(msg_s, \"\")\n| extend srcIp = tostring(flowParts[1]),\n         dstIp = tostring(flowParts[2]),\n         srcPort = tostring(flowParts[3]),\n         dstPort = tostring(flowParts[4]),\n         protocol = tostring(flowParts[5]),\n         flowAction = tostring(flowParts[6])\n| where dstPort in (\"3389\", \"445\", \"22\", \"5985\")  // RDP, SMB, SSH, WinRM\n| summarize conexiones = count() by dstIp, srcIp, dstPort, protocol, flowAction, bin(TimeGenerated, 5m)\n| where conexiones > 50\n| order by conexiones desc\n",
+                "queryFrequency": "PT5M",
+                "queryPeriod": "PT1H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "Reconnaissance",
+                    "CredentialAccess",
+                    "LateralMovement",
+                    "InitialAccess"
+                ],
+                "techniques": [],
+                "subTechniques": [],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT5H",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "IP",
+                            "Account"
+                        ],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": [
+                            "Fecha",
+                            "IPOrigen",
+                            "Protocolo",
+                            "IPDestino",
+                            "PuertoDestino",
+                            "NumConexiones",
+                            "Accion"
+                        ]
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": null,
+                "customDetails": {
+                    "Fecha": "TimeGenerated",
+                    "IPOrigen": "srcIp",
+                    "Protocolo": "protocol",
+                    "IPDestino": "dstIp",
+                    "PuertoDestino": "dstPort",
+                    "Accion": "flowAction",
+                    "NumConexiones": "conexiones"
+                },
+                "entityMappings": [
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "PUID",
+                                "columnName": "TimeGenerated"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "srcIp"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "protocol"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "dstIp"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "dstPort"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "flowAction"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "ObjectGuid",
+                                "columnName": "conexiones"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}

@@ -1,0 +1,102 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/8f7d2020-6e4b-4835-aa8d-e3810b3fcb2d')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8f7d2020-6e4b-4835-aa8d-e3810b3fcb2d')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "REC0031 - WAF - Monitorizacion de Eventos Matched y Bloqueo 949110",
+                "description": "Detectar y correlacionar eventos Matched y Blocked del WAF de Azure Application Gateway, especialmente aquellos relacionados con el Anomaly Score, que se acumulan y terminan en un bloqueo por la regla 949110 (Anomaly score exceeded).",
+                "severity": "High",
+                "enabled": true,
+                "query": "AzureDiagnostics\n| where Category == \"ApplicationGatewayFirewallLog\"\n| where action_s in (\"Blocked\", \"Matched\")\n| where clientIp_s !in (\"217.14.34.113\", \"163.116.243.101\", \"217.14.40.189\")\n// | where ruleId_s !in (\"980130\", \"980131\")  // se ignora reglas genéricas\n| where ruleId_s == \"949110\"\n| extend esBloqueoFinal = iff(ruleId_s == \"949110\", \"Sí\", \"No\")\n| project\n    TimeGenerated,\n    clientIp_s,\n    hostname_s,\n    requestUri_s,\n    action_s,\n    ruleId_s,\n    esBloqueoFinal,\n    Message,\n    details_message_s,\n    ruleSetType_s,\n    details_file_s\n| summarize Hits=count(), Fecha=arg_max(TimeGenerated, *), PrimerHit=min(TimeGenerated)by clientIp_s, ruleId_s\n| where Hits >= 5\n| order by PrimerHit\n\n",
+                "queryFrequency": "PT5H",
+                "queryPeriod": "P1D",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "Reconnaissance",
+                    "InitialAccess",
+                    "DefenseEvasion"
+                ],
+                "techniques": [],
+                "subTechniques": [],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT5H",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "IP",
+                            "Account"
+                        ],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": [
+                            "ClientIP"
+                        ]
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": null,
+                "customDetails": {
+                    "Fecha": "Fecha",
+                    "ClientIP": "clientIp_s",
+                    "RuleWAF": "ruleId_s",
+                    "HostName": "hostname_s",
+                    "PathURL": "requestUri_s",
+                    "Accion": "action_s",
+                    "BloqueoFinal": "esBloqueoFinal",
+                    "Peticiones": "Hits"
+                },
+                "entityMappings": [
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "clientIp_s"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Sid",
+                                "columnName": "ruleId_s"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Name",
+                                "columnName": "action_s"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}

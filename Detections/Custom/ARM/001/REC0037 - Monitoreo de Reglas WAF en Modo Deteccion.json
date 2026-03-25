@@ -1,0 +1,96 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/537e12f2-d5a8-44ae-8edf-4af79d30afe4')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/537e12f2-d5a8-44ae-8edf-4af79d30afe4')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "AUTO DISABLED REC0037 - Monitoreo de Reglas WAF en Modo Deteccion",
+                "description": "The alert rule was disabled due to too many consecutive failures. Reason: This rule was automatically disabled due to insufficient permissions. The rule requires permissions which are different from those held by the user who created the rule at the time of rule creation. This often happens due to changes in functions used or references to external data. Please edit and re-save the rule with a user that can execute the query in it. For troubleshooting guidance, see: https://aka.ms/AnalyticsAutoDisabledRules Identificar intentos de explotación de vulnerabilidades web detectados por el WAF de Azure Application Gateway basado en el conjunto de reglas OWASP 3.2 y Microsoft_BotManagerRuleSet_0.1.",
+                "severity": "Medium",
+                "enabled": false,
+                "query": "AzureDiagnostics\r\n| where ResourceType == \"APPLICATIONGATEWAYS\"\r\n| where Category == \"ApplicationGatewayFirewallLog\"\r\n| where action_s == \"Detected\"  // Solo eventos en modo detección\r\n| extend RuleId = tostring(parse_json(Message).ruleId)\r\n| extend RuleGroup = tostring(parse_json(Message).ruleGroup)\r\n| extend RuleName = tostring(parse_json(Message).details[0].message)\r\n| where RuleGroup in (\"OWASP_3.2\", \"Microsoft_BotManagerRuleSet_0.1\")  // Filtrar por reglas relevantes\r\n| where RuleGroup contains \"KnownBadBots\"\r\n| where ruleId_s startswith \"91\"  // Filtra solo reglas que comienzan con \"91\" \r\n| where ruleId_s startswith \"92\"  // Filtra solo reglas que comienzan con \"92\" \r\n| where ruleId_s startswith \"93\"  // Filtra solo reglas que comienzan con \"93\" \r\n| where ruleId_s startswith \"94\"  // Filtra solo reglas que comienzan con \"94\" \r\n| where ruleId_s startswith \"20\"  // Filtra solo reglas que comienzan con \"20\" \r\n| where ruleId_s startswith \"Known-CVEs\"  // Filtra solo reglas que comienzan con \"Known-CVEs\" \r\n| summarize Count=count(), UniqueIPs=dcount(clientIp_s) by RuleName, RuleGroup, bin(TimeGenerated, 5m)\r\n| order by Count desc",
+                "queryFrequency": "PT5M",
+                "queryPeriod": "PT1H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "InitialAccess",
+                    "Execution",
+                    "DefenseEvasion"
+                ],
+                "techniques": [],
+                "subTechniques": [],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT5H",
+                        "matchingMethod": "AllEntities",
+                        "groupByEntities": [],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": null,
+                "customDetails": {
+                    "SourceIP": "UniqueIPs",
+                    "Rule": "RuleName",
+                    "Count": "Count"
+                },
+                "entityMappings": [
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "UniqueIPs"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "RuleName"
+                            },
+                            {
+                                "identifier": "Name",
+                                "columnName": "RuleGroup"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "ObjectGuid",
+                                "columnName": "Count"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}

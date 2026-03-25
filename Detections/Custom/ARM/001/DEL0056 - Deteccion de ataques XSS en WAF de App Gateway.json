@@ -1,0 +1,94 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/b6396b23-3136-44dc-8307-eccf6793a083')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/b6396b23-3136-44dc-8307-eccf6793a083')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "DEL0056 - Deteccion de ataques XSS en WAF de App Gateway",
+                "description": "Identifica una coincidencia para un ataque XSS en los registros WAF de App Gateway. El valor del umbral en la consulta se puede cambiar según los requisitos de su infraestructura.Referencias: https://owasp.org/www-project-top-ten/2017/A7_2017-Cross-Site_Scripting_(XSS)",
+                "severity": "High",
+                "enabled": true,
+                "query": "let Threshold = 3;  \nAzureDiagnostics\n| where Category == \"ApplicationGatewayFirewallLog\"\n| where action_s == \"Matched\"\n| where Message has \"XSS\"\n| where clientIp_s !contains \"217.\"\n| project\n    transactionId_g,\n    hostname_s,\n    requestUri_s,\n    TimeGenerated,\n    clientIp_s,\n    Message,\n    details_message_s,\n    details_data_s\n| join kind = inner(\n    AzureDiagnostics\n    | where Category == \"ApplicationGatewayFirewallLog\"\n    | where action_s == \"Blocked\")\n    on transactionId_g\n| extend Uri = strcat(hostname_s, requestUri_s)\n| summarize\n    Fecha = min(TimeGenerated),\n    EndTime = max(TimeGenerated),\n    TransactionID = make_set(transactionId_g, 100),\n    Message = make_set(Message, 100),\n    Detail_Message = make_set(details_message_s, 100),\n    Detail_Data = make_set(details_data_s, 100),\n    Total_TransactionId = dcount(transactionId_g)\n    by clientIp_s, Uri, action_s\n| where Total_TransactionId >= Threshold\n\n",
+                "queryFrequency": "PT5H",
+                "queryPeriod": "P1D",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT1H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "InitialAccess",
+                    "Execution"
+                ],
+                "techniques": [
+                    "T1189",
+                    "T1203",
+                    "T0853"
+                ],
+                "subTechniques": [],
+                "alertRuleTemplateName": "1c7ff502-2ad4-4970-9d29-9210c6753138",
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT5H",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "IP",
+                            "URL"
+                        ],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": [
+                            "ClientIP",
+                            "PathURL"
+                        ]
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": null,
+                "customDetails": {
+                    "Fecha": "Fecha",
+                    "ClientIP": "clientIp_s",
+                    "PathURL": "Uri",
+                    "Accion": "action_s",
+                    "Mensaje": "Message"
+                },
+                "entityMappings": [
+                    {
+                        "entityType": "URL",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Url",
+                                "columnName": "Uri"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "clientIp_s"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": "1.0.0"
+            }
+        }
+    ]
+}

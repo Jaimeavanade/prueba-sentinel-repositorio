@@ -1,0 +1,156 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/4aa0ca63-c788-4ee2-a61b-3fd4ddb1e5b6')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/4aa0ca63-c788-4ee2-a61b-3fd4ddb1e5b6')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "AUTO DISABLED DEL0059 -  Acceso Abierto e Inadvertido a VMs por una configuracion inusual en el Bastion",
+                "description": "The alert rule was disabled due to too many consecutive failures. Reason: This rule was automatically disabled due to insufficient permissions. The rule requires permissions which are different from those held by the user who created the rule at the time of rule creation. This often happens due to changes in functions used or references to external data. Please edit and re-save the rule with a user that can execute the query in it. For troubleshooting guidance, see: https://aka.ms/AnalyticsAutoDisabledRules Este caso de uso tiene como objetivo identificar accesos a máquinas virtuales (VMs) a través de Microsoft Azure Bastion que podrían estar permitidos de forma inadvertida debido a una configuración inusual o a controles de acceso insuficientes en el flujo de conexión.\n\nLa detección se centra en sesiones iniciadas (StartSession) que puede evidenciar un Bastion expuesto operativamente a patrones no esperados como por ejemplo, falta de restricciones por IP, ausencia de controles de acceso condicional, permisos excesivos, o excepciones temporales que han quedado permanentes.",
+                "severity": "Medium",
+                "enabled": false,
+                "query": "MicrosoftAzureBastionAuditLogs\n| where TimeGenerated > ago(7d)\n| where OperationName == \"StartSession\"\n| extend User = coalesce(UserEmail, UserName)\n| extend Hour = datetime_part(\"hour\", TimeGenerated)\n| extend IsAfterHours = iff(Hour < 8 or Hour > 18, true, false)\n| extend IsExternalIP = iff(\n    ClientIpAddress startswith \"10.\" or \n    ClientIpAddress startswith \"192.168.\" or \n    ClientIpAddress startswith \"172.16.\", false, true)\n| where IsAfterHours or IsExternalIP\n| project TimeGenerated, User, ClientIpAddress, Protocol, TargetVMIPAddress, OperationName, Duration, IsAfterHours, IsExternalIP\n| order by TimeGenerated desc\n",
+                "queryFrequency": "PT5M",
+                "queryPeriod": "PT1H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "CredentialAccess",
+                    "InitialAccess"
+                ],
+                "techniques": [],
+                "subTechniques": [],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT5H",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "Account",
+                            "IP",
+                            "Host"
+                        ],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": [
+                            "Fecha",
+                            "Usuario",
+                            "IPClient",
+                            "Protocolo",
+                            "IPAddress_VM",
+                            "ActividadDetectada",
+                            "Duracion",
+                            "EsFueraHorario",
+                            "EsIPExterna"
+                        ]
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": null,
+                "customDetails": {
+                    "Fecha": "TimeGenerated",
+                    "Usuario": "User",
+                    "IPClient": "ClientIpAddress",
+                    "Protocolo": "Protocol",
+                    "IPAddress_VM": "TargetVMIPAddress",
+                    "ActividadDetectada": "OperationName",
+                    "Duracion": "Duration",
+                    "EsFueraHorario": "IsAfterHours",
+                    "EsIPExterna": "IsExternalIP"
+                },
+                "entityMappings": [
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "User"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "ClientIpAddress"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Host",
+                        "fieldMappings": [
+                            {
+                                "identifier": "HostName",
+                                "columnName": "Protocol"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "TargetVMIPAddress"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "OperationName"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "PUID",
+                                "columnName": "Duration"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "IsAfterHours"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "IsExternalIP"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}
