@@ -1,0 +1,64 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/e37a881d-89fe-46d5-8bd2-0c8b34ebc78e')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/e37a881d-89fe-46d5-8bd2-0c8b34ebc78e')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[GEN][MIN] AS-SNTL-042 Anomalía detectada en ingesta",
+                "description": "Detecta ingesta incrementada o en decremento por tablas. Necesario ajustar valor de Percent (40 por defecto) y excepcionar tablas en watchlist que no queremos supervisar.",
+                "severity": "Informational",
+                "enabled": true,
+                "query": "//source: https://techcommunity.microsoft.com/t5/azure-sentinel/ingestion-cost-spike-detection-playbook/ba-p/2591301\r\n//https://docs.microsoft.com/azure/data-explorer/kusto/query/series-decompose-anomaliesfunction \r\nlet watchlist_AS_SNTL_042_DataType = (_GetWatchlist('watchlist_AS_SNTL_042_DataType') | project SearchKey);\r\nlet UpperAnomalyThreshold = 3;//Variable definida para comparar un aumento de datos anomalos\r\nlet DownAnomalyThreshold = -2;//Variable definida para comparar un decremento de datos anomalos\r\nlet ReportingQty = 0;//Variable definida para establecer cuanto MBs de consumo es una anomalia.\r\nlet PercentIncrease = 40;// Variable definida para establecer un porcentaje positivo el cual se considera un incremento de datos de una tabla\r\nlet PercentDecrease = -40;// Variable definida para establecer un porcentaje negativo el cual se considera un decremento de datos de una tabla\r\n//let UpperThreshold = UpperAnomalyThreshold; //+3 es el número sugerido e indica una anomalía fuerte aunque se puede modificar\r\nUsage\r\n| where DataType !in (watchlist_AS_SNTL_042_DataType)\r\n//| where IsBillable == \"true\" // Para tener en cuenta aquellas tablas que tienen costes.\r\n| where Quantity > ReportingQty //Solo tiene en cuenta las variaciones que superen un determinado umbral que considere lo suficientemente significativo en MBs.\r\n| make-series Qty=sum(Quantity) on TimeGenerated from ago(30d) to now() step 1d by DataType //Crea una serie temporal para observar el patrón de ingestión durante el periodo definido en la variable de tiempo, agrega los datos por dia durantes os ultimos 30 dias agrupando por el campo \"Datatype\".\r\n| extend (anomalies, score, baseline) = series_decompose_anomalies(Qty, 1.5, 7, 'linefit', 1, 'ctukey', 0.01)\r\n//Crea una columna con la función series_decompose_anomalies, la cual esta definida con los siguientes parámetros:\r\n//Umbral de anomalia definido: 1.5//Umbral de sensibilidad para detectar anomalías. Son validos tanto valores positivos como negativos y el punto de partida es el valor indicado y compara con la columna score.\r\n//Estacionalidad definido: 7 Número de puntos (en días) usados para detectar patrones cíclicos o estacionales,como los datos se agrupan por día (step 1d), se están considerando 7 días, útil para analizar patrones semanales.\r\n//Tendencia: linefit//Método utilizado para ajustar la tendencia. y = mx + b\r\n// y es el valor esperado de Qty (ingestión estimada)\r\n// x es el tiempo\r\n// m es la pendiente (si los datos suben o bajan)\r\n// b es el punto de inicio\r\n//Una vez se obtiene esa línea, se comparan los valores reales (Qty) contra esa línea estimada en cada punto.\r\n//Si un valor está muy por encima o por debajo de la línea (más allá del umbral), se considera una anomalía.\r\n//Puntos de prueba: 1//Indica si se elimina el componente estacional, el valor 1 significa que sí se elimina, para centrarse únicamente en tendencias y anomalías netas.\r\n//Metodo AD: ctukey//Método estadístico para detectar anomalías.\r\n//Umbral Estacionalidad:0.01//Nivel de significancia estadística (probabilidad de que una anomalía detectada lo sea realmente), el valor 0.01 significa alta confianza (99%) en los resultados,si pusieras 0.05,aceptarías más anomalías potenciales, pero con menos certeza.\r\n// La salida de todos estos valores va dividida por las columnas \"anomalies\", \"score\" y \"baseline\"\r\n//anomalies: Una serie ternaria que contiene (+1, -1, 0) marcando respectivamente anomalía arriba/abajo/no anomalía\r\n//score: Puntuación anomalia\r\n//baseline: El valor previsto de la serie, según la descomposición\r\n| where anomalies[-1] == 1 or anomalies[-1] == -1 //La salida de la columna \"anomalies\" tiene tiene los siguientes valores:(+1, -1, 0) marcando respectivamente anomalía arriba/abajo/no anomalía y indica esta anomalia con la ultima posicion del array.\r\n| extend Score = score[-1] //Esta parte recoge el estado de anomalía de la ejecución más reciente. -1 indica una posición en la matriz la cual indica el ultima valor del array.\r\n| where Score >= UpperAnomalyThreshold or Score <= DownAnomalyThreshold//Compara el valor de \"Score\" con las variables definidas para detectar desviaciones incrementales y decrementales\r\n| extend PercentageQty = ((round(todouble(Qty[-1]),0)-round(todouble(baseline[-1]),1))/round(todouble(Qty[-1]),0) * 100) //Calcula el incremento porcentual para presentar los datos en términos porcentuales y facilitar la apreciación de la anomalía.\r\n| project DataType,ExpectedQty=round(todouble(baseline[-1]),0), ActualQty=round(todouble(Qty[-1]),0),round(PercentageQty,0)  \r\n| order by round(todouble(PercentageQty),0) desc \r\n| where PercentageQty >= PercentIncrease or PercentageQty<=PercentDecrease//Sólo alerta si el porcentaje de incremento o decremento supera el umbral a partir del cual especificó que desea ser notificado en las variables definidas.\r\n| extend PercentageIncrease= iff(PercentageQty >= PercentIncrease,tostring(PercentageQty),\"N/A\")//Crea una columna llamada \"PercentageIncrease\" si el porcentaje es positivo sino indica N/A.\r\n| extend PercentageDecrease = iff(PercentageQty <= PercentDecrease,tostring(PercentageQty),\"N/A\")//Crea una columna llamada \"PercentageDecrease\" si el porcentaje es negativo sino indica N/A.\r\n| where PercentageQty != \"-Infinity\" and ExpectedQty > 0//Filtra valores que sean \"-Infinity\" o valores mayor a cero en la columna \"ExpectedQty\"\r\n| project Object = DataType, ActualQty, ExpectedQty, PercentageQty, PercentageIncrease, PercentageDecrease",
+                "queryFrequency": "P1D",
+                "queryPeriod": "P14D",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [],
+                "techniques": [],
+                "subTechniques": [],
+                "alertRuleTemplateName": "e37a881d-89fe-46d5-8bd2-0c8b34ebc78e",
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "P1D",
+                        "matchingMethod": "AllEntities",
+                        "groupByEntities": [],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDisplayNameFormat": "AS-SNTL-042 Anomalía detectada en ingesta {{Object}}",
+                    "alertDescriptionFormat": "Detecto \"{{PercentageQty}}%\" sobre el valor esperado \"{{ExpectedQty}} \" en la tabla {{Object}}.",
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": null,
+                "sentinelEntitiesMappings": [
+                    {
+                        "columnName": "Object"
+                    }
+                ],
+                "templateVersion": "1.0.0"
+            }
+        }
+    ]
+}

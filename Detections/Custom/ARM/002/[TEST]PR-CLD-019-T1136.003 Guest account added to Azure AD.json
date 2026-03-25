@@ -1,0 +1,84 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/e7ace4b7-c036-4453-8a10-a0ac5db46bd2')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/e7ace4b7-c036-4453-8a10-a0ac5db46bd2')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[TEST]PR-CLD-019-T1136.003 Guest account added to Azure AD",
+                "description": "La consulta de ejemplo siguiente crea una alerta si se agrega un usuario invitado a Azure AD. En algunos entornos esto podría y debería desencadenar una alerta, en otros entornos esto sucede continuamente y no debe usarse (para reducir el ruido).",
+                "severity": "Informational",
+                "enabled": true,
+                "query": "AuditLogs\n| where OperationName == \"Add user\" and Identity == \"Microsoft B2B Admin Worker\"\n| project\nUser = TargetResources[0].modifiedProperties[5].newValue,\nAdm = InitiatedBy['user'].userPrincipalName,\nIPOrigen = InitiatedBy['user'].ipAddress\n| where Adm != \"luis.coca@mn8energy.com\"\n| where Adm != \"jaime.moreno.ext@mn8energy.com\"\n| where Adm != \"jaime.garcia.ext@mn8energy.com\"\n| where Adm != \"carlosandres.bejarano.ext@mn8energy.com\"\n\n\n",
+                "queryFrequency": "PT1H",
+                "queryPeriod": "PT1H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "Persistence"
+                ],
+                "techniques": [
+                    "T1136",
+                    "T1078"
+                ],
+                "subTechniques": [],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "P1D",
+                        "matchingMethod": "AllEntities",
+                        "groupByEntities": [],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDisplayNameFormat": "[TEST]PR-CLD-019-T1136.003 Guest account added to Azure AD {{User}}",
+                    "alertDescriptionFormat": "Guest account added in Azure AD of user {{User}} by {{Adm}} from IP{{IPOrigen}} is detected.",
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Name",
+                                "columnName": "User"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Name",
+                                "columnName": "Adm"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}

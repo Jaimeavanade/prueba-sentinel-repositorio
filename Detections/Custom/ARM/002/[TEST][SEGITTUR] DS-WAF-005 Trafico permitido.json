@@ -1,0 +1,91 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/cc953818-931a-47ce-8cbc-1dc8e3a430a0')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/cc953818-931a-47ce-8cbc-1dc8e3a430a0')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[TEST][SEGITTUR] DS-WAF-005 Trafico permitido",
+                "description": "Detección de trafico permitido en waf por reglas",
+                "severity": "Medium",
+                "enabled": true,
+                "query": "let timeRange = 10m;\nAzureDiagnostics\n| where TimeGenerated > ago(timeRange)\n| where ResourceType in (\"FRONTDOORS\", \"PROFILES\")\n| where action_s == \"Allow\"\n| where isnotempty(clientIP_s)\n| where policyMode_s <> \"prevention\"\n| summarize by clientIP_s, requestUri_s, ruleName_s\n\n",
+                "queryFrequency": "PT10M",
+                "queryPeriod": "PT1H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [],
+                "techniques": [],
+                "subTechniques": [],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT5H",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "IP",
+                            "Process"
+                        ],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDisplayNameFormat": "[TEST][SEGITTUR] DS-WAF-005 Trafico permitido {{ruleName_s}} ",
+                    "alertDescriptionFormat": "[TEST]DS-WAF-005 Trafico permitido política {{ruleName_s}}  desde IP {{clientIP_s}} ",
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "clientIP_s"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "URL",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Url",
+                                "columnName": "requestUri_s"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Process",
+                        "fieldMappings": [
+                            {
+                                "identifier": "ProcessId",
+                                "columnName": "ruleName_s"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}

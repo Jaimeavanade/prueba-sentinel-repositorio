@@ -1,0 +1,85 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/09cc3c91-c380-43b8-ba64-cce5f3f2ff5c')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/09cc3c91-c380-43b8-ba64-cce5f3f2ff5c')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[TEST] PR-CLD-031-T1078.004 Miembro eliminado de grupo sensible",
+                "description": "Detecta miembro eliminado de un grupo sensible definido en watchlist.",
+                "severity": "Low",
+                "enabled": true,
+                "query": "let watchlist_PR_CLD_031_032_Group = (_GetWatchlist(\"watchlist_PR_CLD_031_032_Group\") | project SearchKey);\r\nAuditLogs\r\n| where OperationName == \"Remove member from group\"\r\n| extend GroupName = tostring((TargetResources[0].modifiedProperties)[1].oldValue)\r\n| where GroupName in~ (watchlist_PR_CLD_031_032_Group) // Grupos sensibles, modificar whatchlist\r\n| extend RemovedUser = tostring(TargetResources[0].userPrincipalName)\r\n| extend RemovedUserId = tostring((TargetResources[0].modifiedProperties)[0].oldValue)\r\n| extend ActorUsername = tostring(InitiatedBy.user.userPrincipalName)\r\n| where isnotempty(ActorUsername)\r\n| project TimeGenerated, TargetUsername = RemovedUser, TargetUserScopeId = RemovedUserId, GroupName, ActorUsername",
+                "queryFrequency": "PT1H",
+                "queryPeriod": "PT1H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "Persistence"
+                ],
+                "techniques": [
+                    "T1078"
+                ],
+                "subTechniques": [
+                    "T1078.004"
+                ],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "P1D",
+                        "matchingMethod": "AllEntities",
+                        "groupByEntities": [],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDisplayNameFormat": "[TEST] PR-CLD-031-T1078.004 Miembro eliminado de grupo sensible por {{ActorUsername}}",
+                    "alertDescriptionFormat": "Se detecta la eliminación de {{TargetUsername}} por {{ActorUsername}} del grupo {{GroupName}}.",
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "ActorUsername"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "SecurityGroup",
+                        "fieldMappings": [
+                            {
+                                "identifier": "DistinguishedName",
+                                "columnName": "GroupName"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}

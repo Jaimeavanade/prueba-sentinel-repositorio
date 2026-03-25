@@ -1,0 +1,78 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/8a5dd427-2634-47dc-87dd-986bc201b48f')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/8a5dd427-2634-47dc-87dd-986bc201b48f')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[GEN][MIN][MDATP] EX-AV-050-1204.002 Incidente CRÍTICO",
+                "description": "Se detecta un evento de criticidad crítica en un host.",
+                "severity": "High",
+                "enabled": true,
+                "query": "//Modifica nombre de la alerta, por la alerta a excluir\r\nlet watchlist_EX_AV_050_RuleException = _GetWatchlist('watchlist_EX_AV_050_RuleException') | project SearchKey;\r\nSecurityAlert\r\n| where ProviderName == 'MDATP'\r\n| where AlertSeverity == 'High'\r\n| where Status == 'New'\r\n| where AlertName !in (watchlist_EX_AV_050_RuleException)\r\n| summarize count() by CompromisedEntity\r\n| where count_ >= 1\r\n| join kind=inner (SecurityAlert\r\n    | where ProviderName == 'MDATP'\r\n    | where AlertSeverity == 'High'\r\n    | where Status == 'New')\r\n    on CompromisedEntity\r\n//| lookup kind=leftouter _GetWatchlist('watchlist_Device_Asset_Inventory') on $left.CompromisedEntity == $right.Host\r\n| project TimeGenerated, EventCount = count_, EventType = DisplayName, ThreatName = AlertName, ThreatRef = AlertType, DvcHostname = CompromisedEntity, EventMessage = Description, EventVendor = VendorName, EventProduct = ProviderName, EventReportUrl = AlertLink, EventOriginalUid = VendorOriginalId, ConfidenceScore, IsIncident, EventStartTime = StartTime, EventEndTime = EndTime, Entities, DvcAction = Status, Tactics, Techniques, SubTechniques, ExtendedProperties",
+                "queryFrequency": "PT5M",
+                "queryPeriod": "PT5M",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "Execution"
+                ],
+                "techniques": [
+                    "T1204"
+                ],
+                "subTechniques": [
+                    "T1204.002"
+                ],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT2H",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "Host"
+                        ],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDisplayNameFormat": "EX-AV-050-1204.002 Incidente CRÍTICO en {{DvcHostname}} ",
+                    "alertDescriptionFormat": "Se detectan alertas de {{ThreatName}} en el equipo {{DvcHostname}}.",
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "Host",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "DvcHostname"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}

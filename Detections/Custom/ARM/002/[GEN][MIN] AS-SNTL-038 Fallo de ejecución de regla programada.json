@@ -1,0 +1,72 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/996af738-2459-4979-a709-3f40c8911790')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/996af738-2459-4979-a709-3f40c8911790')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[GEN][MIN] AS-SNTL-038 Fallo de ejecución de regla programada",
+                "description": "Detecta fallos a la hora de ejecutar reglas del tipo scheduled.",
+                "severity": "Low",
+                "enabled": true,
+                "query": "let failures=SentinelHealth\r\n| where TimeGenerated >= ago(1d)\r\n| where OperationName == \"Scheduled analytics rule run\"\r\n| where Status == \"Failure\"\r\n| project\r\n    TimeGenerated,\r\n    Object = SentinelResourceName,\r\n    EventResult = Status,\r\n    EventMessage = Description\r\n| summarize FirstFailure = min(TimeGenerated), LastFailure = max(TimeGenerated),EventCount = count() by Object //, EventResults = make_set(EventResult), EventMessages = make_set(EventMessage) by Object\r\n| where EventCount >= 2\r\n| project-away EventCount;\r\nlet tmp = SentinelHealth\r\n| where TimeGenerated >= ago(1d)\r\n| where OperationName == \"Scheduled analytics rule run\"\r\n| where Status == \"Success\"\r\n| project\r\n    SuccessTime = TimeGenerated,\r\n    Object = SentinelResourceName\r\n| join kind=inner (failures) on Object\r\n| where SuccessTime between (FirstFailure .. LastFailure)\r\n| project-away Object1;\r\nSentinelHealth\r\n| where TimeGenerated >= ago(1d)\r\n| where OperationName == \"Scheduled analytics rule run\"\r\n| where Status == \"Failure\"\r\n| project\r\n    TimeGenerated,\r\n    Object = SentinelResourceName,\r\n    EventResult = Status,\r\n    EventMessage = Description\r\n| summarize FirstFailure = min(TimeGenerated), LastFailure = max(TimeGenerated),EventCount = count(), EventResults = make_set(EventResult), EventMessages = make_set(EventMessage) by Object\r\n| where EventCount >= 2\r\n| join kind=leftanti (tmp) on Object, FirstFailure, LastFailure",
+                "queryFrequency": "P1D",
+                "queryPeriod": "P1D",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [],
+                "techniques": [],
+                "subTechniques": [],
+                "alertRuleTemplateName": "996af738-2459-4979-a709-3f40c8911790",
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "P1D",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "AzureResource"
+                        ],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDisplayNameFormat": "AS-SNTL-038 Fallo de ejecución de regla programada en {{Object}} ",
+                    "alertDescriptionFormat": "Se ha detectado fallo de ejecución de la regla \"{{Object}}\".",
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "AzureResource",
+                        "fieldMappings": [
+                            {
+                                "identifier": "ResourceId",
+                                "columnName": "Object"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": "1.2.0"
+            }
+        }
+    ]
+}
