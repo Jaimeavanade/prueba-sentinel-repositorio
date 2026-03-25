@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-EXF0009-Varias-Fuentes-Afectadas-por-el-mismo-Destino-TI-8DA92F3E')]",
+      "properties": {
+        "displayName": "EXF0009 - Varias Fuentes Afectadas por el mismo Destino TI",
+        "description": "Identifica varias máquinas que intentan llegar al mismo destino bloqueadas por TI en Azure Firewall. Esto puede indicar un ataque a la organización por parte del mismo grupo de ataque.",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "let RunTime = 1d; \nlet StartRunTime = 1d; \nlet EndRunTime = StartRunTime - RunTime; \nlet MinAffectedThreshold = 5;\nunion isfuzzy=true\n(AzureDiagnostics \n| where TimeGenerated  between (ago(StartRunTime) .. ago(EndRunTime))\n| where OperationName == \"AzureFirewallThreatIntelLog\"\n| parse msg_s with * \"from \" SourceIp \":\" SourcePort:int \" to \" Fqdn \":\" DestinationPort:int  \".\" * \"Action: Deny. \" ThreatDescription),\n(AZFWThreatIntel\n| where TimeGenerated between (ago(StartRunTime) .. ago(EndRunTime)))\n| summarize TiTrafficCount = count(), dCountSourceIps = dcount(SourceIp), AffectedIps = make_set(SourceIp, 10000) by Fqdn, ThreatDescription\n| where array_length(AffectedIps) > MinAffectedThreshold\n| mv-expand SourceIp = AffectedIps\n| order by TiTrafficCount desc, Fqdn asc, parse_ipv4(tostring(SourceIp)) asc",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

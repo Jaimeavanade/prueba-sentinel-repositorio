@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-EXP0012-Intento-de-Explotacion-de-la-Vulnerabilidad-Log4j-en-Azure-WAF-AB6EAE18')]",
+      "properties": {
+        "displayName": "EXP0012 - Intento de Explotacion de la Vulnerabilidad Log4j en Azure WAF",
+        "description": "Esta consulta alertará sobre una coincidencia de patrón positiva por Azure WAF para el intento de explotación de la vulnerabilidad CVE-2021-44228 log4j. Si es posible, decodifica el comando malicioso para su posterior análisis.\nReferencia: https://www.microsoft.com/security/blog/2021/12/11/guidance-for-preventing-detecting-and-hunting-for-cve-2021-44228-log4j-2-exploitation/",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "let log4jioc = dynamic([\"jndi\",\"ldap\",\"${::\"]);\n AzureDiagnostics\n | where ResourceProvider == \"MICROSOFT.NETWORK\" and Category in (\"ApplicationGatewayFirewallLog\", \"FrontdoorWebApplicationFirewallLog\")\n | extend details_data_s = column_ifexists(\"details_data_s\", tostring(AdditionalFields.details_data))\n |where requestUri_s has_any (log4jioc) or details_message_s has_any (log4jioc) or details_data_s has_any (log4jioc)\n | extend Malicious = iff(isnotempty( details_data_s),details_data_s,iff(isnotempty( requestUri_s),requestUri_s,\"\"))\n |parse Malicious with * '${' MaliciousCommand '}' * \n | extend EncodeCmd = iff(MaliciousCommand has 'Base64/', split(split(MaliciousCommand, \"Base64/\",1)[0], \"}\", 0)[0], \"\")\n | extend EncodeCmd1 = iff(MaliciousCommand has 'base64/', split(split(MaliciousCommand, \"base64/\",1)[0], \"}\", 0)[0], \"\")\n | extend CmdLine = iff( isnotempty(EncodeCmd), EncodeCmd, EncodeCmd1)\n | extend DecodedCmdLine = base64_decode_tostring(tostring(CmdLine))\n | extend DecodedCmdLine = iff( isnotempty(DecodedCmdLine), DecodedCmdLine, \"Unable to decode/Doesn't need decoding\")\n | project TimeGenerated, Target=column_ifexists(\"hostname_s\", tostring(AdditionalFields.hostname)), MaliciousHost = column_ifexists(\"clientIp_s\", tostring(AdditionalFields.clientIp)) , MaliciousCommand, details_data_s = column_ifexists(\"details_data_s\", tostring(AdditionalFields.details_data)), DecodedCmdLine, Message,\n ruleSetType_s = column_ifexists(\"ruleSetType_s\", tostring(AdditionalFields.ruleSetType)), OperationName, SubscriptionId, details_message_s = column_ifexists(\"details_message_s\", tostring(AdditionalFields.details_message)), \n details_file_s = column_ifexists(\"details_message_s\", tostring(AdditionalFields.details_file))\n | extend timestamp = TimeGenerated",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

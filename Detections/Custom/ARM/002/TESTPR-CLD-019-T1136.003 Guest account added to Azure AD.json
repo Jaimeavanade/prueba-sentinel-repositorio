@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-TESTPR-CLD-019-T1136003-Guest-account-added-to-Azure-AD-B1430307')]",
+      "properties": {
+        "displayName": "TESTPR-CLD-019-T1136.003 Guest account added to Azure AD",
+        "description": "La consulta de ejemplo siguiente crea una alerta si se agrega un usuario invitado a Azure AD. En algunos entornos esto podría y debería desencadenar una alerta, en otros entornos esto sucede continuamente y no debe usarse (para reducir el ruido).",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "AuditLogs\n| where OperationName == \"Add user\" and Identity == \"Microsoft B2B Admin Worker\"\n| project\nUser = TargetResources[0].modifiedProperties[5].newValue,\nAdm = InitiatedBy['user'].userPrincipalName,\nIPOrigen = InitiatedBy['user'].ipAddress\n| where Adm != \"luis.coca@mn8energy.com\"\n| where Adm != \"jaime.moreno.ext@mn8energy.com\"\n| where Adm != \"jaime.garcia.ext@mn8energy.com\"\n| where Adm != \"carlosandres.bejarano.ext@mn8energy.com\"",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

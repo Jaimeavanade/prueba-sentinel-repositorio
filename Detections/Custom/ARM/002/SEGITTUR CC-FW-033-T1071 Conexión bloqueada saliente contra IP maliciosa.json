@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-SEGITTUR-CC-FW-033-T1071-Conexion-bloqueada-saliente-contra-IP-maliciosa-3BE4B207')]",
+      "properties": {
+        "displayName": "SEGITTUR CC-FW-033-T1071 Conexión bloqueada saliente contra IP maliciosa",
+        "description": "CC-FW-033-T1071 Conexión bloqueada saliente contra IP maliciosa",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "AzureDiagnostics\n| where ResourceType == \"AZUREFIREWALLS\"\n| where Category == \"AZFWThreatIntel\"\n| where Action_s != \"Alert\"\n| summarize startTime=min(TimeGenerated), endTime=max(TimeGenerated), EventCount = count() by SourceIP, DestinationIp_s, ThreatDescription_s, Action_s",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

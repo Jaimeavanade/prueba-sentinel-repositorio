@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-SEGITTUR-CA-BAS-Login-001-Multiples-Login-fallidos-59C30700')]",
+      "properties": {
+        "displayName": "SEGITTUR CA-BAS-Login-001 Multiples Login fallidos",
+        "description": "Detección de fuerza bruta de un usuario",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "let threshold = 4; \nlet timeRange = 2h;\nMicrosoftAzureBastionAuditLogs\n| where OperationName == \"Microsoft.Network/BastionHost/disconnect\"\n| where Message == \"Login Failed\"\n| where TimeGenerated > ago(timeRange) // Filtra por los eventos ocurridos en los últimos 10 minutos\n| summarize Message=make_set(Message),startTime=min(TimeGenerated),endTime=max(TimeGenerated),EventCount = count() by UserName,UserEmail,TargetVMIPAddress \n| where EventCount>=threshold",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

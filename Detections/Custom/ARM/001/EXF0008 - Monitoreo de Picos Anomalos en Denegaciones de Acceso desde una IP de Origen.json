@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-EXF0008-Monitoreo-de-Picos-Anomalos-en-Denegaciones-de-Acceso-desde-una-IP-de-Origen-55D722BE')]",
+      "properties": {
+        "displayName": "EXF0008 - Monitoreo de Picos Anomalos en Denegaciones de Acceso desde una IP de Origen",
+        "description": "Identifica una tasa de denegación anormal para una IP de origen específica a una IP de destino basada en la media normal y la desviación estándar aprendidas durante un periodo configurado. Esto puede indicar una posible exfiltración, acceso inicial o C2, donde el atacante intenta explotar la misma vulnerabilidad en máquinas de la organización, pero está siendo bloqueado por las reglas del cortafuegos.",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "let LearningPeriod = 1d;\nlet RunTime = 1h;\nlet StartLearningPeriod = LearningPeriod + RunTime;\nlet EndRunTime = RunTime - 1h;\nlet BinTime = 1h;\nlet NumOfStdsThreshold = 3;\nlet MinThreshold = 5.0;\nlet MinLearningBuckets = 5;\nlet TrafficLogs = (union isfuzzy=true\n    (AzureDiagnostics\n    | where OperationName == \"AzureFirewallApplicationRuleLog\" or OperationName == \"AzureFirewallNetworkRuleLog\" \n    | parse msg_s with * \"from \" SourceIp \":\" SourcePort:int \" to \" Fqdn \":\" DestinationPort:int \". \" * \"Action: \" Action \".\" *\n    | where Action == \"Deny\"\n    | where isnotempty(Fqdn) and isnotempty(SourceIp)),\n    (AZFWNetworkRule\n    | extend Fqdn = DestinationIp\n    | where Action == \"Deny\"\n    | where isnotempty(Fqdn) and isnotempty(SourceIp)),\n    (AZFWFlowTrace\n    | extend Fqdn = DestinationIp\n    | where Action == \"Deny\"\n    | where isnotempty(Fqdn) and isnotempty(SourceIp)),\n    (AZFWIdpsSignature\n    | extend Fqdn = DestinationIp\n    | where Action == \"Deny\"\n    | where isnotempty(Fqdn) and isnotempty(SourceIp)),\n    (AZFWApplicationRule\n    | where Action == \"Deny\"\n    | where isnotempty(Fqdn) and isnotempty(SourceIp))\n);\nlet LearningSrcIpDenyRate = (TrafficLogs\n| where TimeGenerated between (ago(StartLearningPeriod) .. ago(RunTime))\n| summarize count() by SourceIp, bin(TimeGenerated, BinTime), Fqdn\n| summarize LearningTimeSrcIpDenyRateAvg = avg(count_), LearningTimeSrcIpDenyRateStd = stdev(count_), LearningTimeBuckets = count() by SourceIp, Fqdn\n| where LearningTimeBuckets > MinLearningBuckets);\nlet AlertTimeSrcIpDenyRate = (TrafficLogs\n| where TimeGenerated between (ago(RunTime) .. ago(EndRunTime))\n| summarize AlertTimeSrcIpDenyRateCount = count() by SourceIp);\nAlertTimeSrcIpDenyRate\n| join kind=leftouter (LearningSrcIpDenyRate) on SourceIp\n// Aquí excluimos las IP 10.x \n| where SourceIp !startswith \"10.\"\n//| where SourceIp !startswith \"10.0\" and SourceIp !startswith \"10.30\"\n| extend LearningThreshold = max_of(LearningTimeSrcIpDenyRateAvg + NumOfStdsThreshold * LearningTimeSrcIpDenyRateStd, MinThreshold)\n| where AlertTimeSrcIpDenyRateCount > LearningThreshold\n| project-away SourceIp1, LearningTimeSrcIpDenyRateAvg, LearningTimeSrcIpDenyRateStd",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

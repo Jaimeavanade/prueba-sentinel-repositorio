@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-TESTSEGITTUR-DS-WAF-005-Trafico-permitido-AE638D9B')]",
+      "properties": {
+        "displayName": "TESTSEGITTUR DS-WAF-005 Trafico permitido",
+        "description": "Detección de trafico permitido en waf por reglas",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "let timeRange = 10m;\nAzureDiagnostics\n| where TimeGenerated > ago(timeRange)\n| where ResourceType in (\"FRONTDOORS\", \"PROFILES\")\n| where action_s == \"Allow\"\n| where isnotempty(clientIP_s)\n| where policyMode_s <> \"prevention\"\n| summarize by clientIP_s, requestUri_s, ruleName_s",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

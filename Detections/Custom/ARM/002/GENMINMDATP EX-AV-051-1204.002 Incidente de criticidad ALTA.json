@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-GENMINMDATP-EX-AV-051-1204002-Incidente-de-criticidad-ALTA-01B670A2')]",
+      "properties": {
+        "displayName": "GENMINMDATP EX-AV-051-1204.002 Incidente de criticidad ALTA",
+        "description": "",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "//Modifica nombre de la alerta, por la alerta a excluir\nlet watchlist_EX_AV_051_RuleException = _GetWatchlist('watchlist_EX_AV_051_RuleException') | project SearchKey;\nSecurityAlert\n| where ProviderName == 'MDATP'\n| where AlertSeverity == 'Medium'\n| where Status == 'New'\n| where AlertName !in (watchlist_EX_AV_051_RuleException)\n| summarize count() by CompromisedEntity\n| where count_ >= 1\n| join kind=inner (SecurityAlert\n    | where ProviderName == 'MDATP'\n    | where AlertSeverity == 'Medium'\n    | where Status == 'New')\n    on CompromisedEntity\n//| lookup kind=leftouter _GetWatchlist('watchlist_Device_Asset_Inventory') on $left.CompromisedEntity == $right.HostName\n| project TimeGenerated, EventCount = count_, EventType = DisplayName, ThreatName = AlertName, ThreatRef = AlertType, DvcHostname = CompromisedEntity, EventMessage = Description, EventVendor = VendorName, EventProduct = ProviderName, EventReportUrl = AlertLink, EventOriginalUid = VendorOriginalId, ConfidenceScore, IsIncident, EventStartTime = StartTime, EventEndTime = EndTime, Entities, DvcAction = Status, Tactics, Techniques, SubTechniques, ExtendedProperties",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

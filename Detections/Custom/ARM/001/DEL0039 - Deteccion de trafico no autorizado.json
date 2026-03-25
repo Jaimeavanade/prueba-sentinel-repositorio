@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-DEL0039-Deteccion-de-trafico-no-autorizado-FBCA72E2')]",
+      "properties": {
+        "displayName": "DEL0039 - Deteccion de trafico no autorizado",
+        "description": "Supervisa los intentos de acceso no autorizados desde direcciones IP no fiables. Esto puede incluir intentos de acceso a puertos restringidos o no utilizados, que pueden indicar intentos de escaneo o ataque.",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "AzureDiagnostics\n| where Category == \"AzureFirewallNetworkRule\"\n| where msg_s contains \"Deny\"\n| where msg_s !contains \"10.12\"\n| where msg_s !contains \"10.10\"\n| where msg_s !contains \"10.30\"\n| where msg_s !contains \"10.0\"\n| parse msg_s with Protocol \" request from \" SourceIP \" to \" DestinationIP \". Action: \" Action\n| extend\n    SourceIP = iif(SourceIP contains \":\", strcat_array(split(SourceIP, \":\", 0), \"\"), SourceIP),\n    SourcePort = iif(SourceIP contains \":\", strcat_array(split(SourceIP, \":\", 1), \"\"), \"\"),\n    DestinationIP = iif(DestinationIP contains \":\", strcat_array(split(DestinationIP, \":\", 0), \"\"), DestinationIP),\n    DestinationPort = iif(SourceIP contains \":\", strcat_array(split(DestinationIP, \":\", 1), \"\"), \"\"),\n    Action = iif(Action contains \".\", strcat_array(split(Action, \".\", 0), \"\"), Action)\n| project\n    msg_s,\n    TimeGenerated,\n    Protocol,\n    SourceIP,\n    SourcePort,\n    DestinationIP,\n    DestinationPort,\n    Action\n| summarize EventCount = count() by SourceIP// SourcePort, Protocol, DestinationIP, DestinationPort, Action, TimeGenerated\n| where EventCount > 30",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

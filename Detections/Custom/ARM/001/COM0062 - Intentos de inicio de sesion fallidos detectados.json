@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-COM0062-Intentos-de-inicio-de-sesion-fallidos-detectados-53970568')]",
+      "properties": {
+        "displayName": "COM0062 - Intentos de inicio de sesion fallidos detectados",
+        "description": "Identifica los inicios de sesión fallidos de usuarios de gran volumen y el resultado debe analizarse para determinar si se trata de un ataque dirigido o simplemente de un error al introducir la contraseña.",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "SigninLogs\n| where ResultType == 50126\n| extend Country = tostring(LocationDetails[\"countryOrRegion\"])\n| project\n    TimeGenerated,\n    UserPrincipalName,\n    AppDisplayName,\n    IPAddress,\n    Country,\n    AuthenticationDetails,\n    DeviceDetail\n//| summarize by UserPrincipalName, IPAddress,AuthenticationDetails,Country\n| top 5 by UserPrincipalName\n| order by UserPrincipalName desc",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

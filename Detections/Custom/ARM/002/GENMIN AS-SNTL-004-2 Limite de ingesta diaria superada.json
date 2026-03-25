@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-GENMIN-AS-SNTL-004-2-Limite-de-ingesta-diaria-superada-727F6A06')]",
+      "properties": {
+        "displayName": "GENMIN AS-SNTL-004-2 Limite de ingesta diaria superada",
+        "description": "Se detecta que el límite diario ha sido sobrepasado por la alerta configurada en LogAnalytics",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "Operation\n| where Detail has 'OverQuota'\n| project TimeGenerated, Operation = OperationStatus, EventType = Detail, EventSubType = OperationKey, Object = OperationCategory",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

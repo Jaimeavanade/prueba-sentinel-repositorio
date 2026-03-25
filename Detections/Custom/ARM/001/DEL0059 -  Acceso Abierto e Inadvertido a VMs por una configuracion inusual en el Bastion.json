@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-DEL0059-Acceso-Abierto-e-Inadvertido-a-VMs-por-una-configuracion-inusual-en-el-Bastion-681A113C')]",
+      "properties": {
+        "displayName": "DEL0059 -  Acceso Abierto e Inadvertido a VMs por una configuracion inusual en el Bastion",
+        "description": "Este caso de uso tiene como objetivo identificar accesos a máquinas virtuales (VMs) a través de Microsoft Azure Bastion que podrían estar permitidos de forma inadvertida debido a una configuración inusual o a controles de acceso insuficientes en el flujo de conexión.\n\nLa detección se centra en sesiones iniciadas (StartSession) que puede evidenciar un Bastion expuesto operativamente a patrones no esperados como por ejemplo, falta de restricciones por IP, ausencia de controles de acceso condicional, permisos excesivos, o excepciones temporales que han quedado permanentes.",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "MicrosoftAzureBastionAuditLogs\n| where TimeGenerated > ago(7d)\n| where OperationName == \"StartSession\"\n| extend User = coalesce(UserEmail, UserName)\n| extend Hour = datetime_part(\"hour\", TimeGenerated)\n| extend IsAfterHours = iff(Hour < 8 or Hour > 18, true, false)\n| extend IsExternalIP = iff(\n    ClientIpAddress startswith \"10.\" or \n    ClientIpAddress startswith \"192.168.\" or \n    ClientIpAddress startswith \"172.16.\", false, true)\n| where IsAfterHours or IsExternalIP\n| project TimeGenerated, User, ClientIpAddress, Protocol, TargetVMIPAddress, OperationName, Duration, IsAfterHours, IsExternalIP\n| order by TimeGenerated desc",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

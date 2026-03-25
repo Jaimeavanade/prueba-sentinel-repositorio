@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-SEGITTUR-Alerta-Defender-for-Cloud-ADB2A385')]",
+      "properties": {
+        "displayName": "SEGITTUR Alerta Defender for Cloud",
+        "description": "[SEGITTUR] Alerta Defender for Cloud",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "SecurityAlert\n| where ProductName == \"Azure Security Center\"\n| extend Principal_IP_ = tostring(parse_json(ExtendedProperties).[\"Principal IP\"])\n| extend Malicious_URL_ = tostring(parse_json(ExtendedProperties).[\"Malicious URL\"])\n| where Malicious_URL_ !contains \"example.com\"\n| summarize\n    Message=make_set(ProviderName),\n    startTime=min(TimeGenerated),\n    endTime=max(TimeGenerated),\n    EventCount = count()\n    by AlertName, Principal_IP_",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}

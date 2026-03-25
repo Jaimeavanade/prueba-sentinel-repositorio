@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "kind": "Scheduled",
+      "name": "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-SEGITTUR-DS-WAF-002-T1083-Detectados-multiples-errores-500-9FFD4FFB')]",
+      "properties": {
+        "displayName": "SEGITTUR DS-WAF-002-T1083 Detectados multiples errores 500",
+        "description": "Deteccion multiples errores 500,502,503,504",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "let threshold = 30; \nlet timeRange = 10m;\nAzureDiagnostics\n| where ResourceType in (\"FRONTDOORS\", \"PROFILES\")\n| where httpStatusCode_d in (500,502,503,504)\n| where TimeGenerated > ago(timeRange)\n| summarize Message=make_set(Message),startTime=min(TimeGenerated),endTime=max(TimeGenerated),EventCount = count() by httpStatusCode_d,clientIp_s,OperationName,probeUrl_s \n| where EventCount>=threshold",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT5M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionEnabled": false
+      }
+    }
+  ]
+}
