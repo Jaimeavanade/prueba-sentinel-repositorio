@@ -1,0 +1,72 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/5268b651-d99e-46af-800b-063c67aa3e09')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/5268b651-d99e-46af-800b-063c67aa3e09')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[GEN][MIN] AS-SNTL-039 Fallo de ejecución de regla NTR",
+                "description": "Detecta fallos a la hora de ejecutar reglas del tipo NTR.",
+                "severity": "Low",
+                "enabled": true,
+                "query": "SentinelHealth\r\n| where OperationName == \"NRT analytics rule run\"\r\n| where Status == \"Failure\"\r\n| project TimeGenerated, Object = SentinelResourceName, EventResult = Status, EventMessage = Description",
+                "queryFrequency": "PT10M",
+                "queryPeriod": "PT10M",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [],
+                "techniques": [],
+                "subTechniques": [],
+                "alertRuleTemplateName": "5268b651-d99e-46af-800b-063c67aa3e09",
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "P1D",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "AzureResource"
+                        ],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDisplayNameFormat": "AS-SNTL-039 Fallo de ejecución de regla NTR {{Object}} ",
+                    "alertDescriptionFormat": "Se ha detectado error de ejecución de la regla {{Object}}.",
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "AzureResource",
+                        "fieldMappings": [
+                            {
+                                "identifier": "ResourceId",
+                                "columnName": "Object"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": "1.1.0"
+            }
+        }
+    ]
+}
