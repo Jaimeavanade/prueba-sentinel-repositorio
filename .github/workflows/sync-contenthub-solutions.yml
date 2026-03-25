@@ -3,7 +3,7 @@ name: Sync Content Hub Solutions from Official Repo
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * 1"  # Lunes 03:00 UTC (ajusta si quieres)
+    - cron: "0 3 * * 1" # Lunes 03:00 UTC (ajusta si quieres)
 
 permissions:
   id-token: write
@@ -12,6 +12,7 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,7 +31,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          ./Scripts/Sync-ContentHubSolutionsFromOfficialRepo.ps1 `
+          pwsh -File ./scripts/Sync-ContentHubSolutionsFromOfficialRepo.ps1 `
             -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
             -ResourceGroupName "${{ secrets.SENTINEL_RESOURCE_GROUP }}" `
             -WorkspaceName "${{ secrets.SENTINEL_WORKSPACE_NAME }}" `
@@ -41,6 +42,7 @@ jobs:
         shell: bash
         run: |
           set -e
+
           if [[ -n "$(git status --porcelain)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
