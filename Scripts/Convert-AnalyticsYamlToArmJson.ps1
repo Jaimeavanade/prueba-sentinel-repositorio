@@ -8,11 +8,12 @@
   - Genera ARM templates JSON en Detections/Custom/ARM (por defecto)
   - Normaliza duraciones a ISO 8601 ESTRICTO en MAYÚSCULAS:
       queryFrequency, queryPeriod, suppressionDuration, lookbackDuration, etc.
-  - Construye el "name" ARM correctamente:
+  - properties.displayName (ARM) = SIEMPRE el campo 'name' del YAML
+  - Construye el resource name ARM:
       [concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-<Slug>')]
 
 .NOTES
-  Requiere el módulo powershell-yaml (lo instala el workflow).
+  Requiere el módulo powershell-yaml (ConvertFrom-Yaml).
 #>
 
 Set-StrictMode -Version Latest
@@ -32,24 +33,21 @@ function Remove-Diacritics {
 
 function New-RuleSlug {
   param(
-    [Parameter(Mandatory)][string]$DisplayNameOrFileBase,
+    [Parameter(Mandatory)][string]$NameFromYaml,
     [Parameter(Mandatory)][string]$InputFilePath
   )
 
-  $base = (Remove-Diacritics $DisplayNameOrFileBase).Trim()
-  # Sustituir separadores por guión
-  $base = $base -replace '[\s_]+', '-'
-  # Quitar caracteres no permitidos, dejar A-Z a-z 0-9 y '-'
-  $base = $base -replace '[^A-Za-z0-9\-]', ''
-  # Colapsar guiones repetidos
-  $base = $base -replace '\-+', '-'
+  $base = (Remove-Diacritics $NameFromYaml).Trim()
+  $base = $base -replace '[\s_]+', '-'            # espacios/underscore -> guión
+  $base = $base -replace '[^A-Za-z0-9\-]', ''     # quitar caracteres raros
+  $base = $base -replace '\-+', '-'               # colapsar guiones
   $base = $base.Trim('-')
 
   if ([string]::IsNullOrWhiteSpace($base)) {
     $base = "Rule"
   }
 
-  # Para evitar colisiones entre nombres similares, añadimos sufijo determinista corto (hash del path)
+  # Sufijo corto determinista para evitar colisiones
   $hash = (Get-FileHash -Algorithm SHA1 -Path $InputFilePath).Hash.Substring(0,8)
   return "$base-$hash"
 }
@@ -68,7 +66,7 @@ function Convert-DurationToIsoUpper {
 
   $v = $Value.Trim()
 
-  # Ya es ISO 8601 (P...) -> forzar MAYÚSCULAS
+  # Ya parece ISO 8601 (P...) -> forzar MAYÚSCULAS
   if ($v -match '^[Pp]') {
     return $v.ToUpperInvariant()
   }
@@ -76,8 +74,8 @@ function Convert-DurationToIsoUpper {
   # Normalizar sin espacios
   $compact = ($v -replace '\s+', '').ToLowerInvariant()
 
-  # Expresión: secuencia de grupos número+unidad (w,d,h,m,s)
-  if ($compact -notmatch '^\d+[wdhms](\d+[wdhms])*$') {
+  # Secuencia de grupos número+unidad (w,d,h,m,s)
+  if ($compact -notmatch '^(\d+[wdhms])+$') {
     throw "Duración no reconocida: '$Value' (se esperaba ISO8601 o formato tipo '5m', '1h30m', '2d1h')."
   }
 
@@ -94,7 +92,6 @@ function Convert-DurationToIsoUpper {
     }
   }
 
-  # Construir ISO8601
   $datePart = ""
   if ($weeks -gt 0) { $datePart += "${weeks}W" }
   if ($days  -gt 0) { $datePart += "${days}D" }
@@ -131,8 +128,10 @@ function Map-TriggerOperator {
     'Equal'       = 'Equal'
     'NotEqual'    = 'NotEqual'
   }
+
   if ($map.ContainsKey($o)) { return $map[$o] }
-  if ($map.ContainsKey($o.ToLowerInvariant())) { return $map[$o.ToLowerInvariant()] }
+  $lower = $o.ToLowerInvariant()
+  if ($map.ContainsKey($lower)) { return $map[$lower] }
   return $o
 }
 
@@ -151,67 +150,113 @@ function Convert-OneYamlToArmJson {
   $yamlRaw = Get-Content -Path $InputFilePath -Raw -Encoding UTF8
   $y = ConvertFrom-Yaml -Yaml $yamlRaw
 
-  # Campos base
-  $displayName = $y.displayName
-  if ([string]::IsNullOrWhiteSpace($displayName)) {
-    # fallback: nombre de archivo
-    $displayName = [IO.Path]::GetFileNameWithoutExtension($InputFilePath)
+  if ($null -eq $y) {
+    throw "El YAML no se pudo parsear o está vacío. Archivo: $InputFilePath"
   }
 
-  $description = $y.description
-  $severity = $y.severity
-  if ([string]::IsNullOrWhiteSpace($severity)) { $severity = "Medium" }
+  # --------------------------------------------------------------------
+  # displayName ARM: SIEMPRE usar el campo 'name' del YAML (obligatorio)
+  # --------------------------------------------------------------------
+  $displayName = $null
+  if ($y.PSObject.Properties.Name -contains 'name') {
+    $displayName = [string]$y.name
+  }
+  if ([string]::IsNullOrWhiteSpace($displayName)) {
+    throw "El YAML no contiene el campo obligatorio 'name' (requerido para asignar displayName). Archivo: $InputFilePath"
+  }
+  $displayName = $displayName.Trim()
 
-  $query = $y.query
+  # Campos base
+  $description = ""
+  if ($y.PSObject.Properties.Name -contains 'description' -and $null -ne $y.description) {
+    $description = ([string]$y.description).TrimEnd()
+  }
+
+  $severity = "Medium"
+  if ($y.PSObject.Properties.Name -contains 'severity' -and -not [string]::IsNullOrWhiteSpace([string]$y.severity)) {
+    $severity = [string]$y.severity
+  }
+
+  $query = $null
+  if ($y.PSObject.Properties.Name -contains 'query') {
+    $query = [string]$y.query
+  }
   if ([string]::IsNullOrWhiteSpace($query)) {
     throw "El YAML no contiene 'query' (obligatorio). Archivo: $InputFilePath"
   }
 
-  # Duraciones (con ISO estricto MAYÚSCULAS)
-  $queryFrequency = Convert-DurationToIsoUpper $y.queryFrequency
-  $queryPeriod    = Convert-DurationToIsoUpper $y.queryPeriod
+  # Duraciones (ISO estricto MAYÚSCULAS)
+  $queryFrequency = $null
+  if ($y.PSObject.Properties.Name -contains 'queryFrequency') {
+    $queryFrequency = Convert-DurationToIsoUpper ([string]$y.queryFrequency)
+  }
+
+  $queryPeriod = $null
+  if ($y.PSObject.Properties.Name -contains 'queryPeriod') {
+    $queryPeriod = Convert-DurationToIsoUpper ([string]$y.queryPeriod)
+  }
 
   # enabled
-  $enabled = $y.enabled
+  $enabled = $null
+  if ($y.PSObject.Properties.Name -contains 'enabled') {
+    $enabled = $y.enabled
+  }
   if ($null -eq $enabled) {
     $enabled = [bool]$EnabledByDefault
   } else {
     $enabled = [bool]$enabled
   }
 
-  $triggerOperator = Map-TriggerOperator $y.triggerOperator
+  # trigger
+  $triggerOperator = $null
+  if ($y.PSObject.Properties.Name -contains 'triggerOperator') {
+    $triggerOperator = Map-TriggerOperator ([string]$y.triggerOperator)
+  }
+
   $triggerThreshold = 0
-  if ($null -ne $y.triggerThreshold) { $triggerThreshold = [int]$y.triggerThreshold }
+  if ($y.PSObject.Properties.Name -contains 'triggerThreshold' -and $null -ne $y.triggerThreshold) {
+    $triggerThreshold = [int]$y.triggerThreshold
+  }
 
-  $suppressionDuration = Convert-DurationToIsoUpper $y.suppressionDuration
-  $suppressionEnabled  = $false
-  if ($null -ne $y.suppressionEnabled) { $suppressionEnabled = [bool]$y.suppressionEnabled }
+  # suppression
+  $suppressionDuration = $null
+  if ($y.PSObject.Properties.Name -contains 'suppressionDuration') {
+    $suppressionDuration = Convert-DurationToIsoUpper ([string]$y.suppressionDuration)
+  }
 
-  # MITRE: YAML suele traer relevantTechniques
-  $techniques = @()
-  if ($null -ne $y.techniques) { $techniques = @($y.techniques) }
-  elseif ($null -ne $y.relevantTechniques) { $techniques = @($y.relevantTechniques) }
+  $suppressionEnabled = $false
+  if ($y.PSObject.Properties.Name -contains 'suppressionEnabled' -and $null -ne $y.suppressionEnabled) {
+    $suppressionEnabled = [bool]$y.suppressionEnabled
+  }
 
+  # MITRE
   $tactics = @()
-  if ($null -ne $y.tactics) { $tactics = @($y.tactics) }
+  if ($y.PSObject.Properties.Name -contains 'tactics' -and $null -ne $y.tactics) {
+    $tactics = @($y.tactics)
+  }
 
-  # Name ARM: Custom-<slug>
-  $fileBase = [IO.Path]::GetFileNameWithoutExtension($InputFilePath)
-  $slug = New-RuleSlug -DisplayNameOrFileBase $displayName -InputFilePath $InputFilePath
+  $techniques = @()
+  if ($y.PSObject.Properties.Name -contains 'techniques' -and $null -ne $y.techniques) {
+    $techniques = @($y.techniques)
+  } elseif ($y.PSObject.Properties.Name -contains 'relevantTechniques' -and $null -ne $y.relevantTechniques) {
+    $techniques = @($y.relevantTechniques)
+  }
+
+  # ARM resource name: Custom-<slug>
+  $slug = New-RuleSlug -NameFromYaml $displayName -InputFilePath $InputFilePath
   $armRuleName = "$NamePrefix$slug"
 
-  # IncidentConfiguration / groupingConfiguration (si existe) + duraciones
+  # incidentConfiguration + lookbackDuration normalizado si existe
   $incidentConfiguration = $null
-  if ($null -ne $y.incidentConfiguration) {
-    # Convertimos a hashtable/pscustomobject conservando estructura, y normalizamos lookbackDuration si existe
+  if ($y.PSObject.Properties.Name -contains 'incidentConfiguration' -and $null -ne $y.incidentConfiguration) {
     $incidentConfiguration = $y.incidentConfiguration | ConvertTo-Json -Depth 50 | ConvertFrom-Json
     if ($null -ne $incidentConfiguration.groupingConfiguration -and
         $null -ne $incidentConfiguration.groupingConfiguration.lookbackDuration) {
       $incidentConfiguration.groupingConfiguration.lookbackDuration =
-        Convert-DurationToIsoUpper $incidentConfiguration.groupingConfiguration.lookbackDuration
+        Convert-DurationToIsoUpper ([string]$incidentConfiguration.groupingConfiguration.lookbackDuration)
     }
   } else {
-    # default razonable (como tu ejemplo)
+    # Default razonable (similar a tu ejemplo)
     $incidentConfiguration = [pscustomobject]@{
       createIncident = $true
       groupingConfiguration = [pscustomobject]@{
@@ -223,9 +268,9 @@ function Convert-OneYamlToArmJson {
     }
   }
 
-  # eventGroupingSettings (si no viene, default SingleAlert)
+  # eventGroupingSettings
   $eventGroupingSettings = $null
-  if ($null -ne $y.eventGroupingSettings) {
+  if ($y.PSObject.Properties.Name -contains 'eventGroupingSettings' -and $null -ne $y.eventGroupingSettings) {
     $eventGroupingSettings = $y.eventGroupingSettings | ConvertTo-Json -Depth 50 | ConvertFrom-Json
   } else {
     $eventGroupingSettings = [pscustomobject]@{ aggregationKind = "SingleAlert" }
@@ -233,14 +278,24 @@ function Convert-OneYamlToArmJson {
 
   # entityMappings, customDetails
   $entityMappings = @()
-  if ($null -ne $y.entityMappings) { $entityMappings = @($y.entityMappings) }
+  if ($y.PSObject.Properties.Name -contains 'entityMappings' -and $null -ne $y.entityMappings) {
+    $entityMappings = @($y.entityMappings)
+  }
 
   $customDetails = [pscustomobject]@{}
-  if ($null -ne $y.customDetails) {
+  if ($y.PSObject.Properties.Name -contains 'customDetails' -and $null -ne $y.customDetails) {
     $customDetails = $y.customDetails | ConvertTo-Json -Depth 50 | ConvertFrom-Json
   }
 
-  # Plantilla ARM
+  # Validaciones mínimas: queryFrequency/queryPeriod obligatorios en Scheduled
+  if ([string]::IsNullOrWhiteSpace($queryFrequency)) {
+    throw "Falta queryFrequency (o no se pudo convertir). Archivo: $InputFilePath"
+  }
+  if ([string]::IsNullOrWhiteSpace($queryPeriod)) {
+    throw "Falta queryPeriod (o no se pudo convertir). Archivo: $InputFilePath"
+  }
+
+  # Construir plantilla ARM
   $template = [pscustomobject]@{
     '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'
     contentVersion = '1.0.0.0'
@@ -255,7 +310,7 @@ function Convert-OneYamlToArmJson {
         kind = 'Scheduled'
         properties = [pscustomobject]@{
           displayName = $displayName
-          description = ($description ?? "")
+          description = $description
           severity = $severity
           enabled = $enabled
           query = $query
@@ -274,14 +329,6 @@ function Convert-OneYamlToArmJson {
         }
       }
     )
-  }
-
-  # Validaciones mínimas: queryFrequency/queryPeriod obligatorios en Scheduled (si en YAML vienen vacíos, Sentinel suele fallar)
-  if ([string]::IsNullOrWhiteSpace($template.resources[0].properties.queryFrequency)) {
-    throw "Falta queryFrequency (o no se pudo convertir). Archivo: $InputFilePath"
-  }
-  if ([string]::IsNullOrWhiteSpace($template.resources[0].properties.queryPeriod)) {
-    throw "Falta queryPeriod (o no se pudo convertir). Archivo: $InputFilePath"
   }
 
   # Asegurar carpeta destino
@@ -315,16 +362,15 @@ function Convert-AnalyticsYamlFolderToArmJson {
   $lines.Add("Conversion report - $(Get-Date -Format o)")
   $lines.Add("InputFolder: $InputFolder")
   $lines.Add("OutputFolder: $OutputFolder")
+  $lines.Add("NamePrefix: $NamePrefix")
   $lines.Add("")
 
   foreach ($f in $yamlFiles) {
     $inPath = $f.FullName
 
     # Mantener estructura relativa desde InputFolder
-    $rel = $inPath.Substring((Resolve-Path $InputFolder).Path.Length).TrimStart('\','/')
-    $outPath = Join-Path (Resolve-Path (Split-Path $OutputFolder -Parent) -ErrorAction SilentlyContinue).Path $OutputFolder
-    if (-not $outPath) { $outPath = $OutputFolder }
-
+    $root = (Resolve-Path $InputFolder).Path
+    $rel  = $inPath.Substring($root.Length).TrimStart('\','/')
     $outFile = Join-Path $OutputFolder ($rel -replace '\.ya?ml$', '.json')
 
     try {
