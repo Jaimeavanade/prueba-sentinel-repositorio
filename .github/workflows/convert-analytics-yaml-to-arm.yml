@@ -39,4 +39,3 @@ jobs:
           path: |
             Detections/Custom/ARM
             conversion_report.txt
-``
