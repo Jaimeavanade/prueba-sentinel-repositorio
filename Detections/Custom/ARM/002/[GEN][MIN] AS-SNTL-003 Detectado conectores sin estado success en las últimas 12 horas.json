@@ -1,0 +1,70 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/bff7e44b-9b2e-4ac5-8954-cc65dbb47765')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/bff7e44b-9b2e-4ac5-8954-cc65dbb47765')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[GEN][MIN] AS-SNTL-003 Detectado conectores sin estado success en las últimas 12 horas",
+                "description": "Detecta si algun conector ha fallado en las ultimas 12 horas",
+                "severity": "Medium",
+                "enabled": true,
+                "query": "let lastestStatus = SentinelHealth\r\n| where TimeGenerated > ago(12h)\r\n| where OperationName == 'Data fetch status change'\r\n| where Status in ('Success', 'Failure')\r\n| parse SentinelResourceId with * '/dataConnectors/' Friendly_name\r\n| project TimeGenerated, SentinelResourceName, SentinelResourceId, Friendly_name, LastStatus = Status\r\n| summarize TimeGenerated = arg_max(TimeGenerated,*) by SentinelResourceName, SentinelResourceId, Friendly_name;\r\nlet nextToLastestStatus = SentinelHealth\r\n| where TimeGenerated > ago(12h)\r\n| where OperationName == 'Data fetch status change'\r\n| where Status in ('Success', 'Failure')\r\n| parse SentinelResourceId with * '/dataConnectors/' Friendly_name\r\n| join kind = leftanti (lastestStatus) on SentinelResourceName, SentinelResourceId, TimeGenerated\r\n| project TimeGenerated, SentinelResourceName, SentinelResourceId, Friendly_name, NextToLastStatus = Status\r\n| summarize TimeGenerated = arg_max(TimeGenerated,*) by SentinelResourceName, SentinelResourceId, Friendly_name;\r\nlastestStatus\r\n| join kind=inner (nextToLastestStatus) on SentinelResourceName, SentinelResourceId\r\n| where NextToLastStatus == 'Success' and LastStatus == 'Failure'\r\n| project TimeGenerated, Object = Friendly_name, ObjectType = SentinelResourceId, EventEndTime = NextToLastStatus",
+                "queryFrequency": "PT2H",
+                "queryPeriod": "PT2H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [],
+                "techniques": [],
+                "subTechniques": [],
+                "alertRuleTemplateName": "bff7e44b-9b2e-4ac5-8954-cc65dbb47765",
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": false,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT5H",
+                        "matchingMethod": "AllEntities",
+                        "groupByEntities": [],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDisplayNameFormat": "AS-SNTL-003 Detectado conectores sin estado success en las ultimas 12 horas",
+                    "alertDescriptionFormat": "Se detecta el conector {{Object}}  con status {{EventEndTime}}  con {{ObjectType}}.",
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "CloudApplication",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Name",
+                                "columnName": "Object"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": "1.1.0"
+            }
+        }
+    ]
+}

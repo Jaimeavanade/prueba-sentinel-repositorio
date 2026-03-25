@@ -1,0 +1,121 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/49117014-ad9a-47ab-a02f-3a353abb2d19')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/49117014-ad9a-47ab-a02f-3a353abb2d19')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[TEST][GEN] EF-O365-002-T1048 Massive data download from SharePoint/OneDrive",
+                "description": "Detects when a user performs a massive download of data from OneDrive and/or SharePoint, 1000 files in 10 minutes. Provides data on Country, Client IP, and all downloaded files.",
+                "severity": "Low",
+                "enabled": false,
+                "query": "let watchlist_EF_O365_002_T1048_User = (_GetWatchlist('watchlist_EF_O365_002_T1048_User') \r\n    | project SearchKey); \r\nlet watchlist_EF_O365_002_T1048_SourceIP = (_GetWatchlist('watchlist_EF_O365_002_T1048_SourceIP')\r\n    | project SearchKey); \r\nOfficeActivity \r\n| where OfficeWorkload in (\"SharePoint\", \"OneDrive\") \r\n| where Operation == \"FileDownloaded\" \r\n//| extend usuario = tostring(split(UserId,'@'))\r\n// Se excepciona sincronizaciones mismo usuario\r\n| extend user = replace_regex(UserId, \"[.@]\", \"_\")\r\n| where Site_Url !has user\r\n| where ClientIP !in (watchlist_EF_O365_002_T1048_SourceIP) \r\n| where UserId !in (watchlist_EF_O365_002_T1048_User) \r\n| extend location1=geo_info_from_ip_address(ClientIP)\r\n| extend Country = tostring(parse_json(tostring(location1)).country)\r\n| summarize dcount(OfficeObjectId) by UserId, OfficeWorkload, Site_Url \r\n| where dcount_OfficeObjectId > 500\r\n| join kind=inner (OfficeActivity \r\n    | where OfficeWorkload in (\"SharePoint\", \"OneDrive\") \r\n    | where Operation == \"FileDownloaded\" \r\n    | where ClientIP !in (watchlist_EF_O365_002_T1048_SourceIP) \r\n    | where UserId !in (watchlist_EF_O365_002_T1048_User)\r\n    | extend location1=geo_info_from_ip_address(ClientIP)\r\n    | extend Country = tostring(parse_json(tostring(location1)).country)\r\n    ) \r\n    on UserId \r\n| project \r\n    ActorUsername = UserId, \r\n    ActingAppName = OfficeWorkload, \r\n    TargetUrl = Site_Url, \r\n    Operation, \r\n    SrcIpAddr = ClientIP,\r\n    SrcGeoCountry = Country,\r\n    HttpUserAgent = UserAgent, \r\n    SrcFileName = SourceFileName, \r\n    EventCount = dcount_OfficeObjectId\r\n| parse ActorUsername with * \"urn:spo:\" UserUPN\r\n| extend User = iff(isempty(UserUPN), ActorUsername, UserUPN)\r\n| project-away UserUPN\r\n| summarize arg_max(TargetUrl,Operation,HttpUserAgent,SrcGeoCountry,EventCount),ListObject = make_set(SrcFileName) by ActorUsername, SrcIpAddr, ActingAppName",
+                "queryFrequency": "PT10M",
+                "queryPeriod": "PT10M",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "Exfiltration"
+                ],
+                "techniques": [
+                    "T1048"
+                ],
+                "subTechniques": [],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT2H",
+                        "matchingMethod": "Selected",
+                        "groupByEntities": [
+                            "Account",
+                            "CloudApplication"
+                        ],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDisplayNameFormat": "[TEST][GEN] EF-O365-002-T1048 Massive data download from SharePoint/OneDrive  {{ActorUsername}} ",
+                    "alertDescriptionFormat": "Massive data download detected from {{ActorUsername}} from {{SrcGeoCountry}} with “{{EventCount}}” files downloaded in 10 minutes.",
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "FullName",
+                                "columnName": "ActorUsername"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "File",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Name",
+                                "columnName": "ListObject"
+                            },
+                            {
+                                "identifier": "Directory",
+                                "columnName": "TargetUrl"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "CloudApplication",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Name",
+                                "columnName": "ActingAppName"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "Process",
+                        "fieldMappings": [
+                            {
+                                "identifier": "CommandLine",
+                                "columnName": "HttpUserAgent"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "SrcIpAddr"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": [
+                    {
+                        "columnName": "SrcGeoCountry"
+                    }
+                ],
+                "templateVersion": null
+            }
+        }
+    ]
+}

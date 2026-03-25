@@ -1,0 +1,83 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/9b30cf78-ae05-4ef1-9917-f01e83b0ae04')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/9b30cf78-ae05-4ef1-9917-f01e83b0ae04')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "[TEST]IA-AD-00X-T1078 Detect Disabled Account Sign-in Attempts by IP Address",
+                "description": "This use case searches for failed sign-in attempts to disabled accounts summarized by the IP originating IP address.",
+                "severity": "Low",
+                "enabled": true,
+                "query": "SigninLogs \r\n  | where ResultType == \"50057\" \r\n  | where ResultDescription =~ \"User account is disabled. The account has been disabled by an administrator.\" \r\n  | summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), numberAccountsTargeted = dcount(UserPrincipalName), \r\n  numberApplicationsTargeted = dcount(AppDisplayName), accountSet = make_set(UserPrincipalName, 100), applicationSet=make_set(AppDisplayName, 100), \r\n  numberLoginAttempts = count() by IPAddress\r\n  | extend timestamp = StartTime\r\n  | order by numberLoginAttempts desc\r\n  | extend IP_0_Address = IPAddress",
+                "queryFrequency": "PT1H",
+                "queryPeriod": "PT1H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT5H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "InitialAccess"
+                ],
+                "techniques": [
+                    "T1078"
+                ],
+                "subTechniques": [
+                    "T1078.002"
+                ],
+                "alertRuleTemplateName": null,
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": true,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "P1D",
+                        "matchingMethod": "AllEntities",
+                        "groupByEntities": [],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": {
+                    "alertDynamicProperties": []
+                },
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "Account",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Name",
+                                "columnName": "accountSet"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "IPAddress"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": null
+            }
+        }
+    ]
+}
