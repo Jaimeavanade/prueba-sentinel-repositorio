@@ -42,12 +42,23 @@ jobs:
           # -------------------------------
           # PARAMETROS
           # -------------------------------
-          $SubscriptionId     = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-          $ResourceGroupName  = "${{ secrets.SENTINEL_RESOURCE_GROUP }}"
-          $WorkspaceName      = "${{ secrets.SENTINEL_WORKSPACE_NAME }}"
-          $DestinationRoot    = "Detections/Solutions"
-          $AzureSentinelRepo  = "https://github.com/Azure/Azure-Sentinel.git"
+          $SubscriptionId      = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          $ResourceGroupName   = "${{ secrets.SENTINEL_RESOURCE_GROUP }}"
+          $WorkspaceName       = "${{ secrets.SENTINEL_WORKSPACE_NAME }}"
+          $DestinationRoot     = "Detections/Solutions"
+          $AzureSentinelRepo   = "https://github.com/Azure/Azure-Sentinel.git"
           $AzureSentinelBranch = "master"
+
+          # -------------------------------
+          # ALIAS MAP (DisplayName Content Hub -> folder oficial en GitHub)
+          # -------------------------------
+          $AliasMap = @{
+            # Caso 1: Content Hub muestra "Azure Web Application Firewall" pero la carpeta oficial es "... (WAF)"
+            "Azure Web Application Firewall" = "Azure Web Application Firewall (WAF)"
+
+            # Caso 2: Content Hub muestra "Microsoft Sentinel - Continuous Threat Monitoring for GitHub" pero carpeta es "GitHub"
+            "Microsoft Sentinel - Continuous Threat Monitoring for GitHub" = "GitHub"
+          }
 
           # -------------------------------
           # FUNCIONES
@@ -71,34 +82,24 @@ jobs:
             --resource https://management.azure.com/ `
             --query accessToken -o tsv
 
-          if (-not $token) {
-            throw "No se pudo obtener token ARM"
-          }
+          if (-not $token) { throw "No se pudo obtener token ARM" }
 
           # -------------------------------
-          # LISTAR SOLUCIONES INSTALADAS
+          # LISTAR SOLUCIONES INSTALADAS (contentPackages)
           # -------------------------------
           Write-Host "Listando soluciones instaladas en Content Hub..."
 
           $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentPackages?api-version=2025-09-01"
-
           $headers = @{ Authorization = "Bearer $token" }
 
           $packages = (Invoke-RestMethod -Method GET -Uri $uri -Headers $headers).value
-
-          $solutions = $packages | Where-Object {
-            $_.properties.displayName
-          }
+          $solutions = $packages | Where-Object { $_.properties.displayName }
 
           Write-Host "Soluciones detectadas: $($solutions.Count)" -ForegroundColor Green
-
-          if ($solutions.Count -eq 0) {
-            Write-Warning "No hay soluciones instaladas. Fin."
-            exit 0
-          }
+          if ($solutions.Count -eq 0) { Write-Warning "No hay soluciones instaladas. Fin."; exit 0 }
 
           # -------------------------------
-          # SOLUCIONES OFICIALES (GITHUB)
+          # SOLUCIONES OFICIALES (listado de carpetas /Solutions)
           # -------------------------------
           Write-Host "Leyendo soluciones oficiales de Azure-Sentinel..."
 
@@ -109,24 +110,53 @@ jobs:
           $officialFolders = $official | Where-Object type -eq dir | Select-Object -ExpandProperty name
 
           # -------------------------------
-          # MAPEO
+          # MAPEO (con alias + normalización + fallback contains)
           # -------------------------------
-          $mapped = @()
+          $mapped = New-Object System.Collections.Generic.List[string]
 
           foreach ($s in $solutions) {
             $dn = $s.properties.displayName
-            $n  = Normalize $dn
 
-            $match = $officialFolders | Where-Object {
-              (Normalize $_) -eq $n
+            # 0) Alias directo si existe
+            if ($AliasMap.ContainsKey($dn)) {
+              $aliasFolder = $AliasMap[$dn]
+              if ($officialFolders -contains $aliasFolder) {
+                $mapped.Add($aliasFolder)
+                Write-Host "ALIAS MATCH: $dn -> $aliasFolder" -ForegroundColor Green
+                continue
+              } else {
+                Write-Warning "ALIAS definido pero NO existe carpeta oficial: $dn -> $aliasFolder"
+              }
             }
 
+            # 1) Match exacto
+            if ($officialFolders -contains $dn) {
+              $mapped.Add($dn)
+              Write-Host "EXACT MATCH: $dn -> $dn" -ForegroundColor Green
+              continue
+            }
+
+            # 2) Match normalizado
+            $n = Normalize $dn
+            $match = $officialFolders | Where-Object { (Normalize $_) -eq $n } | Select-Object -First 1
             if ($match) {
-              $mapped += $match
-              Write-Host "MATCH: $dn -> $match" -ForegroundColor Green
-            } else {
-              Write-Warning "NO MATCH: $dn"
+              $mapped.Add($match)
+              Write-Host "NORMALIZED MATCH: $dn -> $match" -ForegroundColor Green
+              continue
             }
+
+            # 3) Fallback: contains (muy útil para nombres largos tipo “...for GitHub”)
+            $matchContains = $officialFolders | Where-Object {
+              (Normalize $dn) -like "*$(Normalize $_)*" -or (Normalize $_) -like "*$(Normalize $dn)*"
+            } | Select-Object -First 1
+
+            if ($matchContains) {
+              $mapped.Add($matchContains)
+              Write-Host "CONTAINS MATCH: $dn -> $matchContains" -ForegroundColor Green
+              continue
+            }
+
+            Write-Warning "NO MATCH: $dn"
           }
 
           $mapped = $mapped | Sort-Object -Unique
@@ -136,8 +166,11 @@ jobs:
             exit 0
           }
 
+          Write-Host "Soluciones mapeadas a copiar: $($mapped.Count)" -ForegroundColor Cyan
+          $mapped | ForEach-Object { Write-Host " - $_" }
+
           # -------------------------------
-          # CLONE SPARSE
+          # CLONE SPARSE del repo oficial SOLO para las soluciones mapeadas
           # -------------------------------
           $tmp = Join-Path $env:RUNNER_TEMP ("azure-sentinel-" + [guid]::NewGuid())
           Write-Host "Clonando Azure-Sentinel (sparse) en $tmp"
@@ -157,7 +190,7 @@ jobs:
           # -------------------------------
           # COPIA DE CONTENIDO
           # -------------------------------
-          $folders = @(
+          $foldersToCopy = @(
             "Analytic Rules",
             "Automation Rules",
             "Hunting Queries",
@@ -175,7 +208,7 @@ jobs:
             Ensure-Dir $dstSol
             Write-Host "Copiando solución: $sol" -ForegroundColor Cyan
 
-            foreach ($f in $folders) {
+            foreach ($f in $foldersToCopy) {
               if (Test-Path "$srcSol/$f") {
                 Ensure-Dir "$dstSol/$f"
                 Copy-Item "$srcSol/$f/*" "$dstSol/$f" -Recurse -Force
@@ -195,7 +228,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add Detections/Solutions
-            git commit -m "Sync Content Hub solutions from Azure-Sentinel (inline)"
+            git commit -m "Sync Content Hub solutions from Azure-Sentinel (inline + alias map)"
             git push
           else
             echo "No changes to commit."
