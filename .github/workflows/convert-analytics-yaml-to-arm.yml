@@ -32,10 +32,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           pwsh -File ./Scripts/Convert-AnalyticsYamlToArmJson.ps1
 
-      - name: Upload ARM JSON artifacts + report
+      - name: Upload ARM JSON artifacts
         uses: actions/upload-artifact@v4
         with:
           name: sentinel-custom-analytics-rules-arm
-          path: |
-            Detections/Custom/ARM
-            conversion_report.txt
+          path: Detections/Custom/ARM
