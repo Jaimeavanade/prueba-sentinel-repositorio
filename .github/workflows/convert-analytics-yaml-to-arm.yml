@@ -1,104 +1,42 @@
-name: Convert Analytics YAML to Repos-compatible ARM JSON
+name: Convert Analytics Rules (Custom YAML -> ARM JSON)
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
     paths:
-      - "Detections/Custom/YAML/**"
-      - "Scripts/Convert-AnalyticsYamlToArmJson.ps1"
-
-permissions:
-  contents: write
+      - 'Detections/Custom/YAML/**.yml'
+      - 'Detections/Custom/YAML/**.yaml'
+      - 'Scripts/Convert-AnalyticsYamlToArmJson.ps1'
+      - '.github/workflows/convert-analytics-yaml-to-arm.yml'
+  workflow_dispatch:
 
 jobs:
-  convert:
+  convert-analytics-rules:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install PowerShell YAML module (pinned)
-        shell: pwsh
-        run: |
-          Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module powershell-yaml -RequiredVersion 0.4.11 -Scope CurrentUser -Force -AllowClobber
-          Import-Module powershell-yaml -Force
-
-      - name: Convert Analytics Rules (YAML → ARM JSON) - do not fail on parse issues
+      - name: Install PowerShell YAML module
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
-          $yamlRoot = "Detections/Custom/YAML"
-          $armRoot  = "Detections/Custom/ARM"
-
-          if (-not (Test-Path $yamlRoot)) {
-            Write-Host "No YAML found in $yamlRoot"
-            exit 0
+          if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
+            Install-Module powershell-yaml -Scope CurrentUser -Force -Repository PSGallery
           }
 
-          $yamlRootPath = (Resolve-Path $yamlRoot).Path
-          $failed = New-Object System.Collections.Generic.List[string]
-          $ok = 0
+      - name: Convert Custom Analytics Rules (YAML -> ARM JSON)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pwsh -File ./Scripts/Convert-AnalyticsYamlToArmJson.ps1
 
-          Get-ChildItem $yamlRoot -Recurse -Include *.yaml, *.yml | ForEach-Object {
-
-            $relPath = $_.FullName.Substring($yamlRootPath.Length).TrimStart('/','\')
-            $targetDir = Join-Path $armRoot (Split-Path $relPath -Parent)
-            New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-
-            $outFile = Join-Path $targetDir ($_.BaseName + ".json")
-            Write-Host "▶ $relPath -> $outFile"
-
-            & pwsh -File Scripts/Convert-AnalyticsYamlToArmJson.ps1 `
-              -InputYamlPath $_.FullName `
-              -OutputJsonPath $outFile `
-              -RuleIdSeed $relPath
-
-            $code = $LASTEXITCODE
-
-            if ($code -ne 0) {
-              $failed.Add("$relPath (exit=$code)")
-              # 🔑 IMPORTANT: reset to avoid failing the whole step
-              $global:LASTEXITCODE = 0
-            } else {
-              $ok++
-            }
-          }
-
-          "Converted OK: $ok" | Out-File -FilePath conversion_report.txt -Encoding utf8
-
-          if ($failed.Count -gt 0) {
-            "" | Out-File conversion_report.txt -Append -Encoding utf8
-            "FAILED FILES:" | Out-File conversion_report.txt -Append -Encoding utf8
-            $failed | Out-File conversion_report.txt -Append -Encoding utf8
-            Write-Host "⚠️ Some files failed. See conversion_report.txt"
-          }
-
-          # ✅ Always succeed so we can commit what worked
-          exit 0
-
-      - name: Upload conversion report
+      - name: Upload ARM JSON artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: conversion-report
-          path: conversion_report.txt
-
-      - name: Commit generated ARM files
-        shell: bash
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          git add Detections/Custom/ARM/**/*.json || true
-          git add conversion_report.txt || true
-
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-
-          git commit -m "chore: regenerate Analytics Rules ARM (Repositories compatible)"
-          git push
+          name: sentinel-custom-analytics-rules-arm
+          path: |
+            Detections/Custom/ARM
+            conversion_report.txt
+``
