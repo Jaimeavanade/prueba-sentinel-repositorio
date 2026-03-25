@@ -3,7 +3,7 @@ name: Sync Content Hub Solutions from Official Repo
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * 1" # Lunes 03:00 UTC (ajusta si quieres)
+    - cron: "0 3 * * 1"
 
 permissions:
   id-token: write
@@ -16,8 +16,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -26,12 +24,24 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # 🔍 DEBUG OBLIGATORIO (solo la primera vez)
+      - name: Debug repo structure
+        shell: bash
+        run: |
+          pwd
+          ls -la
+          ls -la scripts || true
+
       - name: Sync installed Content Hub solutions -> Detections/Solutions
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          pwsh -File ./scripts/Sync-ContentHubSolutionsFromOfficialRepo.ps1 `
+          if (-not (Test-Path "./scripts/Sync-ContentHubSolutionsFromOfficialRepo.ps1")) {
+            throw "❌ Script NO encontrado en ./scripts/"
+          }
+
+          & "./scripts/Sync-ContentHubSolutionsFromOfficialRepo.ps1" `
             -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
             -ResourceGroupName "${{ secrets.SENTINEL_RESOURCE_GROUP }}" `
             -WorkspaceName "${{ secrets.SENTINEL_WORKSPACE_NAME }}" `
@@ -41,8 +51,6 @@ jobs:
       - name: Commit changes (if any)
         shell: bash
         run: |
-          set -e
-
           if [[ -n "$(git status --porcelain)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
