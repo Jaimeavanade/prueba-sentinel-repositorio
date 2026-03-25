@@ -10,6 +10,9 @@ on:
       - '.github/workflows/convert-analytics-yaml-to-arm.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write   # 🔑 necesario para hacer push
+
 jobs:
   convert-analytics-rules:
     runs-on: ubuntu-latest
@@ -17,6 +20,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # necesario para commit limpio
 
       - name: Install PowerShell YAML module
         shell: pwsh
@@ -32,6 +37,28 @@ jobs:
           $ErrorActionPreference = "Stop"
           pwsh -File ./Scripts/Convert-AnalyticsYamlToArmJson.ps1
 
+      # ✅ NUEVO PASO: commit automático
+      - name: Commit ARM JSON files to repo
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Añadir solo ARM
+          git add Detections/Custom/ARM
+
+          # Si no hay cambios, no hacemos nada
+          if git diff --cached --quiet; then
+            echo "✅ No hay cambios en Detections/Custom/ARM"
+            exit 0
+          fi
+
+          git commit -m "chore(sentinel): update ARM analytics rules from YAML"
+          git push origin HEAD:main
+
+      # (opcional) seguir subiendo artifacts
       - name: Upload ARM JSON artifacts
         uses: actions/upload-artifact@v4
         with:
