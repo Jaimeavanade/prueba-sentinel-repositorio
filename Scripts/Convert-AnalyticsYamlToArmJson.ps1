@@ -32,51 +32,140 @@ function Convert-DurationToIsoUpper {
 
   $v = $Value.Trim()
 
-  # ISO8601 ya
   if ($v -match '^[Pp]') { return $v.ToUpperInvariant() }
 
-  # Formatos simples típicos
+  # formatos simples típicos
   if ($v -match '^(\d+)\s*[mM]$') { return ("PT{0}M" -f $Matches[1]) }
   if ($v -match '^(\d+)\s*[hH]$') { return ("PT{0}H" -f $Matches[1]) }
   if ($v -match '^(\d+)\s*[dD]$') { return ("P{0}D" -f $Matches[1]) }
 
-  # fallback: mayúsculas
   return $v.ToUpperInvariant()
 }
 
-function Extract-QueryFromYamlRaw {
-  param([string]$YamlRaw)
+function Ensure-OutputFilePath {
+  param(
+    [Parameter(Mandatory)][string]$InputFilePath,
+    [Parameter(Mandatory)][string]$OutputFilePath
+  )
 
-  $lines = $YamlRaw -split "`r?`n"
-  $headerRegex = '^(?<indent>\s*)query\s*:\s*\|(?<ind>\d+)?(?<chomp>[+-])?\s*$'
-
-  $idx = -1
-  $baseIndent = 0
-  for ($i=0; $i -lt $lines.Length; $i++) {
-    if ($lines[$i] -match $headerRegex) {
-      $idx = $i
-      $baseIndent = $Matches['indent'].Length
-      break
-    }
+  if (Test-Path -LiteralPath $OutputFilePath -PathType Container) {
+    $leaf = (Split-Path -Leaf $InputFilePath) -replace '\.ya?ml$', '.json'
+    return (Join-Path $OutputFilePath $leaf)
   }
-  if ($idx -lt 0) { return $null }
+
+  if ($OutputFilePath -match '[\\/]\s*$') {
+    $leaf = (Split-Path -Leaf $InputFilePath) -replace '\.ya?ml$', '.json'
+    return (Join-Path $OutputFilePath $leaf)
+  }
+
+  return $OutputFilePath
+}
+
+function Normalize-QueryText {
+  param([string]$q)
+  if ([string]::IsNullOrWhiteSpace($q)) { return $q }
+
+  $q = $q.Trim()
+
+  # Normalizar secuencias típicas de YAML quoted con continuaciones:
+  #   \r\n\   -> salto de línea real
+  #   \n\     -> salto de línea real
+  $q = $q -replace '\\r\\n\\\s*', "`n"
+  $q = $q -replace '\\n\\\s*', "`n"
+
+  # Por si vienen sin la barra de continuación
+  $q = $q -replace '\\r\\n', "`n"
+  $q = $q -replace '\\n', "`n"
+
+  # Convertir escapes de comillas dobles \" -> "
+  $q = $q -replace '\\"', '"'
+
+  # Normalizar finales
+  return $q.TrimEnd()
+}
+
+function Extract-QuotedScalar {
+  param(
+    [string[]]$Lines,
+    [int]$StartIndex,
+    [string]$Remainder
+  )
+
+  $rem = $Remainder.TrimStart()
+  if ($rem.Length -lt 1) { return $null }
+
+  $quote = $rem[0]
+  if ($quote -ne '"' -and $quote -ne "'") { return $null }
+
+  $sb = [System.Text.StringBuilder]::new()
+
+  # Consumimos desde el primer carácter tras la comilla
+  $current = $rem.Substring(1)
+  $i = $StartIndex
+
+  while ($true) {
+    for ($p = 0; $p -lt $current.Length; $p++) {
+      $ch = $current[$p]
+
+      if ($quote -eq '"') {
+        # En double-quoted, \" escapa
+        if ($ch -eq '"' ) {
+          $prevIsEscape = ($p -gt 0 -and $current[$p-1] -eq '\')
+          if (-not $prevIsEscape) {
+            # fin de string
+            return $sb.ToString()
+          }
+        }
+        [void]$sb.Append($ch)
+      }
+      else {
+        # En single-quoted, '' representa una comilla simple; fin es ' no duplicada
+        if ($ch -eq "'") {
+          $nextIsAlsoQuote = ($p + 1 -lt $current.Length -and $current[$p+1] -eq "'")
+          if ($nextIsAlsoQuote) {
+            [void]$sb.Append("'")
+            $p++ # saltar la segunda
+            continue
+          } else {
+            return $sb.ToString()
+          }
+        }
+        [void]$sb.Append($ch)
+      }
+    }
+
+    # si no cerró en esta línea, pasamos a la siguiente
+    $i++
+    if ($i -ge $Lines.Length) { break }
+    [void]$sb.Append("`n")
+    $current = $Lines[$i]
+  }
+
+  return $sb.ToString()
+}
+
+function Extract-BlockScalar {
+  param(
+    [string[]]$Lines,
+    [int]$HeaderIndex,
+    [int]$BaseIndent
+  )
 
   # Detectar indent real del bloque
   $contentIndent = $null
-  for ($j=$idx+1; $j -lt $lines.Length; $j++) {
-    if ($lines[$j] -match '^\s*$') { continue }
-    $leading = ($lines[$j] -replace '^(?<sp>\s*).*$', '${sp}').Length
-    if ($leading -le $baseIndent) { return "" }
+  for ($j=$HeaderIndex+1; $j -lt $Lines.Length; $j++) {
+    if ($Lines[$j] -match '^\s*$') { continue }
+    $leading = ($Lines[$j] -replace '^(?<sp>\s*).*$', '${sp}').Length
+    if ($leading -le $BaseIndent) { return "" }
     $contentIndent = $leading
     break
   }
   if ($null -eq $contentIndent) { return "" }
 
   $out = New-Object System.Collections.Generic.List[string]
-  for ($k=$idx+1; $k -lt $lines.Length; $k++) {
-    $l = $lines[$k]
+  for ($k=$HeaderIndex+1; $k -lt $Lines.Length; $k++) {
+    $l = $Lines[$k]
     if ($l -match '^\s*$') { $out.Add(""); continue }
-
     $leading = ($l -replace '^(?<sp>\s*).*$', '${sp}').Length
     if ($leading -lt $contentIndent) { break }
 
@@ -86,25 +175,45 @@ function Extract-QueryFromYamlRaw {
   ($out -join "`n").TrimEnd()
 }
 
-function Ensure-OutputFilePath {
-  param(
-    [Parameter(Mandatory)][string]$InputFilePath,
-    [Parameter(Mandatory)][string]$OutputFilePath
-  )
+function Extract-QueryFromYamlRaw {
+  <#
+    Soporta:
+      query: |-, |, |+, |2+, |2-
+      query: >-, >, >+, >2+, >2-
+      query: "...."  (quoted, multi-línea)
+      query: '....'  (quoted, multi-línea)
+  #>
+  param([Parameter(Mandatory)][string]$YamlRaw)
 
-  # Si la ruta de salida apunta a un directorio, adjuntar nombre de archivo .json
-  if (Test-Path -LiteralPath $OutputFilePath -PathType Container) {
-    $leaf = (Split-Path -Leaf $InputFilePath) -replace '\.ya?ml$', '.json'
-    return (Join-Path $OutputFilePath $leaf)
+  $lines = $YamlRaw -split "`r?`n"
+
+  for ($i=0; $i -lt $lines.Length; $i++) {
+
+    # Captura "query: <algo>"
+    if ($lines[$i] -match '^(?<indent>\s*)query\s*:\s*(?<rest>.+)?$') {
+      $indentLen = $Matches['indent'].Length
+      $rest = ($Matches['rest'] ?? "").TrimEnd()
+
+      # Caso bloque literal/folded: |... o >...
+      if ($rest -match '^[\|>](\d+)?([+-])?\s*$') {
+        $block = Extract-BlockScalar -Lines $lines -HeaderIndex $i -BaseIndent $indentLen
+        return $block
+      }
+
+      # Caso quoted scalar: "...." o '....'
+      $q = Extract-QuotedScalar -Lines $lines -StartIndex $i -Remainder $rest
+      if ($null -ne $q) {
+        return $q
+      }
+
+      # Caso inline simple (raro pero por si acaso)
+      if (-not [string]::IsNullOrWhiteSpace($rest)) {
+        return $rest.Trim()
+      }
+    }
   }
 
-  # Si termina en / o \ (parece carpeta), adjuntar nombre
-  if ($OutputFilePath -match '[\\/]\s*$') {
-    $leaf = (Split-Path -Leaf $InputFilePath) -replace '\.ya?ml$', '.json'
-    return (Join-Path $OutputFilePath $leaf)
-  }
-
-  return $OutputFilePath
+  return $null
 }
 
 function Convert-OneYamlToArmJson {
@@ -117,21 +226,23 @@ function Convert-OneYamlToArmJson {
   $y = ConvertFrom-Yaml -Yaml $yamlRaw
   if ($null -eq $y) { throw "YAML vacío o no parseable: $InputFilePath" }
 
-  # displayName = nombre del fichero YAML
   $displayName = [IO.Path]::GetFileNameWithoutExtension($InputFilePath).Trim()
+  if ([string]::IsNullOrWhiteSpace($displayName)) { throw "Nombre de archivo inválido: $InputFilePath" }
 
-  # query: desde parser o extraída del bloque |...
+  # query: primero parser, luego extractor raw (que ahora soporta quoted y block)
   $query = $null
   if ($y.PSObject.Properties.Name -contains 'query' -and -not [string]::IsNullOrWhiteSpace([string]$y.query)) {
     $query = [string]$y.query
   } else {
     $query = Extract-QueryFromYamlRaw -YamlRaw $yamlRaw
   }
+  $query = Normalize-QueryText -q $query
+
   if ([string]::IsNullOrWhiteSpace($query)) {
-    throw "No se pudo obtener 'query' (ni parseada ni por bloque |...). Archivo: $InputFilePath"
+    throw "No se pudo obtener 'query' (ni parseada ni por extracción raw). Archivo: $InputFilePath"
   }
 
-  # queryFrequency/queryPeriod: defaults si faltan
+  # queryFrequency/queryPeriod (defaults si faltan)
   $queryFrequency = $null
   if ($y.PSObject.Properties.Name -contains 'queryFrequency') {
     $queryFrequency = Convert-DurationToIsoUpper ([string]$y.queryFrequency)
@@ -164,29 +275,26 @@ function Convert-OneYamlToArmJson {
         kind = 'Scheduled'
         name = "[concat(parameters('workspace'), '/Microsoft.SecurityInsights/Custom-$slug')]"
         properties = [pscustomobject]@{
-          displayName     = $displayName
-          description     = ([string]($y.description ?? "")).TrimEnd()
-          severity        = $severity
-          enabled         = $true
-          query           = $query
-          queryFrequency  = $queryFrequency
-          queryPeriod     = $queryPeriod
+          displayName = $displayName
+          description = (($y.description ?? "") -as [string]).TrimEnd()
+          severity = $severity
+          enabled = $true
+          query = $query
+          queryFrequency = $queryFrequency
+          queryPeriod = $queryPeriod
           triggerOperator = 'GreaterThan'
-          triggerThreshold= 0
+          triggerThreshold = 0
           suppressionEnabled = $false
         }
       }
     )
   }
 
-  # ✅ FIX CRÍTICO: asegurar que OutputFilePath es fichero, no carpeta
   $OutputFilePath = Ensure-OutputFilePath -InputFilePath $InputFilePath -OutputFilePath $OutputFilePath
 
-  # Crear carpeta destino
   $outDir = Split-Path -Parent $OutputFilePath
   if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
 
-  # Escribir JSON (Set-Content sobre fichero)
   $template | ConvertTo-Json -Depth 80 | Set-Content -Path $OutputFilePath -Encoding UTF8 -Force
 }
 
@@ -195,7 +303,6 @@ function Convert-OneYamlToArmJson {
 # ==========================
 $InputFolder  = "Detections/Custom/YAML"
 $OutputFolder = "Detections/Custom/ARM"
-
 $root = (Resolve-Path $InputFolder).Path
 
 Get-ChildItem -Path $InputFolder -Recurse -File -Include *.yaml, *.yml | ForEach-Object {
