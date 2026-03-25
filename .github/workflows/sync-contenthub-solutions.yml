@@ -1,4 +1,4 @@
-name: Sync Content Hub Solutions from Official Repo
+name: Sync Content Hub Solutions from Official Repo (INLINE)
 
 on:
   workflow_dispatch:
@@ -24,29 +24,169 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # 🔍 DEBUG OBLIGATORIO (solo la primera vez)
-      - name: Debug repo structure
+      - name: Debug working directory
         shell: bash
         run: |
+          echo "PWD:"
           pwd
+          echo "ROOT CONTENT:"
           ls -la
-          ls -la scripts || true
 
-      - name: Sync installed Content Hub solutions -> Detections/Solutions
+      - name: Sync Content Hub solutions (INLINE POWERSHELL)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          if (-not (Test-Path "./scripts/Sync-ContentHubSolutionsFromOfficialRepo.ps1")) {
-            throw "❌ Script NO encontrado en ./scripts/"
+          Write-Host "=== INICIO SYNC CONTENT HUB ===" -ForegroundColor Cyan
+
+          # -------------------------------
+          # PARAMETROS
+          # -------------------------------
+          $SubscriptionId     = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          $ResourceGroupName  = "${{ secrets.SENTINEL_RESOURCE_GROUP }}"
+          $WorkspaceName      = "${{ secrets.SENTINEL_WORKSPACE_NAME }}"
+          $DestinationRoot    = "Detections/Solutions"
+          $AzureSentinelRepo  = "https://github.com/Azure/Azure-Sentinel.git"
+          $AzureSentinelBranch = "master"
+
+          # -------------------------------
+          # FUNCIONES
+          # -------------------------------
+          function Ensure-Dir($Path) {
+            if (-not (Test-Path $Path)) {
+              New-Item -ItemType Directory -Path $Path | Out-Null
+            }
           }
 
-          & "./scripts/Sync-ContentHubSolutionsFromOfficialRepo.ps1" `
-            -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
-            -ResourceGroupName "${{ secrets.SENTINEL_RESOURCE_GROUP }}" `
-            -WorkspaceName "${{ secrets.SENTINEL_WORKSPACE_NAME }}" `
-            -DestinationRoot "Detections/Solutions" `
-            -AzureSentinelBranch "master"
+          function Normalize($s) {
+            if (-not $s) { return "" }
+            return ([regex]::Replace($s.ToLower(), "[^a-z0-9]", ""))
+          }
+
+          # -------------------------------
+          # TOKEN ARM
+          # -------------------------------
+          Write-Host "Obteniendo token ARM..."
+          $token = az account get-access-token `
+            --resource https://management.azure.com/ `
+            --query accessToken -o tsv
+
+          if (-not $token) {
+            throw "No se pudo obtener token ARM"
+          }
+
+          # -------------------------------
+          # LISTAR SOLUCIONES INSTALADAS
+          # -------------------------------
+          Write-Host "Listando soluciones instaladas en Content Hub..."
+
+          $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentPackages?api-version=2025-09-01"
+
+          $headers = @{ Authorization = "Bearer $token" }
+
+          $packages = (Invoke-RestMethod -Method GET -Uri $uri -Headers $headers).value
+
+          $solutions = $packages | Where-Object {
+            $_.properties.displayName
+          }
+
+          Write-Host "Soluciones detectadas: $($solutions.Count)" -ForegroundColor Green
+
+          if ($solutions.Count -eq 0) {
+            Write-Warning "No hay soluciones instaladas. Fin."
+            exit 0
+          }
+
+          # -------------------------------
+          # SOLUCIONES OFICIALES (GITHUB)
+          # -------------------------------
+          Write-Host "Leyendo soluciones oficiales de Azure-Sentinel..."
+
+          $official = Invoke-RestMethod `
+            -Headers @{ "User-Agent" = "sentinel-sync" } `
+            -Uri "https://api.github.com/repos/Azure/Azure-Sentinel/contents/Solutions?ref=$AzureSentinelBranch"
+
+          $officialFolders = $official | Where-Object type -eq dir | Select-Object -ExpandProperty name
+
+          # -------------------------------
+          # MAPEO
+          # -------------------------------
+          $mapped = @()
+
+          foreach ($s in $solutions) {
+            $dn = $s.properties.displayName
+            $n  = Normalize $dn
+
+            $match = $officialFolders | Where-Object {
+              (Normalize $_) -eq $n
+            }
+
+            if ($match) {
+              $mapped += $match
+              Write-Host "MATCH: $dn -> $match" -ForegroundColor Green
+            } else {
+              Write-Warning "NO MATCH: $dn"
+            }
+          }
+
+          $mapped = $mapped | Sort-Object -Unique
+
+          if ($mapped.Count -eq 0) {
+            Write-Warning "No se pudo mapear ninguna solución. Fin."
+            exit 0
+          }
+
+          # -------------------------------
+          # CLONE SPARSE
+          # -------------------------------
+          $tmp = Join-Path $env:RUNNER_TEMP ("azure-sentinel-" + [guid]::NewGuid())
+          Write-Host "Clonando Azure-Sentinel (sparse) en $tmp"
+
+          git clone --depth 1 --filter=blob:none --no-checkout `
+            --branch $AzureSentinelBranch `
+            $AzureSentinelRepo $tmp | Out-Null
+
+          Push-Location $tmp
+          git sparse-checkout init --cone | Out-Null
+
+          $paths = $mapped | ForEach-Object { "Solutions/$_" }
+          git sparse-checkout set $paths | Out-Null
+          git checkout $AzureSentinelBranch | Out-Null
+          Pop-Location
+
+          # -------------------------------
+          # COPIA DE CONTENIDO
+          # -------------------------------
+          $folders = @(
+            "Analytic Rules",
+            "Automation Rules",
+            "Hunting Queries",
+            "Parsers",
+            "Playbooks",
+            "Workbooks"
+          )
+
+          Ensure-Dir $DestinationRoot
+
+          foreach ($sol in $mapped) {
+            $srcSol = Join-Path $tmp "Solutions/$sol"
+            $dstSol = Join-Path $DestinationRoot $sol
+
+            Ensure-Dir $dstSol
+            Write-Host "Copiando solución: $sol" -ForegroundColor Cyan
+
+            foreach ($f in $folders) {
+              if (Test-Path "$srcSol/$f") {
+                Ensure-Dir "$dstSol/$f"
+                Copy-Item "$srcSol/$f/*" "$dstSol/$f" -Recurse -Force
+                Write-Host "  OK -> $f"
+              } else {
+                Write-Host "  SKIP -> $f (no existe)"
+              }
+            }
+          }
+
+          Write-Host "=== FIN SYNC CONTENT HUB ===" -ForegroundColor Green
 
       - name: Commit changes (if any)
         shell: bash
@@ -55,7 +195,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add Detections/Solutions
-            git commit -m "Sync installed Content Hub solutions from Azure-Sentinel official repo"
+            git commit -m "Sync Content Hub solutions from Azure-Sentinel (inline)"
             git push
           else
             echo "No changes to commit."
