@@ -12,6 +12,9 @@ on:
       itemName:
         required: true
         default: "Mass secret retrieval from Azure Key Vault"
+      apiVersion:
+        required: false
+        default: "2025-09-01"
       force:
         required: false
         default: "true"
@@ -44,7 +47,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
           $args = @{
             SubscriptionId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
             ResourceGroup  = "${{ vars.RESOURCE_GROUP }}"
@@ -52,13 +54,10 @@ jobs:
             ContentType    = "${{ github.event.inputs.contentType }}"
             SolutionName   = "${{ github.event.inputs.solutionName }}"
             ItemName       = "${{ github.event.inputs.itemName }}"
+            ApiVersion     = "${{ github.event.inputs.apiVersion }}"
             OutputRoot     = "${{ github.workspace }}"
           }
-
-          if ("${{ github.event.inputs.force }}".ToLower() -eq "true") {
-            $args["Force"] = $true
-          }
-
+          if ("${{ github.event.inputs.force }}".ToLower() -eq "true") { $args["Force"] = $true }
           ./scripts/Export-ContentHubItemToRepo.ps1 @args
 
       - name: Commit and push
