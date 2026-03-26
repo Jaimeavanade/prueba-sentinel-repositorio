@@ -1,122 +1,76 @@
-name: Export Content Hub Item to Repo (deployable resources)
+name: Export Sentinel Content Hub Item (to Repo)
 
 on:
   workflow_dispatch:
     inputs:
-      action:
-        description: "Acción a ejecutar"
+      contentName:
+        description: 'Content name (exacto como en Azure Portal). Ej: Brute force attack against a Cloud PC'
+        required: true
+        type: string
+      contentType:
+        description: 'Content type (exacto como en Azure Portal)'
         required: true
         type: choice
         options:
-          - "export-item"
-          - "list-installed-solutions"
-          - "list-installed-templates"
-      content_name:
-        description: "Content name (Display name exacto en Azure Portal). Solo para export-item"
+          - Analytics rule
+          - Hunting query
+          - Parser
+          - Workbook
+          - Playbook
+      overwrite:
+        description: 'Sobrescribir si el fichero ya existe'
         required: false
-        type: string
-      content_type:
-        description: "Content type (como aparece en el portal). Solo para export-item"
+        type: boolean
+        default: true
+      commitChanges:
+        description: 'Hacer commit + push de los cambios'
         required: false
-        type: choice
-        options:
-          - ""
-          - "Analytics rule"
-          - "Hunting query"
-          - "Parser"
-          - "Workbook"
-      search:
-        description: "Filtro de búsqueda opcional para listados"
-        required: false
-        type: string
-        default: ""
-      top:
-        description: "Número máximo de resultados en listados"
-        required: false
-        type: string
-        default: "200"
+        type: boolean
+        default: true
 
 permissions:
-  id-token: write
   contents: write
+  id-token: write
+
+env:
+  SENTINEL_RESOURCE_GROUP: ${{ vars.SENTINEL_RESOURCE_GROUP }}
+  SENTINEL_WORKSPACE_NAME: ${{ vars.SENTINEL_WORKSPACE_NAME }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
   export:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Recomendado: azure/login con OIDC (federated credentials)
+      # Necesitarás además AZURE_CLIENT_ID y AZURE_TENANT_ID como secrets/vars.
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          audience: api://AzureADTokenExchange
-          enable-AzPSSession: true
 
-      - name: Ensure script exists (generate if missing)
+      - name: Run export script
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $scriptsDir = Join-Path $env:GITHUB_WORKSPACE "scripts"
-          New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
+          ./scripts/export-contenthub-item.ps1 `
+            -ContentName "${{ inputs.contentName }}" `
+            -ContentType "${{ inputs.contentType }}" `
+            -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
+            -ResourceGroupName "${{ env.SENTINEL_RESOURCE_GROUP }}" `
+            -WorkspaceName "${{ env.SENTINEL_WORKSPACE_NAME }}" `
+            -Overwrite:("${{ inputs.overwrite }}" -eq "true")
 
-          $scriptPath = Join-Path $scriptsDir "export-contenthub-item.ps1"
-          if (Test-Path $scriptPath) {
-            Write-Host "Script ya existe: $scriptPath"
-            exit 0
-          }
-
-          Write-Host "Generando script en: $scriptPath"
-
-          @'
-          <PEGA AQUÍ EL SCRIPT COMPLETO DE LA OPCIÓN A.1 TAL CUAL, SIN CAMBIOS>
-          '@ | Out-File -FilePath $scriptPath -Encoding utf8
-
-      - name: Run
-        shell: pwsh
-        env:
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          SENTINEL_RESOURCE_GROUP: ${{ vars.SENTINEL_RESOURCE_GROUP }}
-          SENTINEL_WORKSPACE_NAME: ${{ vars.SENTINEL_WORKSPACE_NAME }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts/export-contenthub-item.ps1"
-          if (-not (Test-Path $scriptPath)) { throw "No existe el script en: $scriptPath" }
-
-          $action = "${{ github.event.inputs.action }}"
-          $search = "${{ github.event.inputs.search }}"
-          $top = "${{ github.event.inputs.top }}"
-
-          if ($action -eq "list-installed-solutions") {
-            pwsh -File $scriptPath -ListInstalledSolutions -Search $search -Top ([int]$top)
-            exit 0
-          }
-
-          if ($action -eq "list-installed-templates") {
-            pwsh -File $scriptPath -ListInstalledTemplates -Search $search -Top ([int]$top)
-            exit 0
-          }
-
-          $cn = "${{ github.event.inputs.content_name }}"
-          if (-not $cn -or $cn.Trim().Length -eq 0) { throw "Para 'export-item' debes rellenar content_name." }
-
-          $ct = "${{ github.event.inputs.content_type }}"
-          pwsh -File $scriptPath -ContentName $cn -ContentType $ct
-
-      - name: Commit & Push if changes
-        shell: bash
+      - name: Commit & Push
+        if: ${{ inputs.commitChanges }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add -A
-          if git diff --cached --quiet; then
-            echo "No hay cambios que commitear."
-            exit 0
-          fi
-
-          git commit -m "Export Sentinel content: ${{ github.event.inputs.content_name }}"
+          git status
+          git commit -m "Export Sentinel content: ${{ inputs.contentType }} - ${{ inputs.contentName }}" || echo "Nothing to commit"
           git push
