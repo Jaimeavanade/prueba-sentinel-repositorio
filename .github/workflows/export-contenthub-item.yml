@@ -4,27 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       contentType:
-        description: "Tipo: Analytics rules | Hunting queries | Parsers | Workbooks | Playbooks"
         required: true
         default: "Analytics rules"
       solutionName:
-        description: "Carpeta solución (p.e. Azure Key Vault)"
         required: true
         default: "Azure Key Vault"
       itemName:
-        description: "Nombre exacto del item en catálogo (displayName)."
         required: true
         default: "Mass secret retrieval from Azure Key Vault"
-      catalogTemplateId:
-        description: "(Opcional) TemplateId del catálogo (contentProductTemplates/{id}). Si lo pones, no se busca."
-        required: false
-        default: ""
       apiVersion:
-        description: "API version SecurityInsights"
         required: false
         default: "2025-09-01"
       force:
-        description: "Sobreescribir (true/false)"
         required: false
         default: "true"
 
@@ -36,8 +27,7 @@ jobs:
   export:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -45,61 +35,33 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          audience: api://AzureADTokenExchange
 
-      - name: Export item (catalog) and rewrite type for Repositories
+      - name: Export Content Hub item
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $subscriptionId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-          $resourceGroup  = "${{ vars.RESOURCE_GROUP }}"
-          $workspaceName  = "${{ vars.WORKSPACE_NAME }}"
-
-          if ([string]::IsNullOrWhiteSpace($resourceGroup)) { throw "vars.RESOURCE_GROUP vacío/no definido." }
-          if ([string]::IsNullOrWhiteSpace($workspaceName)) { throw "vars.WORKSPACE_NAME vacío/no definido." }
-
-          $contentType = "${{ github.event.inputs.contentType }}"
-          $solutionName = "${{ github.event.inputs.solutionName }}"
-          $itemName = "${{ github.event.inputs.itemName }}"
-          $catalogTemplateId = "${{ github.event.inputs.catalogTemplateId }}"
-          $apiVersion = "${{ github.event.inputs.apiVersion }}"
-          $force = "${{ github.event.inputs.force }}"
-
-          $forceSwitch = $false
-          if ($force -and $force.ToLower() -eq "true") { $forceSwitch = $true }
-
           $args = @{
-            SubscriptionId = $subscriptionId
-            ResourceGroup  = $resourceGroup
-            WorkspaceName  = $workspaceName
-            ContentType    = $contentType
-            SolutionName   = $solutionName
-            ItemName       = $itemName
-            ApiVersion     = $apiVersion
+            SubscriptionId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            ResourceGroup  = "${{ vars.RESOURCE_GROUP }}"
+            WorkspaceName  = "${{ vars.WORKSPACE_NAME }}"
+            ContentType    = "${{ github.event.inputs.contentType }}"
+            SolutionName   = "${{ github.event.inputs.solutionName }}"
+            ItemName       = "${{ github.event.inputs.itemName }}"
+            ApiVersion     = "${{ github.event.inputs.apiVersion }}"
             OutputRoot     = "${{ github.workspace }}"
           }
 
-          if (-not [string]::IsNullOrWhiteSpace($catalogTemplateId)) {
-            $args["CatalogTemplateId"] = $catalogTemplateId
+          if ("${{ github.event.inputs.force }}".ToLower() -eq "true") {
+            $args["Force"] = $true
           }
-          if ($forceSwitch) { $args["Force"] = $true }
 
           & "${{ github.workspace }}/scripts/Export-ContentHubItemToRepo.ps1" @args
 
-      - name: Commit and push changes
-        shell: bash
+      - name: Commit and push
         run: |
-          set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add -A
-
-          if git diff --cached --quiet; then
-            echo "No hay cambios que commitear."
-            exit 0
-          fi
-
-          git commit -m "Add Sentinel content (repo-ready type): ${{ github.event.inputs.itemName }}"
+          git diff --cached --quiet || git commit -m "Add Sentinel content (repo-ready)"
           git push
