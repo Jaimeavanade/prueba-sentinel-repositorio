@@ -27,7 +27,7 @@ $OutputPath = Join-Path $solutionsDir "contenthub-installed-report.txt"
 # =========================
 function Get-ArmToken {
   $t = az account get-access-token --resource "https://management.azure.com/" --query accessToken -o tsv 2>$null
-  if (-not $t) { throw "No se pudo obtener token ARM (azure/login + az account get-access-token)." }
+  if (-not $t) { throw "No se pudo obtener token ARM" }
   return $t
 }
 
@@ -65,7 +65,22 @@ function Invoke-ArmGetAll {
 }
 
 # =========================
-# 1) Soluciones instaladas (contentPackages)
+# Utilidades seguras para propiedades
+# =========================
+function Get-SafeProp {
+  param(
+    [Parameter(Mandatory=$true)][object]$Obj,
+    [Parameter(Mandatory=$true)][string]$Name
+  )
+  if ($null -eq $Obj) { return $null }
+  if ($Obj.PSObject.Properties.Name -contains $Name) {
+    return $Obj.$Name
+  }
+  return $null
+}
+
+# =========================
+# 1) Soluciones instaladas
 # =========================
 $installedPackagesUri =
 "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/" +
@@ -76,20 +91,21 @@ $installedPackages = Invoke-ArmGetAll -InitialUri $installedPackagesUri
 Write-Host "Soluciones instaladas (contentPackages): $($installedPackages.Count)"
 
 # =========================
-# 2) Para cada solución instalada -> catálogo contentProductPackages con packagedContent
-#    Patrón de filtro/expand como tu script 03-reinstall-contenthub-solutions.ps1 [2](https://docs.azure.cn/en-us/sentinel/sentinel-solutions-deploy)[3](https://learn.microsoft.com/en-us/rest/api/securityinsights/product-packages/list?view=rest-securityinsights-2025-09-01)
+# 2) Por cada solución -> catálogo + packagedContent
 # =========================
 $rows = New-Object System.Collections.Generic.List[string]
 $rows.Add("solution_name`tcontent_name`tcontent_type")
 
 foreach ($pkg in $installedPackages) {
 
-  $solName = if ($pkg.properties.displayName) { [string]$pkg.properties.displayName } else { [string]$pkg.name }
-  $contentId = [string]$pkg.properties.contentId
-  $contentKind = [string]$pkg.properties.contentKind  # normalmente "Solution"
+  $solutionName = Get-SafeProp $pkg.properties "displayName"
+  if (-not $solutionName) { $solutionName = $pkg.name }
+
+  $contentId   = Get-SafeProp $pkg.properties "contentId"
+  $contentKind = Get-SafeProp $pkg.properties "contentKind"
 
   if (-not $contentId -or -not $contentKind) {
-    Write-Warning "Solución sin contentId/contentKind: $solName"
+    Write-Warning "Solución sin contentId/contentKind: $solutionName"
     continue
   }
 
@@ -103,53 +119,48 @@ foreach ($pkg in $installedPackages) {
 
   $catalog = Invoke-ArmGetAll -InitialUri $catalogUri
 
-  if (-not $catalog -or $catalog.Count -eq 0) {
-    Write-Warning "No encontrado en catálogo (contentProductPackages) para: $solName"
-    continue
-  }
-
-  # Normalmente llega 1 “product package” por solución
   foreach ($c in $catalog) {
-    $pc = $c.properties.packagedContent
-    if (-not $pc) {
-      Write-Warning "Catálogo sin packagedContent para: $solName"
-      continue
-    }
+    $packagedContent = Get-SafeProp $c.properties "packagedContent"
+    if (-not $packagedContent) { continue }
 
-    foreach ($item in $pc) {
-      # item suele traer displayName + contentKind/contentType (depende del schema)
-      $itemName =
-        if ($item.displayName) { [string]$item.displayName }
-        elseif ($item.properties -and $item.properties.displayName) { [string]$item.properties.displayName }
-        else { "UnknownName" }
+    foreach ($item in $packagedContent) {
 
-      $itemType =
-        if ($item.contentKind) { [string]$item.contentKind }
-        elseif ($item.kind) { [string]$item.kind }
-        elseif ($item.properties -and $item.properties.contentKind) { [string]$item.properties.contentKind }
-        else { "UnknownType" }
+      # content name (robusto)
+      $name =
+        (Get-SafeProp $item "displayName") ??
+        (Get-SafeProp (Get-SafeProp $item "properties") "displayName") ??
+        (Get-SafeProp $item "name") ??
+        "UnknownName"
 
-      $rows.Add("$solName`t$itemName`t$itemType")
+      # content type (robusto)
+      $type =
+        (Get-SafeProp $item "contentKind") ??
+        (Get-SafeProp $item "kind") ??
+        (Get-SafeProp (Get-SafeProp $item "properties") "contentKind") ??
+        "UnknownType"
+
+      $rows.Add("$solutionName`t$name`t$type")
     }
   }
 }
 
 # =========================
-# Guardado + validación para evitar artifact vacío
+# Guardado + validación
 # =========================
 $sorted = $rows | Select-Object -First 1
 $sorted += ($rows | Select-Object -Skip 1 | Sort-Object)
 
-# Guardar UTF-8 sin BOM
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllLines($OutputPath, $sorted, $utf8NoBom)
-
-# Validación: si solo hay header -> error
 if ($sorted.Count -le 1) {
-  throw "El reporte quedó vacío (solo header). Revisa permisos o que haya soluciones instaladas."
+  throw "Reporte vacío: no se encontraron content items."
 }
 
+[System.IO.File]::WriteAllLines(
+  $OutputPath,
+  $sorted,
+  (New-Object System.Text.UTF8Encoding($false))
+)
+
 Write-Host "✅ OK -> generado: $OutputPath"
-Write-Host "Filas (incluye header): $($sorted.Count)"
-Write-Host "Preview (primeras 30 líneas):"
-$sorted | Select-Object -First 30 | ForEach-Object { Write-Host $_ }
+Write-Host "Filas totales (incluye header): $($sorted.Count)"
+Write-Host "Preview:"
+$sorted | Select-Object -First 20 | ForEach-Object { Write-Host $_ }
