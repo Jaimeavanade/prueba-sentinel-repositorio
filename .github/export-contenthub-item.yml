@@ -1,0 +1,70 @@
+name: Export Content Hub item to repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      contentName:
+        description: "Content name (displayName) del item a exportar. Ej: Brute force attack against a Cloud PC"
+        required: true
+        type: string
+      subscriptionId:
+        description: "Subscription ID del workspace"
+        required: true
+        type: string
+      resourceGroupName:
+        description: "Resource group del workspace"
+        required: true
+        type: string
+      workspaceName:
+        description: "Log Analytics workspace name (Sentinel)"
+        required: true
+        type: string
+      apiVersion:
+        description: "API version (por defecto 2025-09-01)"
+        required: false
+        default: "2025-09-01"
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ inputs.subscriptionId }}
+
+      - name: Export item (PowerShell)
+        id: export
+        shell: pwsh
+        run: |
+          ./Scripts/Export-ContentHubItemToRepo.ps1 `
+            -SubscriptionId "${{ inputs.subscriptionId }}" `
+            -ResourceGroupName "${{ inputs.resourceGroupName }}" `
+            -WorkspaceName "${{ inputs.workspaceName }}" `
+            -ContentName "${{ inputs.contentName }}" `
+            -ApiVersion "${{ inputs.apiVersion }}"
+
+      - name: Commit & Push
+        shell: bash
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No hay cambios que commitear."
+            exit 0
+          fi
+          git commit -m "Add Sentinel content: ${{ inputs.contentName }}"
+          git push
