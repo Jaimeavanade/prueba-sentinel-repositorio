@@ -1,67 +1,88 @@
 <#
 .SYNOPSIS
-Exporta un item desde Microsoft Sentinel (plantilla/artefacto) a un ARM JSON “repo-ready”
-reescribiendo el resource "type" principal para que sea compatible con Microsoft Sentinel Repositories.
+Exporta un item del Content Hub (catálogo) a un ARM JSON y lo deja "repo-ready"
+reescribiendo el resource "type" del recurso principal para que Microsoft Sentinel Repositories lo acepte.
 
 .DESCRIPTION
-- Requiere que el workflow haya hecho azure/login con enable-AzPSSession: true
-- Descarga el recurso vía ARM REST
-- Reescribe SOLO el "type" del recurso principal (no metadata)
-- Guarda el JSON en <ContentType>/<SolutionName>/<ItemName>.json con UTF-8 sin BOM
+- Autenticación: usa token ARM vía Azure CLI (az account get-access-token), ideal con OIDC en GitHub Actions.
+- Fuente: busca el template en el catálogo con contentProductTemplates (List + Get).
+- Extrae properties.mainTemplate (o properties.packagedContent si viene así).
+- Reescribe SOLO el type del recurso principal según:
+    Analytics rules -> Microsoft.SecurityInsights/alertRules
+    Hunting queries -> Microsoft.SecurityInsights/huntingQueries
+    Parsers         -> Microsoft.SecurityInsights/parsers
+    Workbooks       -> Microsoft.Insights/workbooks
+    Playbooks       -> Microsoft.Logic/workflows
+- Guarda en: <ContentType>/<SolutionName>/<ItemName>.json (UTF-8 sin BOM)
 
-MAPEO DE TYPES (repo-ready):
-Analytics rules -> Microsoft.SecurityInsights/alertRules
-Hunting queries -> Microsoft.SecurityInsights/huntingQueries
-Parsers         -> Microsoft.SecurityInsights/parsers
-Workbooks       -> Microsoft.Insights/workbooks
-Playbooks       -> Microsoft.Logic/workflows
-
-NOTA: En tu JSON exportado aparece también un type de metadata que no debemos tocar. [2]()
+NOTA
+- Evita el endpoint que te falla con 401 al intentar GET de AlertRuleTemplates/<displayName>. [1](https://avanade-my.sharepoint.com/personal/j_velazquez_santos_avanade_com/_layouts/15/Doc.aspx?action=edit&mobileredirect=true&wdorigin=Sharepoint&DefaultItemOpen=1&sourcedoc={dcde3f4e-f42d-4456-93b2-470a520e4bb2}&wd=target%28/Segittur.one/%29&wdpartid={69559b1d-d9a0-48f2-888f-ee1a91c8e801}{1}&wdsectionfileid={cfe6086a-3179-430a-9536-53117009c186})
+- contentProductTemplates List/Get está documentado para plantillas del catálogo y devuelve mainTemplate. [2](https://learn.microsoft.com/en-us/rest/api/securityinsights/product-templates/list?view=rest-securityinsights-2025-09-01)[3](https://learn.microsoft.com/en-us/rest/api/securityinsights/product-template/get?view=rest-securityinsights-2025-09-01)
 #>
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$SubscriptionId,
+    [Parameter(Mandatory=$true)][string]$SubscriptionId,
+    [Parameter(Mandatory=$true)][string]$ResourceGroup,
+    [Parameter(Mandatory=$true)][string]$WorkspaceName,
 
-    [Parameter(Mandatory = $true)]
-    [string]$ResourceGroup,
-
-    [Parameter(Mandatory = $true)]
-    [string]$WorkspaceName,
-
-    [Parameter(Mandatory = $true)]
+    # Nombre de carpeta en repo:
+    [Parameter(Mandatory=$true)]
     [ValidateSet("Analytics rules","Hunting queries","Parsers","Workbooks","Playbooks")]
     [string]$ContentType,
 
-    [Parameter(Mandatory = $true)]
-    [string]$SolutionName,
+    # Carpeta solución en repo (p.e. "Azure Key Vault")
+    [Parameter(Mandatory=$true)][string]$SolutionName,
 
-    [Parameter(Mandatory = $true)]
-    [string]$ItemName,
+    # DisplayName del item (p.e. "Mass secret retrieval from Azure Key Vault")
+    [Parameter(Mandatory=$true)][string]$ItemName,
 
-    # Debe ser el path relativo bajo providers/Microsoft.SecurityInsights/
-    # Ejemplos típicos:
-    #   AlertRuleTemplates/<id>
-    #   HuntingQueryTemplates/<id>
-    #   ParserTemplates/<id>
-    #   WorkbookTemplates/<id>
-    #   AutomationRules/<id>  (si lo usas)
-    [Parameter(Mandatory = $true)]
-    [string]$TemplateId,
+    # Opcional: si ya conoces el templateId del catálogo, pásalo y se salta la búsqueda
+    [Parameter(Mandatory=$false)][string]$CatalogTemplateId = "",
 
-    [Parameter(Mandatory = $false)]
-    [string]$ApiVersion = "2023-11-01-preview",
+    # API version Sentinel
+    [Parameter(Mandatory=$false)][string]$ApiVersion = "2025-09-01",
 
-    [Parameter(Mandatory = $false)]
-    [string]$OutputRoot = ".",
+    # Root salida repo
+    [Parameter(Mandatory=$false)][string]$OutputRoot = ".",
 
-    [Parameter(Mandatory = $false)]
-    [switch]$Force
+    [Parameter(Mandatory=$false)][switch]$Force
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function Get-ArmToken {
+    # Patrón robusto usado en tus scripts de Content Hub catálogo/reinstall. [4](https://avanade-my.sharepoint.com/personal/j_velazquez_santos_avanade_com/_layouts/15/Doc.aspx?action=edit&mobileredirect=true&wdorigin=Sharepoint&DefaultItemOpen=1&sourcedoc={dcde3f4e-f42d-4456-93b2-470a520e4bb2}&wd=target%28/Segittur.one/%29&wdpartid={de506d0d-e4ee-4270-8873-e1ea6b67e29b}{1}&wdsectionfileid={cfe6086a-3179-430a-9536-53117009c186})[5](https://avanade-my.sharepoint.com/personal/j_velazquez_santos_avanade_com/_layouts/15/Doc.aspx?action=edit&mobileredirect=true&wdorigin=Sharepoint&DefaultItemOpen=1&sourcedoc={dcde3f4e-f42d-4456-93b2-470a520e4bb2}&wd=target%28/Segittur.one/%29&wdpartid={76cb4b0d-c260-40b5-a696-431b5d386673}{1}&wdsectionfileid={cfe6086a-3179-430a-9536-53117009c186})
+    $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv
+    if (-not $t -or $t.Trim().Length -lt 100) {
+        throw "Token ARM inválido. Asegúrate de haber hecho azure/login (OIDC) antes."
+    }
+    return $t
+}
+
+function Invoke-ArmGet {
+    param([Parameter(Mandatory=$true)][string]$Uri)
+
+    $headers = @{
+        Authorization = "Bearer $script:ArmToken"
+        "Content-Type" = "application/json"
+    }
+
+    try {
+        return Invoke-RestMethod -Method GET -Uri $Uri -Headers $headers
+    } catch {
+        $body = $null
+        try {
+            if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream) {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $body = $reader.ReadToEnd()
+            }
+        } catch {}
+        if ($body) { throw "Fallo GET. Uri=$Uri. Body=$body" }
+        throw "Fallo GET. Uri=$Uri. Error=$($_.Exception.Message)"
+    }
+}
 
 function Get-RepoResourceTypeFromContentType {
     param([Parameter(Mandatory=$true)][string]$ContentType)
@@ -72,47 +93,21 @@ function Get-RepoResourceTypeFromContentType {
         'parsers'         { return 'Microsoft.SecurityInsights/parsers' }
         'workbooks'       { return 'Microsoft.Insights/workbooks' }
         'playbooks'       { return 'Microsoft.Logic/workflows' }
-        default { throw "ContentType '$ContentType' no soportado para mapear resource type." }
+        default { throw "ContentType '$ContentType' no soportado." }
     }
 }
 
-function Get-ArmToken {
-    try {
-        $ctx = Get-AzContext
-        if (-not $ctx) { throw "No hay contexto Az. ¿Has ejecutado azure/login con enable-AzPSSession?" }
+function Get-ApiContentKindFromContentType {
+    param([Parameter(Mandatory=$true)][string]$ContentType)
 
-        $tok = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
-        if ([string]::IsNullOrWhiteSpace($tok)) { throw "Token ARM vacío" }
-        return $tok
-    } catch {
-        throw "No se pudo obtener token ARM con Az. Detalle: $($_.Exception.Message)"
-    }
-}
-
-function Invoke-ArmRest {
-    param(
-        [Parameter(Mandatory=$true)][ValidateSet("GET","PUT","POST","DELETE")][string]$Method,
-        [Parameter(Mandatory=$true)][string]$Uri
-    )
-
-    $headers = @{
-        Authorization = "Bearer $script:ArmToken"
-        "Content-Type" = "application/json"
-    }
-
-    try {
-        return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
-    } catch {
-        $body = $null
-        try {
-            if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream) {
-                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                $body = $reader.ReadToEnd()
-            }
-        } catch {}
-
-        if ($body) { throw "Fallo REST ($Method) Uri=$Uri Body=$body" }
-        throw "Fallo REST ($Method) Uri=$Uri Error=$($_.Exception.Message)"
+    # contentKind en APIs de Sentinel (catálogo)
+    switch ($ContentType.ToLowerInvariant()) {
+        'analytics rules' { return 'AnalyticsRule' }
+        'hunting queries' { return 'HuntingQuery' }
+        'parsers'         { return 'Parser' }
+        'workbooks'       { return 'Workbook' }
+        'playbooks'       { return 'Playbook' }
+        default { throw "ContentType '$ContentType' no soportado." }
     }
 }
 
@@ -126,10 +121,10 @@ function Update-ArmTemplateMainResourceTypeForRepositories {
     $armObj = $ArmJson | ConvertFrom-Json -Depth 200
 
     if (-not $armObj.resources -or $armObj.resources.Count -eq 0) {
-        throw "ARM JSON no contiene 'resources'. No se puede actualizar el type."
+        throw "ARM JSON no contiene 'resources'."
     }
 
-    # En tu ejemplo hay un recurso de metadata "Microsoft.OperationalInsights/workspaces/providers/metadata" que NO se toca. [2]()
+    # No tocar metadata (tu export actual tiene un resource de metadata aparte). [6]()
     $mainResource = $armObj.resources |
         Where-Object {
             $_.type -and
@@ -145,7 +140,6 @@ function Update-ArmTemplateMainResourceTypeForRepositories {
 
     $old = $mainResource.type
     $mainResource.type = $targetType
-
     Write-Host "✅ Reescrito resource type principal: '$old' -> '$targetType'"
 
     return ($armObj | ConvertTo-Json -Depth 200)
@@ -153,33 +147,86 @@ function Update-ArmTemplateMainResourceTypeForRepositories {
 
 function Sanitize-FileName {
     param([Parameter(Mandatory=$true)][string]$Name)
-
     $invalid = [System.IO.Path]::GetInvalidFileNameChars()
     foreach ($c in $invalid) { $Name = $Name.Replace($c, ' ') }
     return $Name.Trim()
 }
 
-# ---------------- Main ----------------
+function Find-CatalogTemplateIdByDisplayName {
+    param(
+        [Parameter(Mandatory=$true)][string]$BaseUri,
+        [Parameter(Mandatory=$true)][string]$ItemName,
+        [Parameter(Mandatory=$true)][string]$ContentKind,
+        [Parameter(Mandatory=$true)][string]$ApiVersion
+    )
 
-if ([string]::IsNullOrWhiteSpace($WorkspaceName)) {
-    throw "WorkspaceName vacío. Revisa vars.WORKSPACE_NAME en GitHub Actions."
+    # contentProductTemplates soporta $search y $filter. [2](https://learn.microsoft.com/en-us/rest/api/securityinsights/product-templates/list?view=rest-securityinsights-2025-09-01)
+    $search = [System.Uri]::EscapeDataString($ItemName)
+    $filter = "properties/contentKind eq '$ContentKind'"
+    $encodedFilter = [System.Uri]::EscapeDataString($filter)
+
+    $listUri = "$BaseUri/contentProductTemplates?api-version=$ApiVersion&`$search=$search&`$filter=$encodedFilter&`$top=200"
+    Write-Host "GET catalog templates (list): $listUri"
+
+    $list = Invoke-ArmGet -Uri $listUri
+
+    if (-not $list.value -or $list.value.Count -eq 0) {
+        throw "No se encontraron templates en el catálogo para ItemName='$ItemName' y contentKind='$ContentKind'."
+    }
+
+    # Priorizamos match exacto por displayName, luego contains
+    $exact = $list.value | Where-Object { $_.properties.displayName -eq $ItemName } | Select-Object -First 1
+    if ($exact) { return $exact.name }
+
+    $contains = $list.value | Where-Object { $_.properties.displayName -like "*$ItemName*" } | Select-Object -First 1
+    if ($contains) { return $contains.name }
+
+    # fallback: primero
+    return ($list.value | Select-Object -First 1).name
 }
+
+# -------------------- MAIN --------------------
+if ([string]::IsNullOrWhiteSpace($WorkspaceName)) { throw "WorkspaceName vacío." }
 
 $script:ArmToken = Get-ArmToken
 
-# ✅ FIX CRÍTICO: usar ${TemplateId} para evitar que PowerShell intente leer $TemplateId?api
-# Este es EXACTAMENTE el error que te sale en el job #25. [1](https://avanade-my.sharepoint.com/personal/j_velazquez_santos_avanade_com/_layouts/15/Doc.aspx?action=edit&mobileredirect=true&wdorigin=Sharepoint&DefaultItemOpen=1&sourcedoc={dcde3f4e-f42d-4456-93b2-470a520e4bb2}&wd=target%28/Segittur.one/%29&wdpartid={69559b1d-d9a0-48f2-888f-ee1a91c8e801}{1}&wdsectionfileid={cfe6086a-3179-430a-9536-53117009c186})
-$templateUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/${TemplateId}?api-version=$ApiVersion"
+$base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
 
-Write-Host "GET template: $templateUri"
-$template = Invoke-ArmRest -Method GET -Uri $templateUri
+$kind = Get-ApiContentKindFromContentType -ContentType $ContentType
 
-$jsonString = $template | ConvertTo-Json -Depth 200
+$templateId = $CatalogTemplateId
+if ([string]::IsNullOrWhiteSpace($templateId)) {
+    $templateId = Find-CatalogTemplateIdByDisplayName -BaseUri $base -ItemName $ItemName -ContentKind $kind -ApiVersion $ApiVersion
+}
+
+# Get por ID del catálogo: contentProductTemplates/{templateId}. Devuelve properties.mainTemplate. [3](https://learn.microsoft.com/en-us/rest/api/securityinsights/product-template/get?view=rest-securityinsights-2025-09-01)
+$getUri = "$base/contentProductTemplates/$templateId?api-version=$ApiVersion"
+Write-Host "GET catalog template (get): $getUri"
+$full = Invoke-ArmGet -Uri $getUri
+
+$p = $full.properties
+if (-not $p) { throw "Respuesta sin properties para templateId=$templateId" }
+
+# mainTemplate es lo estándar en el modelo. [3](https://learn.microsoft.com/en-us/rest/api/securityinsights/product-template/get?view=rest-securityinsights-2025-09-01)
+$main = $null
+if ($p.PSObject.Properties.Name -contains 'mainTemplate' -and $p.mainTemplate) {
+    $main = $p.mainTemplate
+} elseif ($p.PSObject.Properties.Name -contains 'packagedContent' -and $p.packagedContent) {
+    # En algunos flujos también puede venir packagedContent (lo contemplas en tus guías internas). [7](https://avanade-my.sharepoint.com/personal/j_velazquez_santos_avanade_com/_layouts/15/Doc.aspx?action=edit&mobileredirect=true&wdorigin=Sharepoint&DefaultItemOpen=1&sourcedoc={dcde3f4e-f42d-4456-93b2-470a520e4bb2}&wd=target%28/Segittur.one/%29&wdpartid={e350145b-e83d-4a78-bb29-9981bd5f5ad7}{1}&wdsectionfileid={cfe6086a-3179-430a-9536-53117009c186})
+    $main = $p.packagedContent
+}
+
+if (-not $main) {
+    throw "El template no trae mainTemplate ni packagedContent. templateId=$templateId"
+}
+
+# main puede ser objeto ARM (hashtable/pscustomobject)
+$jsonString = $main | ConvertTo-Json -Depth 200
 
 # Reescribir type a repo-ready
 $jsonString = Update-ArmTemplateMainResourceTypeForRepositories -ArmJson $jsonString -ContentType $ContentType
 
-# Construir ruta de salida
+# Ruta destino
 $folder1 = $ContentType
 $folder2 = Sanitize-FileName $SolutionName
 $file    = (Sanitize-FileName $ItemName) + ".json"
@@ -199,3 +246,4 @@ if ((Test-Path $outFile) -and -not $Force) {
 [System.IO.File]::WriteAllText($outFile, $jsonString, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host "✅ Export guardado en: $outFile"
+Write-Host "ℹ️ TemplateId catálogo usado: $templateId"
