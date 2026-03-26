@@ -27,7 +27,7 @@ jobs:
       - name: Azure CLI - set subscription
         run: az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
-      - name: Generate installed Content Hub report (TXT)
+      - name: Generate installed Content Hub report (TXT) -> Solutions/
         shell: pwsh
         env:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -36,8 +36,11 @@ jobs:
         run: |
           ./scripts/01-export-installed-contenthub.ps1
 
+      - name: Verify report exists
+        run: test -f Solutions/contenthub-installed-report.txt
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: contenthub-installed-report
-          path: contenthub-installed-report.txt
+          path: Solutions/contenthub-installed-report.txt
