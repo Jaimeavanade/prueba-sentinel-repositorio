@@ -227,7 +227,7 @@ jobs:
           if [[ -n "$(git status --porcelain)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add Detections/Solutions
+            git add Solutions/
             git commit -m "Sync Content Hub solutions from Azure-Sentinel (inline + alias map)"
             git push
           else
