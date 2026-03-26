@@ -1,16 +1,16 @@
 <#
 .SYNOPSIS
-Exporta un item del Content Hub desde contentProductPackages (catálogo de soluciones)
-a un ARM JSON "repo-ready" para Microsoft Sentinel Repositories.
+Exporta un item del Content Hub (Microsoft Sentinel) a un ARM JSON "repo-ready"
+usando contentProductPackages SIN $expand (evita 502).
 
 .DESCRIPTION
-- Autenticación: token ARM vía Azure CLI (az account get-access-token)
-- Fuente: contentProductPackages con $expand=properties/packagedContent
-- Busca la solución (p.e. "Azure Key Vault")
-- Dentro de packagedContent localiza el item (p.e. Analytics rule)
-- Extrae el ARM template real
-- Reescribe el resource type para Repositories
-- Guarda en <ContentType>/<SolutionName>/<ItemName>.json
+Flujo robusto:
+1) GET contentProductPackages (SIN $expand)
+2) Seleccionar la solución por displayName
+3) GET contentProductPackages/{packageId} (aquí sí viene packagedContent)
+4) Extraer el item (Analytics rule / workbook / etc.)
+5) Reescribir resource.type a formato Repositories
+6) Guardar en <ContentType>/<SolutionName>/<ItemName>.json
 #>
 
 [CmdletBinding()]
@@ -33,6 +33,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# ---------------- Helpers ----------------
 
 function Get-ArmToken {
     $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv
@@ -57,7 +59,7 @@ function Invoke-ArmGet {
     }
 }
 
-function Get-RepoResourceTypeFromContentType {
+function Get-RepoResourceType {
     switch ($ContentType.ToLowerInvariant()) {
         'analytics rules' { 'Microsoft.SecurityInsights/alertRules' }
         'hunting queries' { 'Microsoft.SecurityInsights/huntingQueries' }
@@ -78,31 +80,37 @@ $script:ArmToken = Get-ArmToken
 
 $base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
 
-# 1) Obtener solución desde catálogo
-$packagesUri = "$base/contentProductPackages?api-version=$ApiVersion&`$expand=properties/packagedContent"
-Write-Host "GET contentProductPackages: $packagesUri"
+# 1️⃣ Listar paquetes SIN expand (evita 502)
+$listUri = "$base/contentProductPackages?api-version=$ApiVersion"
+Write-Host "GET packages list: $listUri"
 
-$packages = Invoke-ArmGet -Uri $packagesUri
+$packages = Invoke-ArmGet -Uri $listUri
 
-$solution = $packages.value |
+$package = $packages.value |
     Where-Object { $_.properties.displayName -eq $SolutionName } |
     Select-Object -First 1
 
-if (-not $solution) {
+if (-not $package) {
     throw "No se encontró la solución '$SolutionName' en Content Hub."
 }
 
-# 2) Buscar el item dentro de packagedContent
-$items = $solution.properties.packagedContent
+$packageId = $package.name
+Write-Host "PackageId seleccionado: $packageId"
 
+# 2️⃣ GET del paquete concreto (aquí sí viene packagedContent)
+$getPkgUri = "$base/contentProductPackages/$packageId?api-version=$ApiVersion"
+Write-Host "GET package detail: $getPkgUri"
+
+$packageDetail = Invoke-ArmGet -Uri $getPkgUri
+
+$items = $packageDetail.properties.packagedContent
 if (-not $items) {
     throw "La solución '$SolutionName' no contiene packagedContent."
 }
 
+# 3️⃣ Buscar el item concreto
 $item = $items |
-    Where-Object {
-        $_.properties.displayName -eq $ItemName
-    } |
+    Where-Object { $_.properties.displayName -eq $ItemName } |
     Select-Object -First 1
 
 if (-not $item) {
@@ -110,15 +118,14 @@ if (-not $item) {
     throw "No se encontró el item '$ItemName'. Items disponibles: $names"
 }
 
-# 3) Extraer ARM template real
 $main = $item.properties.mainTemplate
 if (-not $main) {
     throw "El item '$ItemName' no contiene mainTemplate."
 }
 
-# 4) Reescribir type para Repositories
+# 4️⃣ Reescribir resource type
 $arm = $main | ConvertTo-Json -Depth 200 | ConvertFrom-Json -Depth 200
-$targetType = Get-RepoResourceTypeFromContentType
+$targetType = Get-RepoResourceType
 
 $resource = $arm.resources |
     Where-Object {
@@ -135,8 +142,8 @@ if (-not $resource) {
 $resource.type = $targetType
 $json = $arm | ConvertTo-Json -Depth 200
 
-# 5) Guardar en repo
-$outDir = Join-Path $OutputRoot (Join-Path $ContentType (Sanitize-Name $SolutionName))
+# 5️⃣ Guardar
+$outDir  = Join-Path $OutputRoot (Join-Path $ContentType (Sanitize-Name $SolutionName))
 $outFile = Join-Path $outDir ((Sanitize-Name $ItemName) + ".json")
 
 if (-not (Test-Path $outDir)) {
@@ -149,4 +156,4 @@ if ((Test-Path $outFile) -and -not $Force) {
 
 [IO.File]::WriteAllText($outFile, $json, (New-Object Text.UTF8Encoding($false)))
 
-Write-Host "✅ Export generado: $outFile"
+Write-Host "✅ Export generado correctamente: $outFile"
