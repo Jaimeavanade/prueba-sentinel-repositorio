@@ -1,14 +1,22 @@
-name: Export Content Hub Item to Repo
+name: Export Content Hub Item to Repo (deployable resources)
 
 on:
   workflow_dispatch:
     inputs:
-      content_name:
-        description: "Content name (Display name exacto en Azure Portal)"
+      action:
+        description: "Acción a ejecutar"
         required: true
+        type: choice
+        options:
+          - "export-item"
+          - "list-installed-solutions"
+          - "list-installed-templates"
+      content_name:
+        description: "Content name (Display name exacto en Azure Portal). Solo para export-item"
+        required: false
         type: string
       content_type:
-        description: "Content type (como aparece en el portal). Útil si hay ambigüedad."
+        description: "Content type (como aparece en el portal). Solo para export-item (recomendado si hay ambigüedad)"
         required: false
         type: choice
         options:
@@ -17,11 +25,16 @@ on:
           - "Hunting query"
           - "Parser"
           - "Workbook"
-      list_installed:
-        description: "Lista soluciones instaladas (contentPackages) y termina"
+      search:
+        description: "Filtro de búsqueda opcional para listados"
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: ""
+      top:
+        description: "Número máximo de resultados en listados"
+        required: false
+        type: string
+        default: "200"
 
 permissions:
   id-token: write
@@ -40,22 +53,54 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange
+          enable-AzPSSession: true
 
-      - name: Export content item to repo structure
+      - name: Sanity check paths
+        shell: bash
+        run: |
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          ls -la
+          ls -la "$GITHUB_WORKSPACE" || true
+          ls -la "$GITHUB_WORKSPACE/scripts" || true
+
+      - name: Run
         shell: pwsh
         env:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           SENTINEL_RESOURCE_GROUP: ${{ vars.SENTINEL_RESOURCE_GROUP }}
           SENTINEL_WORKSPACE_NAME: ${{ vars.SENTINEL_WORKSPACE_NAME }}
         run: |
-          if ("${{ github.event.inputs.list_installed }}" -eq "true") {
-            ./scripts/export-contenthub-item.ps1 -ContentName "dummy" -ListInstalled
+          $ErrorActionPreference = "Stop"
+
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts/export-contenthub-item.ps1"
+          if (-not (Test-Path $scriptPath)) {
+            throw "No existe el script en: $scriptPath. Revisa que esté commiteado en scripts/export-contenthub-item.ps1"
+          }
+
+          $action = "${{ github.event.inputs.action }}"
+          $search = "${{ github.event.inputs.search }}"
+          $top = "${{ github.event.inputs.top }}"
+
+          if ($action -eq "list-installed-solutions") {
+            pwsh -File $scriptPath -ListInstalledSolutions -Search $search -Top ([int]$top)
             exit 0
           }
 
-          ./scripts/export-contenthub-item.ps1 `
-            -ContentName "${{ github.event.inputs.content_name }}" `
-            -ContentType "${{ github.event.inputs.content_type }}"
+          if ($action -eq "list-installed-templates") {
+            pwsh -File $scriptPath -ListInstalledTemplates -Search $search -Top ([int]$top)
+            exit 0
+          }
+
+          # export-item
+          $cn = "${{ github.event.inputs.content_name }}"
+          if (-not $cn -or $cn.Trim().Length -eq 0) {
+            throw "Para 'export-item' debes rellenar content_name."
+          }
+
+          $ct = "${{ github.event.inputs.content_type }}"
+
+          pwsh -File $scriptPath -ContentName $cn -ContentType $ct
 
       - name: Commit & Push if changes
         shell: bash
