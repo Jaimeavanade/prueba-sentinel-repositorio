@@ -1,241 +1,202 @@
 <#
 .SYNOPSIS
-  Exporta un Content Item instalado desde Microsoft Sentinel Content Hub (Content Templates)
-  y lo guarda en la estructura del repo (Analytics rules / Hunting / Parsers / Playbooks / Workbooks).
+Exporta un item del Content Hub (template) a un ARM JSON en formato compatible con Microsoft Sentinel Repositories,
+reescribiendo el resource "type" del recurso principal según el tipo de contenido.
 
 .DESCRIPTION
-  - Lista soluciones instaladas (contentPackages)
-  - Busca un content template instalado por displayName (contentTemplates)
-  - Descarga el mainTemplate (ARM JSON) y lo coloca en la carpeta correcta
-  - Intenta resolver el nombre de la solución (Content Hub) a partir de propiedades del template o del package.
+- Obtiene token ARM (requiere que el workflow haya hecho azure/login con enable-AzPSSession: true)
+- Descarga el contenido del item (ARM template) desde Azure Management REST
+- Guarda el JSON en la ruta del repo
+- Reescribe el "type" del recurso principal:
+    Analytics rules -> Microsoft.SecurityInsights/alertRules
+    Hunting queries -> Microsoft.SecurityInsights/huntingQueries
+    Parsers         -> Microsoft.SecurityInsights/parsers
+    Workbooks       -> Microsoft.Insights/workbooks
+    Playbooks       -> Microsoft.Logic/workflows
 
-REQUIREMENTS
-  - Autenticación previa contra Azure (ideal: azure/login en GitHub Actions)
-  - Azure CLI disponible (para obtener access token)
+.NOTES
+- No modifica recursos de metadata tipo:
+  Microsoft.OperationalInsights/workspaces/providers/metadata
+- En tu JSON exportado se ven ambos types (principal template + metadata), por eso se filtra. [1]()
 #>
 
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$SubscriptionId,
+    [Parameter(Mandatory = $true)]
+    [string]$SubscriptionId,
 
-  [Parameter(Mandatory = $true)]
-  [string]$ResourceGroupName,
+    [Parameter(Mandatory = $true)]
+    [string]$ResourceGroup,
 
-  [Parameter(Mandatory = $true)]
-  [string]$WorkspaceName,
+    [Parameter(Mandatory = $true)]
+    [string]$WorkspaceName,
 
-  [Parameter(Mandatory = $false)]
-  [string]$ContentName,
+    # Tipo de contenido (tal cual nombre de carpeta):
+    # "Analytics rules", "Hunting queries", "Parsers", "Workbooks", "Playbooks"
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("Analytics rules","Hunting queries","Parsers","Workbooks","Playbooks")]
+    [string]$ContentType,
 
-  [Parameter(Mandatory = $false)]
-  [string]$ApiVersion = "2025-09-01",
+    # Nombre de solución (ej: "Azure Key Vault") para carpeta de segundo nivel
+    [Parameter(Mandatory = $true)]
+    [string]$SolutionName,
 
-  [Parameter(Mandatory = $false)]
-  [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+    # Nombre del item/plantilla (ej: "Mass secret retrieval from Azure Key Vault")
+    [Parameter(Mandatory = $true)]
+    [string]$ItemName,
 
-  [switch]$ListOnly
+    # Identificador del item en Content Hub.
+    # Puedes usar: templateId / contentId / name según tu flujo.
+    # Este script asume que es el "name" del recurso template (último segmento del URI).
+    [Parameter(Mandatory = $true)]
+    [string]$TemplateId,
+
+    # API version para SecurityInsights (ajusta si usas otra)
+    [Parameter(Mandatory = $false)]
+    [string]$ApiVersion = "2023-11-01-preview",
+
+    # Root de salida en el repo (por defecto, el propio repo)
+    [Parameter(Mandatory = $false)]
+    [string]$OutputRoot = ".",
+
+    # Si quieres sobreescribir sin preguntar
+    [Parameter(Mandatory = $false)]
+    [switch]$Force
 )
 
-function Get-AzRestToken {
-  param([string]$SubscriptionId)
-  az account set --subscription $SubscriptionId | Out-Null
-  $token = az account get-access-token --resource "https://management.azure.com/" --query accessToken -o tsv
-  if (-not $token) { throw "No se pudo obtener access token. Revisa autenticación (azure/login / az login)." }
-  return $token
-}
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-function Invoke-AzRest {
-  param(
-    [Parameter(Mandatory=$true)][string]$Method,
-    [Parameter(Mandatory=$true)][string]$Uri,
-    [Parameter(Mandatory=$true)][string]$Token
-  )
-  $headers = @{
-    "Authorization" = "Bearer $Token"
-    "Content-Type"  = "application/json"
-  }
-  return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
-}
-
-function Sanitize-Name {
-  param([string]$Name)
-  if (-not $Name) { return "Unknown" }
-  # Windows invalid filename chars + control chars
-  $invalid = [Regex]::Escape(([IO.Path]::GetInvalidFileNameChars() -join ""))
-  $safe = [Regex]::Replace($Name, "[$invalid]", "_")
-  $safe = $safe.Trim()
-  if ($safe.Length -gt 180) { $safe = $safe.Substring(0,180).Trim() }
-  return $safe
-}
-
-function Detect-ContentFolder {
-  param(
-    [object]$TemplateObj
-  )
-
-  # 1) Preferir contentKind si existe
-  $kind = $null
-  try { $kind = $TemplateObj.properties.contentKind } catch {}
-  if (-not $kind) {
-    try { $kind = $TemplateObj.properties.kind } catch {}
-  }
-
-  # 2) Inferir por tipos de recursos dentro del mainTemplate si no hay kind
-  if (-not $kind -and $TemplateObj.properties.mainTemplate) {
-    $resTypes = @()
-    try { $resTypes = $TemplateObj.properties.mainTemplate.resources.type } catch {}
-    if ($resTypes -contains "Microsoft.SecurityInsights/alertRules") { $kind = "AnalyticsRule" }
-    elseif ($resTypes -contains "Microsoft.SecurityInsights/huntingQueries") { $kind = "HuntingQuery" }
-    elseif ($resTypes -contains "Microsoft.SecurityInsights/parsers") { $kind = "Parser" }
-    elseif ($resTypes -contains "Microsoft.Logic/workflows") { $kind = "Playbook" }
-    elseif ($resTypes -contains "Microsoft.Insights/workbooks") { $kind = "Workbook" }
-  }
-
-  switch -Regex ($kind) {
-    "AnalyticsRule"   { return "Analytics rules" }
-    "HuntingQuery"    { return "Hunting" }
-    "Parser"          { return "Parsers" }
-    "Playbook"        { return "Playbooks" }
-    "Workbook"        { return "Workbooks" }
-    default           { return "Unknown" }
-  }
-}
-
-function Resolve-SolutionName {
-  param(
-    [object]$TemplateObj,
-    [object[]]$InstalledPackages
-  )
-
-  # Intentos en orden (porque las propiedades pueden variar por versión / tipo)
-  $candidate = $null
-
-  # A) source.name
-  try { $candidate = $TemplateObj.properties.source.name } catch {}
-
-  # B) package id en el template, y cruzar con contentPackages instalados
-  $packageKey = $null
-  if (-not $candidate) {
-    foreach ($p in @("packageId","contentPackageId","packageName","contentProductId","contentId")) {
-      try {
-        $v = $TemplateObj.properties.$p
-        if ($v) { $packageKey = $v; break }
-      } catch {}
+function Get-RepoResourceTypeFromContentType {
+    param([Parameter(Mandatory=$true)][string]$ContentType)
+    switch ($ContentType.ToLowerInvariant()) {
+        'analytics rules' { return 'Microsoft.SecurityInsights/alertRules' }
+        'hunting queries' { return 'Microsoft.SecurityInsights/huntingQueries' }
+        'parsers'         { return 'Microsoft.SecurityInsights/parsers' }
+        'workbooks'       { return 'Microsoft.Insights/workbooks' }
+        'playbooks'       { return 'Microsoft.Logic/workflows' }
+        default { throw "ContentType '$ContentType' no soportado para mapear resource type." }
     }
-  }
-
-  if (-not $candidate -and $packageKey -and $InstalledPackages) {
-    $match = $InstalledPackages | Where-Object {
-      $_.name -eq $packageKey -or
-      $_.properties.contentId -eq $packageKey -or
-      $_.properties.contentProductId -eq $packageKey -or
-      $_.properties.displayName -eq $packageKey
-    } | Select-Object -First 1
-
-    if ($match) { $candidate = $match.properties.displayName }
-  }
-
-  # C) fallback
-  if (-not $candidate) { $candidate = "UnknownSolution" }
-  return $candidate
 }
 
-# ---------------- MAIN ----------------
-
-$token = Get-AzRestToken -SubscriptionId $SubscriptionId
-
-$base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
-
-# 1) Listar soluciones instaladas (contentPackages) [3](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-packages/list?view=rest-securityinsights-2025-09-01)
-$packagesUri = "$base/contentPackages?api-version=$ApiVersion"
-$packages = Invoke-AzRest -Method "GET" -Uri $packagesUri -Token $token
-$installedPackages = @()
-if ($packages.value) { $installedPackages = $packages.value }
-
-Write-Host "== Soluciones instaladas (contentPackages) =="
-if ($installedPackages.Count -gt 0) {
-  $installedPackages |
-    Select-Object @{n="displayName";e={$_.properties.displayName}}, @{n="version";e={$_.properties.version}}, @{n="name";e={$_.name}} |
-    Format-Table -AutoSize | Out-String | Write-Host
-} else {
-  Write-Host "No se encontraron contentPackages instalados."
+function Get-ArmToken {
+    # Intenta obtener token desde Az (azure/login con enable-AzPSSession)
+    try {
+        $ctx = Get-AzContext
+        if (-not $ctx) { throw "No hay contexto Az. ¿Has ejecutado azure/login con enable-AzPSSession?" }
+        $tok = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
+        if ([string]::IsNullOrWhiteSpace($tok)) { throw "Token vacío" }
+        return $tok
+    } catch {
+        throw "No se pudo obtener token ARM con Az. Detalle: $($_.Exception.Message)"
+    }
 }
 
-# 2) Listar templates instalados (contentTemplates) [4](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-templates/list?view=rest-securityinsights-2025-09-01)
-#    Si vamos a exportar uno, usamos $search y expandimos mainTemplate
-$expand = [Uri]::EscapeDataString("properties/mainTemplate")
-$templatesUri = "$base/contentTemplates?api-version=$ApiVersion&`$expand=$expand"
-
-if ($ListOnly -or -not $ContentName) {
-  $templates = Invoke-AzRest -Method "GET" -Uri $templatesUri -Token $token
-  Write-Host "== Content items instalados (contentTemplates) =="
-  if ($templates.value) {
-    $templates.value |
-      Select-Object @{n="displayName";e={$_.properties.displayName}},
-                    @{n="contentKind";e={$_.properties.contentKind}},
-                    @{n="name";e={$_.name}} |
-      Sort-Object displayName |
-      Format-Table -AutoSize | Out-String | Write-Host
-  } else {
-    Write-Host "No se encontraron contentTemplates instalados."
-  }
-  if ($ListOnly -or -not $ContentName) { exit 0 }
+function Invoke-ArmRest {
+    param(
+        [Parameter(Mandatory=$true)][ValidateSet("GET","PUT","POST","DELETE")][string]$Method,
+        [Parameter(Mandatory=$true)][string]$Uri
+    )
+    $headers = @{
+        Authorization = "Bearer $script:ArmToken"
+        "Content-Type" = "application/json"
+    }
+    try {
+        return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
+    } catch {
+        $body = $null
+        try {
+            if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream) {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $body = $reader.ReadToEnd()
+            }
+        } catch {}
+        if ($body) {
+            throw "Fallo REST ($Method) Uri=$Uri Body=$body"
+        }
+        throw "Fallo REST ($Method) Uri=$Uri Error=$($_.Exception.Message)"
+    }
 }
 
-# 3) Buscar por ContentName (displayName)
-$search = [Uri]::EscapeDataString($ContentName)
-$templatesSearchUri = "$base/contentTemplates?api-version=$ApiVersion&`$expand=$expand&`$search=$search"
-$templatesFound = Invoke-AzRest -Method "GET" -Uri $templatesSearchUri -Token $token
+function Update-ArmTemplateMainResourceTypeForRepositories {
+    param(
+        [Parameter(Mandatory=$true)][string]$ArmJson,
+        [Parameter(Mandatory=$true)][string]$ContentType
+    )
 
-if (-not $templatesFound.value -or $templatesFound.value.Count -eq 0) {
-  throw "No se encontró ningún contentTemplate instalado que coincida con: '$ContentName'"
+    $targetType = Get-RepoResourceTypeFromContentType -ContentType $ContentType
+    $armObj = $ArmJson | ConvertFrom-Json -Depth 200
+
+    if (-not $armObj.resources -or $armObj.resources.Count -eq 0) {
+        throw "ARM JSON no contiene 'resources'. No se puede actualizar el type."
+    }
+
+    # NO tocar metadata. En tu JSON exportado aparece "Microsoft.OperationalInsights/workspaces/providers/metadata". [1]()
+    $mainResource = $armObj.resources |
+        Where-Object {
+            $_.type -and
+            $_.type -ne 'Microsoft.OperationalInsights/workspaces/providers/metadata' -and
+            $_.type -notlike '*providers/metadata' -and
+            $_.type -notlike 'Microsoft.Resources/deployments'
+        } |
+        Select-Object -First 1
+
+    if (-not $mainResource) {
+        throw "No se encontró un recurso principal para actualizar el 'type'."
+    }
+
+    $old = $mainResource.type
+    $mainResource.type = $targetType
+
+    Write-Host "✅ Reescrito resource type principal: '$old' -> '$targetType'"
+
+    return ($armObj | ConvertTo-Json -Depth 200)
 }
 
-# Preferir match exacto por displayName (case-insensitive); si no, el primero
-$template = $templatesFound.value |
-  Where-Object { $_.properties.displayName -and $_.properties.displayName.Trim().ToLower() -eq $ContentName.Trim().ToLower() } |
-  Select-Object -First 1
-
-if (-not $template) { $template = $templatesFound.value | Select-Object -First 1 }
-
-$displayName = $template.properties.displayName
-Write-Host "Seleccionado: '$displayName' (resource name: $($template.name))"
-
-# 4) Determinar carpeta por tipo
-$targetFolder = Detect-ContentFolder -TemplateObj $template
-if ($targetFolder -eq "Unknown") {
-  throw "No se pudo determinar el Content type/carpeta para '$displayName'. Revisa propiedades.contentKind o mainTemplate."
+function Sanitize-FileName {
+    param([Parameter(Mandatory=$true)][string]$Name)
+    $invalid = [System.IO.Path]::GetInvalidFileNameChars()
+    foreach ($c in $invalid) { $Name = $Name.Replace($c, ' ') }
+    $Name = $Name.Trim()
+    return $Name
 }
 
-# 5) Determinar nombre de solución
-$solutionName = Resolve-SolutionName -TemplateObj $template -InstalledPackages $installedPackages
+# ---------------- Main ----------------
+$script:ArmToken = Get-ArmToken
 
-# 6) Preparar paths
-$solutionSafe = Sanitize-Name $solutionName
-$fileSafe     = Sanitize-Name $displayName
+# URI para obtener el template del Content Hub.
+# Nota: el endpoint exacto puede variar según tu enfoque.
+# Este ejemplo asume que estás exportando un "AlertRuleTemplate / HuntingQueryTemplate / ParserTemplate / WorkbookTemplate / PlaybookTemplate"
+# desde la workspace (no del catálogo). Si tú lo sacas del catálogo, ajusta aquí el endpoint.
+$templateUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/$TemplateId?api-version=$ApiVersion"
 
-$destDir  = Join-Path $RepoRoot (Join-Path $targetFolder $solutionSafe)
-$destFile = Join-Path $destDir ("$fileSafe.json")
+Write-Host "GET template: $templateUri"
+$template = Invoke-ArmRest -Method GET -Uri $templateUri
 
-New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+# Convertimos a JSON (con suficiente profundidad)
+$jsonString = $template | ConvertTo-Json -Depth 200
 
-# 7) Extraer mainTemplate y escribir JSON
-$mainTemplate = $template.properties.mainTemplate
-if (-not $mainTemplate) {
-  throw "El contentTemplate no incluye properties.mainTemplate (¿falta $expand?)."
+# Reescribe el type del recurso principal al formato repo-friendly
+$jsonString = Update-ArmTemplateMainResourceTypeForRepositories -ArmJson $jsonString -ContentType $ContentType
+
+# Construye ruta:
+# <ContentType>/<SolutionName>/<ItemName>.json
+$folder1 = $ContentType
+$folder2 = Sanitize-FileName $SolutionName
+$file   = (Sanitize-FileName $ItemName) + ".json"
+
+$outDir  = Join-Path $OutputRoot (Join-Path $folder1 $folder2)
+$outFile = Join-Path $outDir $file
+
+if (-not (Test-Path $outDir)) {
+    New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 }
 
-# Guardar como JSON ARM compatible (profundidad alta)
-$mainTemplate | ConvertTo-Json -Depth 100 | Out-File -FilePath $destFile -Encoding UTF8
-
-Write-Host "Export OK -> $destFile"
-Write-Host "Tipo/carpeta: $targetFolder"
-Write-Host "Solución: $solutionName"
-
-# 8) Outputs para GitHub Actions
-if ($env:GITHUB_OUTPUT) {
-  "exported_path=$destFile"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-  "exported_folder=$targetFolder" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-  "exported_solution=$solutionName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+if ((Test-Path $outFile) -and -not $Force) {
+    throw "El archivo ya existe: $outFile (usa -Force para sobreescribir)"
 }
+
+# Guardar con UTF8 sin BOM (recomendado para repos)
+[System.IO.File]::WriteAllText($outFile, $jsonString, (New-Object System.Text.UTF8Encoding($false)))
+
+Write-Host "✅ Export guardado en: $outFile"
