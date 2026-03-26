@@ -1,0 +1,47 @@
+name: Export Microsoft Sentinel Content Item
+
+on:
+  workflow_dispatch:
+    inputs:
+      contentName:
+        description: "Nombre EXACTO del Content Item (DisplayName en Sentinel)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  export-content:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: 🔧 Instalar módulos Az
+        shell: pwsh
+        run: |
+          Install-Module Az -Repository PSGallery -Force -AllowClobber
+          Install-Module Az.SecurityInsights -Repository PSGallery -Force -AllowClobber
+
+      - name: 🚀 Exportar Content Item desde Sentinel
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          ./scripts/export-sentinel-content.ps1 `
+            -ContentName "${{ github.event.inputs.contentName }}" `
+            -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
+            -ResourceGroup "${{ vars.RESOURCE_GROUP }}" `
+            -WorkspaceName "${{ vars.WORKSPACE_NAME }}"
+
+      - name: ✅ Commit y push del contenido exportado
+        run: |
+          git config user.name "sentinel-bot"
+          git config user.email "sentinel-bot@github.com"
+          git add .
+          git commit -m "Export Sentinel content: ${{ github.event.inputs.contentName }}"
+          git push
