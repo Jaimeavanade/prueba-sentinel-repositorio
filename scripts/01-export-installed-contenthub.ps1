@@ -27,12 +27,14 @@ $OutputPath = Join-Path $solutionsDir "contenthub-installed-report.txt"
 # =========================
 function Get-ArmToken {
   $t = az account get-access-token --resource "https://management.azure.com/" --query accessToken -o tsv 2>$null
-  if (-not $t) { throw "No se pudo obtener token ARM" }
+  if (-not $t) { throw "No se pudo obtener token ARM (azure/login + az)." }
   return $t
 }
 
 function Normalize-NextLink {
-  param([string]$NextLink)
+  param([AllowNull()][string]$NextLink)
+
+  if (-not $NextLink) { return $null }
 
   $fixed = $NextLink -replace '\$SkipToken', '`$skipToken'
   if ($fixed -notmatch 'api-version=') {
@@ -56,31 +58,46 @@ function Invoke-ArmGetAll {
   while ($uri) {
     $resp = Invoke-RestMethod -Method GET -Uri $uri -Headers $headers
     if ($resp.value) { $all += $resp.value }
-    $uri = $null
-    if ($resp.nextLink) {
-      $uri = Normalize-NextLink $resp.nextLink
-    }
+    $uri = Normalize-NextLink $resp.nextLink
   }
+
   return $all
 }
 
 # =========================
-# Utilidades seguras para propiedades
+# Helper robusto: leer propiedades (soporta null y paths anidados "properties.displayName")
 # =========================
-function Get-SafeProp {
+function Get-Prop {
   param(
-    [Parameter(Mandatory=$true)][object]$Obj,
-    [Parameter(Mandatory=$true)][string]$Name
+    [AllowNull()][object]$Obj,
+    [Parameter(Mandatory=$true)][string]$Path
   )
+
   if ($null -eq $Obj) { return $null }
-  if ($Obj.PSObject.Properties.Name -contains $Name) {
-    return $Obj.$Name
+  $cur = $Obj
+  foreach ($p in $Path.Split('.')) {
+    if ($null -eq $cur) { return $null }
+    $names = $cur.PSObject.Properties.Name
+    if ($names -notcontains $p) { return $null }
+    $cur = $cur.$p
+  }
+  return $cur
+}
+
+function First-NonEmpty {
+  param([object[]]$Values)
+
+  foreach ($v in $Values) {
+    if ($null -ne $v) {
+      $s = [string]$v
+      if (-not [string]::IsNullOrWhiteSpace($s)) { return $s }
+    }
   }
   return $null
 }
 
 # =========================
-# 1) Soluciones instaladas
+# 1) Soluciones instaladas (contentPackages)
 # =========================
 $installedPackagesUri =
 "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/" +
@@ -91,18 +108,20 @@ $installedPackages = Invoke-ArmGetAll -InitialUri $installedPackagesUri
 Write-Host "Soluciones instaladas (contentPackages): $($installedPackages.Count)"
 
 # =========================
-# 2) Por cada solución -> catálogo + packagedContent
+# 2) Por cada solución -> catálogo (contentProductPackages) + packagedContent
 # =========================
 $rows = New-Object System.Collections.Generic.List[string]
 $rows.Add("solution_name`tcontent_name`tcontent_type")
 
 foreach ($pkg in $installedPackages) {
 
-  $solutionName = Get-SafeProp $pkg.properties "displayName"
-  if (-not $solutionName) { $solutionName = $pkg.name }
+  $solutionName = First-NonEmpty @(
+    (Get-Prop $pkg "properties.displayName"),
+    (Get-Prop $pkg "name")
+  )
 
-  $contentId   = Get-SafeProp $pkg.properties "contentId"
-  $contentKind = Get-SafeProp $pkg.properties "contentKind"
+  $contentId   = Get-Prop $pkg "properties.contentId"
+  $contentKind = Get-Prop $pkg "properties.contentKind"
 
   if (-not $contentId -or -not $contentKind) {
     Write-Warning "Solución sin contentId/contentKind: $solutionName"
@@ -119,41 +138,57 @@ foreach ($pkg in $installedPackages) {
 
   $catalog = Invoke-ArmGetAll -InitialUri $catalogUri
 
+  if (-not $catalog -or $catalog.Count -eq 0) {
+    Write-Warning "No encontrado en catálogo para: $solutionName"
+    continue
+  }
+
   foreach ($c in $catalog) {
-    $packagedContent = Get-SafeProp $c.properties "packagedContent"
+    $packagedContent = Get-Prop $c "properties.packagedContent"
     if (-not $packagedContent) { continue }
 
     foreach ($item in $packagedContent) {
 
-      # content name (robusto)
-      $name =
-        (Get-SafeProp $item "displayName") ??
-        (Get-SafeProp (Get-SafeProp $item "properties") "displayName") ??
-        (Get-SafeProp $item "name") ??
-        "UnknownName"
+      # Nombre del content item (varía por schema)
+      $contentName = First-NonEmpty @(
+        (Get-Prop $item "displayName"),
+        (Get-Prop $item "properties.displayName"),
+        (Get-Prop $item "name"),
+        (Get-Prop $item "properties.name"),
+        (Get-Prop $item "contentId"),
+        (Get-Prop $item "properties.contentId"),
+        (Get-Prop $item "id")
+      )
+      if (-not $contentName) { $contentName = "UnknownName" }
 
-      # content type (robusto)
-      $type =
-        (Get-SafeProp $item "contentKind") ??
-        (Get-SafeProp $item "kind") ??
-        (Get-SafeProp (Get-SafeProp $item "properties") "contentKind") ??
-        "UnknownType"
+      # Tipo del content item (varía por schema)
+      $contentType = First-NonEmpty @(
+        (Get-Prop $item "contentKind"),
+        (Get-Prop $item "kind"),
+        (Get-Prop $item "properties.contentKind"),
+        (Get-Prop $item "properties.kind"),
+        (Get-Prop $item "properties.contentType")
+      )
+      if (-not $contentType) { $contentType = "UnknownType" }
 
-      $rows.Add("$solutionName`t$name`t$type")
+      $rows.Add("$solutionName`t$contentName`t$contentType")
     }
   }
 }
 
 # =========================
-# Guardado + validación
+# Guardado + validación (evitar artifact vacío)
 # =========================
+# Ordenar dejando header arriba
 $sorted = $rows | Select-Object -First 1
 $sorted += ($rows | Select-Object -Skip 1 | Sort-Object)
 
+# Si solo hay header, aborta
 if ($sorted.Count -le 1) {
-  throw "Reporte vacío: no se encontraron content items."
+  throw "Reporte vacío: no se han obtenido content items. (Soluciones instaladas: $($installedPackages.Count))"
 }
 
+# Guardar UTF-8 sin BOM
 [System.IO.File]::WriteAllLines(
   $OutputPath,
   $sorted,
@@ -162,5 +197,5 @@ if ($sorted.Count -le 1) {
 
 Write-Host "✅ OK -> generado: $OutputPath"
 Write-Host "Filas totales (incluye header): $($sorted.Count)"
-Write-Host "Preview:"
-$sorted | Select-Object -First 20 | ForEach-Object { Write-Host $_ }
+Write-Host "Preview (primeras 25 líneas):"
+$sorted | Select-Object -First 25 | ForEach-Object { Write-Host $_ }
