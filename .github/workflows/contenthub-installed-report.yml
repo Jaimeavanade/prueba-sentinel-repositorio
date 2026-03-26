@@ -43,7 +43,7 @@ jobs:
           test -f Solutions/contenthub-installed-report.txt
           test -s Solutions/contenthub-installed-report.txt
 
-      - name: Show report preview (how to see solution + content names)
+      - name: Show report preview (solution + content names)
         run: |
           echo "----- Preview (first 40 lines) -----"
           head -n 40 Solutions/contenthub-installed-report.txt
