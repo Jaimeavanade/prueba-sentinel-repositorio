@@ -4,18 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       contentType:
+        description: "Analytics rules | Hunting queries | Parsers | Workbooks | Playbooks"
         required: true
         default: "Analytics rules"
       solutionName:
+        description: "Nombre de la solución (Content Hub) - exacto"
         required: true
         default: "Azure Key Vault"
       itemName:
+        description: "Nombre del item (displayName) - exacto"
         required: true
         default: "Mass secret retrieval from Azure Key Vault"
       apiVersion:
+        description: "API version"
         required: false
         default: "2025-09-01"
       force:
+        description: "Sobreescribir fichero si existe (true/false)"
         required: false
         default: "true"
 
@@ -28,7 +33,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -36,11 +42,21 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange
 
       - name: Export Content Hub item
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          Write-Host "=== Inputs ==="
+          Write-Host "contentType=${{ github.event.inputs.contentType }}"
+          Write-Host "solutionName=${{ github.event.inputs.solutionName }}"
+          Write-Host "itemName=${{ github.event.inputs.itemName }}"
+          Write-Host "apiVersion=${{ github.event.inputs.apiVersion }}"
+          Write-Host "force=${{ github.event.inputs.force }}"
+
+          # Fijar subscripción en az (por si acaso)
+          az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
           $args = @{
             SubscriptionId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
@@ -59,10 +75,16 @@ jobs:
 
           & "${{ github.workspace }}/scripts/Export-ContentHubItemToRepo.ps1" @args
 
-      - name: Commit and push
+      - name: Commit and push changes
+        shell: bash
         run: |
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet || git commit -m "Add Sentinel content (repo-ready)"
+          if git diff --cached --quiet; then
+            echo "No hay cambios que commitear."
+            exit 0
+          fi
+          git commit -m "Add Sentinel content (repo-ready): ${{ github.event.inputs.itemName }}"
           git push
