@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       contentName:
-        description: "Content name (displayName) del item a exportar. Ej: Brute force attack against a Cloud PC"
+        description: "Content name (displayName) del item a exportar. Solo para: Analytics rule, Hunting query, Parser, Workbook"
         required: true
         type: string
 
