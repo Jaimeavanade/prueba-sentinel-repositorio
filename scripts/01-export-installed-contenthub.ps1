@@ -1,42 +1,91 @@
 <#
-Exporta inventario de:
-- Soluciones instaladas (Content Hub) -> contentPackages (installed packages) [3](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-packages/list?view=rest-securityinsights-2025-09-01)
-- Content items instalados -> contentTemplates (installed templates) [4](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-templates/list?view=rest-securityinsights-2025-09-01)
+.SYNOPSIS
+  Exporta inventario de soluciones instaladas (Content Hub) y sus content items instalados en Microsoft Sentinel
+  y lo guarda como TXT dentro de la carpeta Solutions.
 
-Salida:
-- contenthub-installed-report.txt
-Columnas:
-- solution name
-- content name
-- content type
+.DESCRIPTION
+  - Lee soluciones instaladas desde:
+      Microsoft.SecurityInsights/contentPackages (API 2025-09-01)
+  - Lee content items instalados desde:
+      Microsoft.SecurityInsights/contentTemplates (API 2025-09-01)
+  - Relaciona items con soluciones usando properties.packageId del template.
+
+.OUTPUT
+  - Solutions/contenthub-installed-report.txt
+  Columnas:
+    solution_name<TAB>content_name<TAB>content_type
+
+.REQUIREMENTS
+  - azure/login (OIDC) ya autenticado
+  - Azure CLI disponible
+  - Variables de entorno:
+      AZURE_SUBSCRIPTION_ID
+      RESOURCE_GROUP
+      WORKSPACE_NAME
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ====== Config desde ENV ======
-$SubscriptionId   = $env:AZURE_SUBSCRIPTION_ID
-$ResourceGroup    = $env:RESOURCE_GROUP
-$WorkspaceName    = $env:WORKSPACE_NAME
-$ApiVersion       = "2025-09-01"
-$OutputPath       = Join-Path (Get-Location) "contenthub-installed-report.txt"
+# =========================
+# Config desde ENV
+# =========================
+$SubscriptionId = $env:AZURE_SUBSCRIPTION_ID
+$ResourceGroup  = $env:RESOURCE_GROUP
+$WorkspaceName  = $env:WORKSPACE_NAME
+
+# API Version Sentinel (SecurityInsights)
+$ApiVersion = "2025-09-01"
 
 if (-not $SubscriptionId) { throw "Falta env: AZURE_SUBSCRIPTION_ID" }
 if (-not $ResourceGroup)  { throw "Falta env: RESOURCE_GROUP" }
 if (-not $WorkspaceName)  { throw "Falta env: WORKSPACE_NAME" }
 
+# =========================
+# Output en carpeta Solutions/
+# =========================
+$repoRoot = Get-Location
+$solutionsDir = Join-Path $repoRoot "Solutions"
+if (-not (Test-Path $solutionsDir)) {
+  New-Item -ItemType Directory -Path $solutionsDir | Out-Null
+}
+$OutputPath = Join-Path $solutionsDir "contenthub-installed-report.txt"
+
+# =========================
+# Helpers
+# =========================
 function Get-ArmToken {
   try {
     $t = az account get-access-token --resource "https://management.azure.com/" --query accessToken -o tsv 2>$null
     if (-not $t) { throw "Token vacío" }
     return $t
   } catch {
-    throw "No se pudo obtener token ARM via Azure CLI. Asegúrate de haber hecho azure/login. Error: $($_.Exception.Message)"
+    throw "No se pudo obtener token ARM via Azure CLI. Asegúrate de haber ejecutado azure/login. Error: $($_.Exception.Message)"
   }
 }
 
+function Normalize-NextLink {
+  param(
+    [Parameter(Mandatory=$true)][string]$NextLink,
+    [Parameter(Mandatory=$true)][string]$ApiVersion
+  )
+  $fixed = $NextLink
+
+  # Normalizar casing del skiptoken si viene como $SkipToken
+  $fixed = $fixed -replace '\$SkipToken', '`$skipToken'
+
+  # Si no tiene api-version, añadirlo
+  if ($fixed -notmatch 'api-version=') {
+    if ($fixed -match '\?') { $fixed = "$fixed&api-version=$ApiVersion" }
+    else { $fixed = "$fixed?api-version=$ApiVersion" }
+  }
+  return $fixed
+}
+
 function Invoke-ArmGetAll {
-  param([Parameter(Mandatory=$true)][string] $InitialUri)
+  param(
+    [Parameter(Mandatory=$true)][string] $InitialUri
+  )
 
   $token = Get-ArmToken
   $headers = @{
@@ -48,7 +97,19 @@ function Invoke-ArmGetAll {
   $uri = $InitialUri
 
   while ($uri) {
-    $resp = Invoke-RestMethod -Method GET -Uri $uri -Headers $headers
+    try {
+      $resp = Invoke-RestMethod -Method GET -Uri $uri -Headers $headers
+    } catch {
+      $body = $null
+      try {
+        if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream) {
+          $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+          $body = $reader.ReadToEnd()
+        }
+      } catch {}
+      if ($body) { throw "Fallo GET. Uri=$uri. Body=$body" }
+      throw "Fallo GET. Uri=$uri. Error=$($_.Exception.Message)"
+    }
 
     if ($resp.value) {
       foreach ($v in $resp.value) { [void]$all.Add($v) }
@@ -56,40 +117,47 @@ function Invoke-ArmGetAll {
 
     $uri = $null
     if ($resp.nextLink) {
-      $nl = [string]$resp.nextLink
-
-      # nextLink a veces viene sin api-version; lo añadimos (patrón que ya usas en tus scripts) [5](https://avanade-my.sharepoint.com/personal/j_velazquez_santos_avanade_com/_layouts/15/Doc.aspx?action=edit&mobileredirect=true&wdorigin=Sharepoint&DefaultItemOpen=1&sourcedoc={dcde3f4e-f42d-4456-93b2-470a520e4bb2}&wd=target%28/Segittur.one/%29&wdpartid={de506d0d-e4ee-4270-8873-e1ea6b67e29b}{1}&wdsectionfileid={cfe6086a-3179-430a-9536-53117009c186})
-      if ($nl -notmatch "api-version=") {
-        if ($nl -match "\?") { $nl = "$nl&api-version=$ApiVersion" } else { $nl = "$nl?api-version=$ApiVersion" }
-      }
-
-      # Normaliza casing si viniera como $SkipToken
-      $nl = $nl -replace '\$SkipToken', '`$skipToken'
-
-      $uri = $nl
+      $uri = Normalize-NextLink -NextLink ([string]$resp.nextLink) -ApiVersion $ApiVersion
     }
   }
 
   return $all
 }
 
-# 1) Soluciones instaladas (contentPackages) [3](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-packages/list?view=rest-securityinsights-2025-09-01)
-$packagesUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentPackages?api-version=$ApiVersion"
+# =========================
+# 1) Soluciones instaladas (Content Hub) -> contentPackages
+# =========================
+$packagesUri =
+  "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/" +
+  "Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/" +
+  "contentPackages?api-version=$ApiVersion"
+
 $installedPackages = Invoke-ArmGetAll -InitialUri $packagesUri
 
-# Mapa: packageId(name) -> displayName
+# Mapa: packageId(resource name) -> displayName
 $packageMap = @{}
 foreach ($p in $installedPackages) {
-  $pid = $p.name
-  $pname = if ($p.properties -and $p.properties.displayName) { [string]$p.properties.displayName } else { $pid }
+  $pid = [string]$p.name
+  $pname = $pid
+  if ($p.properties -and $p.properties.displayName) {
+    $pname = [string]$p.properties.displayName
+  }
   $packageMap[$pid] = $pname
 }
 
-# 2) Content items instalados (contentTemplates) [4](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-templates/list?view=rest-securityinsights-2025-09-01)
-$templatesUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates?api-version=$ApiVersion&`$top=500"
+# =========================
+# 2) Content items instalados -> contentTemplates
+# =========================
+$templatesUri =
+  "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/" +
+  "Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/" +
+  "contentTemplates?api-version=$ApiVersion&`$top=500"
+
 $installedTemplates = Invoke-ArmGetAll -InitialUri $templatesUri
 
-# 3) Construcción del TXT
+# =========================
+# 3) Generar filas (SolutionName | ContentName | ContentType)
+# =========================
 $rows = New-Object System.Collections.Generic.List[string]
 $rows.Add("solution_name`tcontent_name`tcontent_type")
 
@@ -102,9 +170,12 @@ foreach ($t in $installedTemplates) {
     elseif ($tp.contentId) { [string]$tp.contentId }
     else { [string]$t.name }
 
-  $contentType = if ($tp.contentKind) { [string]$tp.contentKind } else { "Unknown" }
+  $contentType =
+    if ($tp.contentKind) { [string]$tp.contentKind }
+    else { "Unknown" }
 
-  $pkgId = if ($tp.packageId) { [string]$tp.packageId } else { $null }
+  $pkgId = $null
+  if ($tp.packageId) { $pkgId = [string]$tp.packageId }
 
   $solutionName = "Standalone/UnknownSolution"
   if ($pkgId) {
@@ -115,7 +186,7 @@ foreach ($t in $installedTemplates) {
   $rows.Add("$solutionName`t$contentName`t$contentType")
 }
 
-# Ordenar (dejando header arriba)
+# Ordenar dejando header arriba
 $sorted = $rows | Select-Object -First 1
 $sorted += ($rows | Select-Object -Skip 1 | Sort-Object)
 
