@@ -16,7 +16,7 @@ on:
         required: false
         type: string
       content_type:
-        description: "Content type (como aparece en el portal). Solo para export-item (recomendado si hay ambigüedad)"
+        description: "Content type (como aparece en el portal). Solo para export-item"
         required: false
         type: choice
         options:
@@ -56,13 +56,24 @@ jobs:
           audience: api://AzureADTokenExchange
           enable-AzPSSession: true
 
-      - name: Sanity check paths
-        shell: bash
+      - name: Ensure script exists (generate if missing)
+        shell: pwsh
         run: |
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          ls -la
-          ls -la "$GITHUB_WORKSPACE" || true
-          ls -la "$GITHUB_WORKSPACE/scripts" || true
+          $ErrorActionPreference = "Stop"
+          $scriptsDir = Join-Path $env:GITHUB_WORKSPACE "scripts"
+          New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
+
+          $scriptPath = Join-Path $scriptsDir "export-contenthub-item.ps1"
+          if (Test-Path $scriptPath) {
+            Write-Host "Script ya existe: $scriptPath"
+            exit 0
+          }
+
+          Write-Host "Generando script en: $scriptPath"
+
+          @'
+          <PEGA AQUÍ EL SCRIPT COMPLETO DE LA OPCIÓN A.1 TAL CUAL, SIN CAMBIOS>
+          '@ | Out-File -FilePath $scriptPath -Encoding utf8
 
       - name: Run
         shell: pwsh
@@ -72,11 +83,8 @@ jobs:
           SENTINEL_WORKSPACE_NAME: ${{ vars.SENTINEL_WORKSPACE_NAME }}
         run: |
           $ErrorActionPreference = "Stop"
-
           $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts/export-contenthub-item.ps1"
-          if (-not (Test-Path $scriptPath)) {
-            throw "No existe el script en: $scriptPath. Revisa que esté commiteado en scripts/export-contenthub-item.ps1"
-          }
+          if (-not (Test-Path $scriptPath)) { throw "No existe el script en: $scriptPath" }
 
           $action = "${{ github.event.inputs.action }}"
           $search = "${{ github.event.inputs.search }}"
@@ -92,14 +100,10 @@ jobs:
             exit 0
           }
 
-          # export-item
           $cn = "${{ github.event.inputs.content_name }}"
-          if (-not $cn -or $cn.Trim().Length -eq 0) {
-            throw "Para 'export-item' debes rellenar content_name."
-          }
+          if (-not $cn -or $cn.Trim().Length -eq 0) { throw "Para 'export-item' debes rellenar content_name." }
 
           $ct = "${{ github.event.inputs.content_type }}"
-
           pwsh -File $scriptPath -ContentName $cn -ContentType $ct
 
       - name: Commit & Push if changes
