@@ -4,27 +4,27 @@ on:
   workflow_dispatch:
     inputs:
       contentType:
-        description: "Tipo de contenido: Analytics rules | Hunting queries | Parsers | Workbooks | Playbooks"
+        description: "Tipo: Analytics rules | Hunting queries | Parsers | Workbooks | Playbooks"
         required: true
         default: "Analytics rules"
       solutionName:
-        description: "Nombre de la solución (carpeta). Ej: Azure Key Vault"
+        description: "Carpeta solución. Ej: Azure Key Vault"
         required: true
         default: "Azure Key Vault"
       itemName:
-        description: "Nombre del item (nombre del fichero). Ej: Mass secret retrieval from Azure Key Vault"
+        description: "Nombre fichero. Ej: Mass secret retrieval from Azure Key Vault"
         required: true
         default: "Mass secret retrieval from Azure Key Vault"
       templateId:
-        description: "TemplateId / nombre del recurso a exportar (último segmento del URI SecurityInsights)."
+        description: "Path bajo providers/Microsoft.SecurityInsights/. Ej: AlertRuleTemplates/<id>"
         required: true
         default: "AlertRuleTemplates/Mass secret retrieval from Azure Key Vault"
       apiVersion:
-        description: "API version (SecurityInsights)."
+        description: "API version SecurityInsights"
         required: false
         default: "2023-11-01-preview"
       force:
-        description: "Sobreescribir fichero si existe (true/false)"
+        description: "Sobreescribir (true/false)"
         required: false
         default: "true"
 
@@ -35,7 +35,6 @@ permissions:
 jobs:
   export:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,12 +60,16 @@ jobs:
             $resourceGroup  = "${{ vars.RESOURCE_GROUP }}"
             $workspaceName  = "${{ vars.WORKSPACE_NAME }}"
 
-            $contentType = "${{ github.event.inputs.contentType }}"
+            if ([string]::IsNullOrWhiteSpace($workspaceName)) {
+              throw "WORKSPACE_NAME está vacío/no definido en Variables de Actions."
+            }
+
+            $contentType  = "${{ github.event.inputs.contentType }}"
             $solutionName = "${{ github.event.inputs.solutionName }}"
-            $itemName = "${{ github.event.inputs.itemName }}"
-            $templateId = "${{ github.event.inputs.templateId }}"
-            $apiVersion = "${{ github.event.inputs.apiVersion }}"
-            $force = "${{ github.event.inputs.force }}"
+            $itemName     = "${{ github.event.inputs.itemName }}"
+            $templateId   = "${{ github.event.inputs.templateId }}"
+            $apiVersion   = "${{ github.event.inputs.apiVersion }}"
+            $force        = "${{ github.event.inputs.force }}"
 
             $forceSwitch = $false
             if ($force -and $force.ToLower() -eq "true") { $forceSwitch = $true }
