@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       content_name:
-        description: 'Content name (displayName). Ej: Brute force attack against a Cloud PC'
+        description: 'Content name (displayName). Ej: Aqua Blizzard AV hits - Feb 2022'
         required: true
         type: string
 
@@ -13,8 +13,12 @@ permissions:
   contents: write
 
 env:
+  # Variables de Sentinel (repo variables)
   SENTINEL_RESOURCE_GROUP: ${{ vars.SENTINEL_RESOURCE_GROUP }}
   SENTINEL_WORKSPACE_NAME: ${{ vars.SENTINEL_WORKSPACE_NAME }}
+
+  # Subscription como secreto (lo que pediste)
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
   export:
@@ -30,13 +34,13 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
 
-      - name: Install Az PowerShell modules
+      - name: Install Az modules
         shell: pwsh
         run: |
           Set-PSRepository -Name "PSGallery" -InstallationPolicy Trusted
           Install-Module Az.Accounts -Force
-          # Az.Resources suele ser útil para context; no es estrictamente necesario pero ayuda
           Install-Module Az.Resources -Force
 
       - name: Export content item to repo structure
