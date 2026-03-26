@@ -1,11 +1,3 @@
-<#
-Exporta inventario de soluciones instaladas (Content Hub) y sus content items instalados en Microsoft Sentinel
-y lo guarda como TXT dentro de la carpeta Solutions.
-
-Salida:
-  Solutions/contenthub-installed-report.txt
-#>
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -24,8 +16,7 @@ if (-not $WorkspaceName)  { throw "Falta env: WORKSPACE_NAME" }
 # =========================
 # Output en carpeta Solutions/
 # =========================
-$repoRoot = Get-Location
-$solutionsDir = Join-Path $repoRoot "Solutions"
+$solutionsDir = Join-Path (Get-Location) "Solutions"
 if (-not (Test-Path $solutionsDir)) {
   New-Item -ItemType Directory -Path $solutionsDir | Out-Null
 }
@@ -43,10 +34,7 @@ function Get-ArmToken {
 }
 
 function Normalize-NextLink {
-  param(
-    [string]$NextLink,
-    [string]$ApiVersion
-  )
+  param([string]$NextLink)
 
   $fixed = $NextLink -replace '\$SkipToken', '`$skipToken'
   if ($fixed -notmatch 'api-version=') {
@@ -72,7 +60,7 @@ function Invoke-ArmGetAll {
     if ($resp.value) { $all += $resp.value }
     $uri = $null
     if ($resp.nextLink) {
-      $uri = Normalize-NextLink $resp.nextLink $ApiVersion
+      $uri = Normalize-NextLink $resp.nextLink
     }
   }
   return $all
@@ -88,12 +76,11 @@ $packagesUri =
 
 $installedPackages = Invoke-ArmGetAll $packagesUri
 
-# ✅ MAPA CORREGIDO (NO usar $pid)
 $packageMap = @{}
 foreach ($p in $installedPackages) {
-  $packageId = [string]$p.name
+  $packageId = $p.name
   $displayName = if ($p.properties.displayName) {
-    [string]$p.properties.displayName
+    $p.properties.displayName
   } else {
     $packageId
   }
@@ -106,7 +93,7 @@ foreach ($p in $installedPackages) {
 $templatesUri =
 "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/" +
 "Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/" +
-"contentTemplates?api-version=$ApiVersion&`$top=500"
+"contentTemplates?api-version=$ApiVersion"
 
 $installedTemplates = Invoke-ArmGetAll $templatesUri
 
@@ -144,6 +131,6 @@ $rows += ($rows | Select-Object -Skip 1 | Sort-Object)
   (New-Object System.Text.UTF8Encoding($false))
 )
 
-Write-Host "OK -> generado: $OutputPath"
+Write-Host "✅ OK -> generado: $OutputPath"
 Write-Host "Soluciones: $($installedPackages.Count)"
 Write-Host "Items: $($installedTemplates.Count)"
