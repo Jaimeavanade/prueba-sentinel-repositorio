@@ -1,23 +1,25 @@
 <#
 .SYNOPSIS
-Exporta un Content Item instalado (regla activa / query activa / parser / workbook) a un repo GitHub
-en formato ARM (single-resource) compatible con Microsoft Sentinel Repositories.
+Exporta un Content Item instalado (regla activa / hunting query / parser / workbook)
+a un repo GitHub en formato ARM (single-resource) compatible con Microsoft Sentinel Repositories.
 
-.ENVIRONMENT VARIABLES (requeridas)
-  SENTINEL_RESOURCE_GROUP
-  SENTINEL_WORKSPACE_NAME
+.REQUIERE (variables de entorno)
+  AZURE_SUBSCRIPTION_ID          (Secret en GitHub)
+  SENTINEL_RESOURCE_GROUP        (Variable en GitHub)
+  SENTINEL_WORKSPACE_NAME        (Variable en GitHub)
 
 .PARAMETER ContentName
-DisplayName exacto (o casi exacto) del content item. Ej: "Brute force attack against a Cloud PC"
+DisplayName exacto (o parcial) del item. Ej: "Aqua Blizzard AV hits - Feb 2022"
 
 .PARAMETER RepoRoot
 Raíz del repositorio (por defecto: carpeta padre del script)
 
 .NOTES
-- Para Analytics rules: busca primero template por displayName y luego la regla activa por alertRuleTemplateName.
-- Para Hunting/Parsers: busca por displayName directamente en recursos activos (fallback a template si existiera).
-- Para Workbooks: busca en el RG por displayName.
-
+- Analytics rules:
+    - Busca primero en alertRuleTemplates por displayName
+    - Luego busca la regla activa en alertRules por properties.alertRuleTemplateName
+- Hunting queries/parsers: busca directamente en recursos activos
+- Workbooks: busca en RG en Microsoft.Insights/workbooks
 #>
 
 [CmdletBinding()]
@@ -47,27 +49,20 @@ function Assert-EnvVar([string]$Name) {
   return $val
 }
 
+# --- Required ENV ---
+$AZURE_SUBSCRIPTION_ID   = Assert-EnvVar "AZURE_SUBSCRIPTION_ID"
 $SENTINEL_RESOURCE_GROUP = Assert-EnvVar "SENTINEL_RESOURCE_GROUP"
 $SENTINEL_WORKSPACE_NAME = Assert-EnvVar "SENTINEL_WORKSPACE_NAME"
 
-# --- Auth / Context ---
+# --- Token (no interactive) ---
 if (-not (Get-Module Az.Accounts -ListAvailable)) {
-  throw "No se encuentra el módulo Az.Accounts. Instálalo (Install-Module Az.Accounts) o añade paso en workflow."
+  throw "No se encuentra el módulo Az.Accounts. Instálalo en el workflow antes de ejecutar este script."
 }
 
-$ctx = Get-AzContext
-if (-not $ctx) {
-  # En GH Actions, azure/login deja el contexto listo. En local, esto te pedirá login.
-  Connect-AzAccount | Out-Null
-  $ctx = Get-AzContext
-}
-if (-not $ctx.Subscription -or -not $ctx.Subscription.Id) {
-  throw "No se pudo determinar la subscription actual (Get-AzContext)."
-}
-
-$subscriptionId = $ctx.Subscription.Id
-$token = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
-$headers = @{ Authorization = "Bearer $token" }
+# azure/login@v2 prepara la sesión Az en el runner (si enable-AzPSSession true o al usar Az módulos)
+# Aun así, Get-AzAccessToken funcionará en ese contexto.
+$tokenPlain = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/" -ErrorAction Stop).Token
+$headers = @{ Authorization = "Bearer $tokenPlain" }
 
 function Invoke-ArmGetAll {
   param([Parameter(Mandatory=$true)][string]$Uri)
@@ -92,7 +87,6 @@ function Sanitize-FileName([string]$name) {
 }
 
 function Sanitize-PathSegment([string]$name) {
-  # GitHub/Windows safe-ish folder segment
   $name = Sanitize-FileName $name
   $name = $name.Trim(".")
   if ([string]::IsNullOrWhiteSpace($name)) { return "UnknownSolution" }
@@ -100,7 +94,7 @@ function Sanitize-PathSegment([string]$name) {
 }
 
 function Get-SolutionNameFromObject($obj) {
-  # 1) properties.source.name (muy habitual en templates/artefactos de Sentinel)
+  # 1) properties.source.name (muy habitual en contenido de Sentinel)
   try {
     if ($obj.properties -and $obj.properties.source -and $obj.properties.source.name) {
       return (Sanitize-PathSegment [string]$obj.properties.source.name)
@@ -122,102 +116,59 @@ function Get-SolutionNameFromObject($obj) {
   return "UnknownSolution"
 }
 
-function Build-ArmSingleResourceTemplate {
-  param(
-    [Parameter(Mandatory=$true)][hashtable]$ResourceObject,
-    [Parameter(Mandatory=$true)][string]$OutFile
-  )
+# --- Base URIs ---
+$subscriptionId = $AZURE_SUBSCRIPTION_ID
 
-  $template = [ordered]@{
-    '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'
-    contentVersion = '1.0.0.0'
-    parameters     = [ordered]@{}
-    resources      = @($ResourceObject)
-  }
-
-  $json = $template | ConvertTo-Json -Depth 100
-  $dir = Split-Path $OutFile -Parent
-  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-
-  # UTF8 sin BOM para evitar problemas
-  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::WriteAllText($OutFile, $json, $utf8NoBom)
-}
-
-# --- Endpoints base (workspace-scoped SecurityInsights) ---
 $wsBase = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$SENTINEL_RESOURCE_GROUP/providers/Microsoft.OperationalInsights/workspaces/$SENTINEL_WORKSPACE_NAME/providers/Microsoft.SecurityInsights"
 
-$alertRulesUri        = "$wsBase/alertRules?api-version=$SecurityInsightsApiVersion"
-$alertRuleTemplatesUri= "$wsBase/alertRuleTemplates?api-version=$SecurityInsightsApiVersion"
+$alertRulesUri         = "$wsBase/alertRules?api-version=$SecurityInsightsApiVersion"
+$alertRuleTemplatesUri = "$wsBase/alertRuleTemplates?api-version=$SecurityInsightsApiVersion"
+$huntingQueriesUri     = "$wsBase/huntingQueries?api-version=$SecurityInsightsApiVersion"
+$parsersUri            = "$wsBase/parsers?api-version=$SecurityInsightsApiVersion"
 
-# Best-effort para otros tipos (mismo patrón de workspace + provider)
-$huntingQueriesUri    = "$wsBase/huntingQueries?api-version=$SecurityInsightsApiVersion"
-$parsersUri           = "$wsBase/parsers?api-version=$SecurityInsightsApiVersion"
+$workbooksUri          = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$SENTINEL_RESOURCE_GROUP/providers/Microsoft.Insights/workbooks?api-version=$WorkbooksApiVersion"
 
-# Workbooks viven en el RG (habitualmente el mismo RG del workspace, como en tu repo)
-$workbooksUri         = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$SENTINEL_RESOURCE_GROUP/providers/Microsoft.Insights/workbooks?api-version=$WorkbooksApiVersion"
-
+# --- Input box (local) ---
 if ([string]::IsNullOrWhiteSpace($ContentName)) {
-  Write-Host "No se indicó ContentName. Te muestro un resumen y te pido el nombre..." -ForegroundColor Yellow
-
-  $rules = Invoke-ArmGetAll $alertRulesUri
-  $hq    = @()
-  $par   = @()
-  $wbs   = @()
-
-  try { $hq  = Invoke-ArmGetAll $huntingQueriesUri } catch {}
-  try { $par = Invoke-ArmGetAll $parsersUri } catch {}
-  try { $wbs = Invoke-ArmGetAll $workbooksUri } catch {}
-
-  $list = @()
-  $list += $rules | Where-Object { $_.properties.displayName } | ForEach-Object {
-    [pscustomobject]@{ Type="Analytics rule"; DisplayName=$_.properties.displayName }
-  }
-  $list += $hq | Where-Object { $_.properties.displayName } | ForEach-Object {
-    [pscustomobject]@{ Type="Hunting query"; DisplayName=$_.properties.displayName }
-  }
-  $list += $par | Where-Object { $_.properties.displayName } | ForEach-Object {
-    [pscustomobject]@{ Type="Parser"; DisplayName=$_.properties.displayName }
-  }
-  $list += $wbs | Where-Object { $_.properties.displayName } | ForEach-Object {
-    [pscustomobject]@{ Type="Workbook"; DisplayName=$_.properties.displayName }
-  }
-
-  $list | Sort-Object Type, DisplayName | Format-Table -AutoSize
-  $ContentName = Read-Host "Escribe EXACTAMENTE el DisplayName del contenido a exportar"
+  $ContentName = Read-Host "Escribe el Content Name (displayName) a exportar"
 }
 
-# Normalizamos para comparaciones flexibles
 $needle = $ContentName.Trim()
+
 function Match-DisplayName($obj) {
   $dn = $obj.properties.displayName
   if (-not $dn) { return $false }
   return ($dn -eq $needle) -or ($dn -like "*$needle*")
 }
 
-# --- 1) Intento: Analytics rule (template -> active rule) ---
+Write-Host "Buscando '$ContentName' en el workspace '$SENTINEL_WORKSPACE_NAME'..." -ForegroundColor Cyan
+
 $selectedResource = $null
-$contentType      = $null
-$solutionName     = $null
+$contentType = $null
+$solutionName = $null
 
-Write-Host "Buscando '$ContentName'..." -ForegroundColor Cyan
-
-# 1A) Buscar template (por displayName)
+# ---------------------------------------------------------
+# 1) Analytics rule: template -> active rule
+# ---------------------------------------------------------
 $template = $null
 try {
   $templates = Invoke-ArmGetAll $alertRuleTemplatesUri
-  $template = $templates | Where-Object { $_.properties.displayName } | Where-Object { ($_.properties.displayName -eq $needle) -or ($_.properties.displayName -like "*$needle*") } | Select-Object -First 1
+  $template = $templates |
+    Where-Object { $_.properties.displayName } |
+    Where-Object { ($_.properties.displayName -eq $needle) -or ($_.properties.displayName -like "*$needle*") } |
+    Select-Object -First 1
 } catch {}
 
 if ($template) {
   $solutionName = Get-SolutionNameFromObject $template
   $templateId = $template.name
 
-  # 1B) Buscar regla activa creada desde ese template
   $rules = Invoke-ArmGetAll $alertRulesUri
+
+  # Preferido: match por alertRuleTemplateName
   $rule = $rules | Where-Object { $_.properties.alertRuleTemplateName -eq $templateId } | Select-Object -First 1
 
-  # Fallback: si no aparece por templateName, intenta por displayName directo
+  # Fallback: match por displayName directo
   if (-not $rule) {
     $rule = $rules | Where-Object { Match-DisplayName $_ } | Select-Object -First 1
   }
@@ -228,7 +179,9 @@ if ($template) {
   }
 }
 
-# --- 2) Si no es Analytics rule, buscar Hunting query activa ---
+# ---------------------------------------------------------
+# 2) Hunting query
+# ---------------------------------------------------------
 if (-not $selectedResource) {
   try {
     $hq = Invoke-ArmGetAll $huntingQueriesUri
@@ -241,7 +194,9 @@ if (-not $selectedResource) {
   } catch {}
 }
 
-# --- 3) Si no, buscar Parser activo ---
+# ---------------------------------------------------------
+# 3) Parser
+# ---------------------------------------------------------
 if (-not $selectedResource) {
   try {
     $par = Invoke-ArmGetAll $parsersUri
@@ -254,7 +209,9 @@ if (-not $selectedResource) {
   } catch {}
 }
 
-# --- 4) Si no, buscar Workbook ---
+# ---------------------------------------------------------
+# 4) Workbook
+# ---------------------------------------------------------
 if (-not $selectedResource) {
   try {
     $wbs = Invoke-ArmGetAll $workbooksUri
@@ -273,7 +230,7 @@ if (-not $selectedResource) {
 
 if (-not $solutionName) { $solutionName = Get-SolutionNameFromObject $selectedResource }
 
-# --- Mapas solicitados repo-folder + resource type correcto ---
+# --- Folder and ResourceType mapping (lo que pediste) ---
 $folderMap = @{
   "Analytics rule" = "Analytics rules"
   "Hunting query"  = "Hunting"
@@ -299,7 +256,11 @@ $repoFolder = $folderMap[$contentType]
 $resourceTypeValid = $typeMap[$contentType]
 $apiVersion = $apiMap[$contentType]
 
-# Construir recurso ARM “single-resource” quitando campos read-only y añadiendo scope cuando aplique
+$solSeg = Sanitize-PathSegment $solutionName
+$fileName = (Sanitize-FileName $needle) + ".json"
+$outPath = Join-Path $RepoRoot (Join-Path $repoFolder (Join-Path $solSeg $fileName))
+
+# --- Build ARM single-resource template (portable) ---
 $resourceName = [string]$selectedResource.name
 $kind = $selectedResource.kind
 
@@ -310,55 +271,37 @@ $resourceObj = [ordered]@{
 }
 
 if ($kind) { $resourceObj.kind = $kind }
-
-# location: Workbooks sí; SecurityInsights normalmente no lleva location (aun así, si viene, lo respetamos)
 if ($selectedResource.location) { $resourceObj.location = $selectedResource.location }
 
-# Propiedades (limpiamos lastModifiedUtc / etc no suele romper, pero quitamos id/etag/systemData)
+# Quitamos campos read-only típicos a nivel recurso (id/etag/systemData) -> no forman parte del recurso ARM
+# properties las dejamos tal cual (si hay read-only dentro, normalmente ARM lo ignora o no rompe)
 $resourceObj.properties = $selectedResource.properties
 
-# Scope para recursos workspace-scoped (SecurityInsights)
+# Workspace-scoped resources: añadimos scope para que el recurso sea extension bajo el workspace
 if ($contentType -in @("Analytics rule","Hunting query","Parser")) {
-  # ARM scope: despliegue como extension resource bajo el workspace
   $resourceObj.scope = "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspaceName'))]"
 }
 
-# Plantilla con parámetros
-# - Para workspace-scoped incluimos workspaceName para que el despliegue sea portable.
-if ($contentType -in @("Analytics rule","Hunting query","Parser")) {
-  # El wrapper lo creamos en Build-ArmSingleResourceTemplate; aquí solo dejamos claro que existe el param
-  # (se añade al template final)
-  $null = $resourceObj # placeholder
-}
-
-# Output path
-$solSeg = Sanitize-PathSegment $solutionName
-$fileName = (Sanitize-FileName $needle) + ".json"
-$outPath = Join-Path $RepoRoot (Join-Path $repoFolder (Join-Path $solSeg $fileName))
-
-# Crear template final con parámetros correctos
-$templateResource = $resourceObj
-
-# Construimos el ARM template wrapper aquí para poder añadir parameters.workspaceName cuando toca
-$wrapper = [ordered]@{
+$template = [ordered]@{
   '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'
   contentVersion = '1.0.0.0'
   parameters     = [ordered]@{}
-  resources      = @($templateResource)
+  resources      = @($resourceObj)
 }
 
 if ($contentType -in @("Analytics rule","Hunting query","Parser")) {
-  $wrapper.parameters.workspaceName = [ordered]@{ type = "string" }
+  $template.parameters.workspaceName = [ordered]@{ type = "string" }
 }
 
-$json = $wrapper | ConvertTo-Json -Depth 100
+$json = $template | ConvertTo-Json -Depth 200
+
 $dir = Split-Path $outPath -Parent
 if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($outPath, $json, $utf8NoBom)
 
-Write-Host "OK ✅ Exportado:" -ForegroundColor Green
+Write-Host "OK ✅ Exportado" -ForegroundColor Green
 Write-Host " - Content type : $contentType"
 Write-Host " - Solución     : $solutionName"
 Write-Host " - Ruta repo    : $outPath"
