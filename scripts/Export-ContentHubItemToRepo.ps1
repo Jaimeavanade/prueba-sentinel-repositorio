@@ -35,7 +35,7 @@ $token = az account get-access-token `
     --resource https://management.azure.com/ `
     --query accessToken -o tsv
 
-if (-not $token) {
+if (-not $token -or $token.Length -lt 100) {
     throw "No se pudo obtener token ARM."
 }
 
@@ -68,7 +68,8 @@ $packageId = $solution.name
 Write-Host "Solución encontrada → packageId=$packageId"
 
 # ---------- 2. GET DEL PAQUETE ----------
-$getPkgUri = "$base/contentProductPackages/$packageId?api-version=$ApiVersion"
+# ✅ FIX CRÍTICO: ${packageId} antes de ?api-version para evitar '$packageId?api' [1]()
+$getPkgUri = "$base/contentProductPackages/${packageId}?api-version=$ApiVersion"
 Write-Host "GET $getPkgUri"
 
 $pkg = Invoke-RestMethod -Method GET -Uri $getPkgUri -Headers $headers
@@ -107,11 +108,16 @@ $typeMap = @{
 $targetType = $typeMap[$ContentType.ToLowerInvariant()]
 
 $res = $arm.resources |
-    Where-Object { $_.type -and $_.type -notlike "*metadata*" } |
+    Where-Object { $_.type -and $_.type -notlike "*metadata*" -and $_.type -notlike "Microsoft.Resources/deployments" } |
     Select-Object -First 1
 
+if (-not $res) {
+    throw "No se encontró recurso principal en resources para cambiar el type."
+}
+
+$oldType = $res.type
 $res.type = $targetType
-Write-Host "Type reescrito → $targetType"
+Write-Host "Type reescrito: '$oldType' -> '$targetType'"
 
 # ---------- 5. GUARDAR ----------
 $outDir = Join-Path $OutputRoot (Join-Path $ContentType $SolutionName)
