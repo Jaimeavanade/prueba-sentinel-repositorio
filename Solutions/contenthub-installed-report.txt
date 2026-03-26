@@ -1,0 +1,19 @@
+solution_name	content_name	content_type
+Azure Activity	UnknownName	UnknownType
+Azure Firewall	UnknownName	UnknownType
+Azure Key Vault	UnknownName	UnknownType
+Azure Network Security Groups	UnknownName	UnknownType
+Azure Storage	UnknownName	UnknownType
+Azure Web Application Firewall	UnknownName	UnknownType
+Microsoft 365	UnknownName	UnknownType
+Microsoft Defender for Cloud	UnknownName	UnknownType
+Microsoft Defender for Cloud Apps	UnknownName	UnknownType
+Microsoft Defender for Endpoint	UnknownName	UnknownType
+Microsoft Defender for Identity	UnknownName	UnknownType
+Microsoft Defender for Office 365	UnknownName	UnknownType
+Microsoft Defender XDR	UnknownName	UnknownType
+Microsoft Entra ID	UnknownName	UnknownType
+Microsoft Entra ID Protection	UnknownName	UnknownType
+Microsoft Purview Insider Risk Management	UnknownName	UnknownType
+Microsoft Sentinel - Continuous Threat Monitoring for GitHub	UnknownName	UnknownType
+Threat Intelligence (NEW)	UnknownName	UnknownType
