@@ -1,0 +1,73 @@
+name: Export Content Hub Item to Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      content_name:
+        description: "Content name (Display name exacto en Azure Portal)"
+        required: true
+        type: string
+      content_type:
+        description: "Content type (como aparece en el portal). Útil si hay ambigüedad."
+        required: false
+        type: choice
+        options:
+          - ""
+          - "Analytics rule"
+          - "Hunting query"
+          - "Parser"
+          - "Workbook"
+      list_installed:
+        description: "Lista soluciones instaladas (contentPackages) y termina"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Export content item to repo structure
+        shell: pwsh
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          SENTINEL_RESOURCE_GROUP: ${{ vars.SENTINEL_RESOURCE_GROUP }}
+          SENTINEL_WORKSPACE_NAME: ${{ vars.SENTINEL_WORKSPACE_NAME }}
+        run: |
+          if ("${{ github.event.inputs.list_installed }}" -eq "true") {
+            ./scripts/export-contenthub-item.ps1 -ContentName "dummy" -ListInstalled
+            exit 0
+          }
+
+          ./scripts/export-contenthub-item.ps1 `
+            -ContentName "${{ github.event.inputs.content_name }}" `
+            -ContentType "${{ github.event.inputs.content_type }}"
+
+      - name: Commit & Push if changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No hay cambios que commitear."
+            exit 0
+          fi
+
+          git commit -m "Export Sentinel content: ${{ github.event.inputs.content_name }}"
+          git push
