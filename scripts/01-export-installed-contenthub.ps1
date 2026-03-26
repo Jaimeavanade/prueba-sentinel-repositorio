@@ -9,12 +9,12 @@ $ResourceGroup  = $env:RESOURCE_GROUP
 $WorkspaceName  = $env:WORKSPACE_NAME
 $ApiVersion     = "2025-09-01"
 
-if (-not $SubscriptionId) { throw "Falta env: AZURE_SUBSCRIPTION_ID" }
-if (-not $ResourceGroup)  { throw "Falta env: RESOURCE_GROUP" }
-if (-not $WorkspaceName)  { throw "Falta env: WORKSPACE_NAME" }
+if (-not $SubscriptionId) { throw "Falta AZURE_SUBSCRIPTION_ID" }
+if (-not $ResourceGroup)  { throw "Falta RESOURCE_GROUP" }
+if (-not $WorkspaceName)  { throw "Falta WORKSPACE_NAME" }
 
 # =========================
-# Output en carpeta Solutions/
+# Output
 # =========================
 $solutionsDir = Join-Path (Get-Location) "Solutions"
 if (-not (Test-Path $solutionsDir)) {
@@ -23,170 +23,89 @@ if (-not (Test-Path $solutionsDir)) {
 $OutputPath = Join-Path $solutionsDir "contenthub-installed-report.txt"
 
 # =========================
-# Helpers ARM
+# ARM helpers
 # =========================
 function Get-ArmToken {
-  $t = az account get-access-token --resource "https://management.azure.com/" --query accessToken -o tsv 2>$null
-  if (-not $t) { throw "No se pudo obtener token ARM (azure/login + az)." }
-  return $t
-}
-
-function Normalize-NextLink {
-  param([AllowNull()][string]$NextLink)
-
-  if (-not $NextLink) { return $null }
-
-  $fixed = $NextLink -replace '\$SkipToken', '`$skipToken'
-  if ($fixed -notmatch 'api-version=') {
-    if ($fixed -match '\?') { $fixed = "$fixed&api-version=$ApiVersion" }
-    else { $fixed = "$fixed?api-version=$ApiVersion" }
-  }
-  return $fixed
+  az account get-access-token `
+    --resource "https://management.azure.com/" `
+    --query accessToken -o tsv
 }
 
 function Invoke-ArmGetAll {
-  param([Parameter(Mandatory=$true)][string]$InitialUri)
+  param([string]$Uri)
 
   $headers = @{
     Authorization  = "Bearer $(Get-ArmToken)"
     "Content-Type" = "application/json"
   }
 
-  $all = @()
-  $uri = $InitialUri
-
-  while ($uri) {
-    $resp = Invoke-RestMethod -Method GET -Uri $uri -Headers $headers
-    if ($resp.value) { $all += $resp.value }
-    $uri = Normalize-NextLink $resp.nextLink
+  $items = @()
+  while ($Uri) {
+    $resp = Invoke-RestMethod -Method GET -Uri $Uri -Headers $headers
+    if ($resp.value) { $items += $resp.value }
+    $Uri = $resp.nextLink
   }
-
-  return $all
+  return $items
 }
 
 # =========================
-# Helper robusto: leer propiedades (soporta null y paths anidados)
+# 1) Soluciones instaladas
 # =========================
-function Get-Prop {
-  param(
-    [AllowNull()][object]$Obj,
-    [Parameter(Mandatory=$true)][string]$Path
-  )
-
-  if ($null -eq $Obj) { return $null }
-  $cur = $Obj
-  foreach ($p in $Path.Split('.')) {
-    if ($null -eq $cur) { return $null }
-    $names = $cur.PSObject.Properties.Name
-    if ($names -notcontains $p) { return $null }
-    $cur = $cur.$p
-  }
-  return $cur
-}
-
-function First-NonEmpty {
-  param([object[]]$Values)
-
-  foreach ($v in $Values) {
-    if ($null -ne $v) {
-      $s = [string]$v
-      if (-not [string]::IsNullOrWhiteSpace($s)) { return $s }
-    }
-  }
-  return $null
-}
-
-# =========================
-# 1) Soluciones instaladas (contentPackages)
-# =========================
-$installedPackagesUri =
+$packagesUri =
 "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/" +
 "Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/" +
 "contentPackages?api-version=$ApiVersion"
 
-$installedPackages = Invoke-ArmGetAll -InitialUri $installedPackagesUri
-Write-Host "Soluciones instaladas (contentPackages): $($installedPackages.Count)"
+$packages = Invoke-ArmGetAll $packagesUri
 
-# =========================
-# 2) Por cada solución -> catálogo (contentProductPackages) + packagedContent
-# =========================
-$rows = New-Object System.Collections.Generic.List[string]
-$rows.Add("solution_name`tcontent_name`tcontent_type")
-
-foreach ($pkg in $installedPackages) {
-
-  $solutionName = First-NonEmpty @(
-    (Get-Prop $pkg "properties.displayName"),
-    (Get-Prop $pkg "name")
-  )
-
-  $contentId   = Get-Prop $pkg "properties.contentId"
-  $contentKind = Get-Prop $pkg "properties.contentKind"
-
-  if (-not $contentId -or -not $contentKind) {
-    Write-Warning "Solución sin contentId/contentKind: $solutionName"
-    continue
-  }
-
-  $filter = "properties/contentId eq '$contentId' and properties/contentKind eq '$contentKind'"
-  $encodedFilter = [System.Uri]::EscapeDataString($filter)
-
-  $catalogUri =
-    "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/" +
-    "Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/" +
-    "contentProductPackages?api-version=$ApiVersion&`$filter=$encodedFilter&`$expand=properties/packagedContent"
-
-  $catalog = Invoke-ArmGetAll -InitialUri $catalogUri
-
-  foreach ($c in $catalog) {
-    $packagedContent = Get-Prop $c "properties.packagedContent"
-    if (-not $packagedContent) { continue }
-
-    foreach ($item in $packagedContent) {
-
-      $contentName = First-NonEmpty @(
-        (Get-Prop $item "displayName"),
-        (Get-Prop $item "properties.displayName"),
-        (Get-Prop $item "name"),
-        (Get-Prop $item "properties.name"),
-        (Get-Prop $item "contentId"),
-        (Get-Prop $item "properties.contentId"),
-        (Get-Prop $item "id")
-      )
-      if (-not $contentName) { $contentName = "UnknownName" }
-
-      $contentType = First-NonEmpty @(
-        (Get-Prop $item "contentKind"),
-        (Get-Prop $item "kind"),
-        (Get-Prop $item "properties.contentKind"),
-        (Get-Prop $item "properties.kind"),
-        (Get-Prop $item "properties.contentType")
-      )
-      if (-not $contentType) { $contentType = "UnknownType" }
-
-      $rows.Add("$solutionName`t$contentName`t$contentType")
-    }
-  }
+# Mapa packageId -> solution displayName
+$packageMap = @{}
+foreach ($p in $packages) {
+  $packageMap[$p.name] = $p.properties.displayName
 }
 
 # =========================
-# Guardado + validación (FIX: asegurar array para .Count)
+# 2) Content items INSTALADOS
 # =========================
-# Construir un ARRAY real (no string) para que .Count exista siempre:
-$sorted = @($rows[0]) + @($rows | Select-Object -Skip 1 | Sort-Object)
+$templatesUri =
+"https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/" +
+"Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/" +
+"contentTemplates?api-version=$ApiVersion"
 
-if ($sorted.Count -le 1) {
-  throw "Reporte vacío: no se han obtenido content items. (Soluciones instaladas: $($installedPackages.Count))"
+$templates = Invoke-ArmGetAll $templatesUri
+
+# =========================
+# 3) Generar TXT
+# =========================
+$rows = @()
+$rows += "solution_name`tcontent_name`tcontent_type"
+
+foreach ($t in $templates) {
+
+  $pkgId = $t.properties.packageId
+  if (-not $pkgId) { continue }
+
+  $solutionName = $packageMap[$pkgId]
+  if (-not $solutionName) { $solutionName = $pkgId }
+
+  $contentName = $t.properties.displayName
+  $contentType = $t.properties.contentKind
+
+  $rows += "$solutionName`t$contentName`t$contentType"
 }
 
-# Guardar UTF-8 sin BOM
+if ($rows.Count -le 1) {
+  throw "No se han encontrado content items instalados."
+}
+
+# Guardar
 [System.IO.File]::WriteAllLines(
   $OutputPath,
-  $sorted,
+  $rows,
   (New-Object System.Text.UTF8Encoding($false))
 )
 
-Write-Host "✅ OK -> generado: $OutputPath"
-Write-Host "Filas totales (incluye header): $($sorted.Count)"
-Write-Host "Preview (primeras 25 líneas):"
-$sorted | Select-Object -First 25 | ForEach-Object { Write-Host $_ }
+Write-Host "✅ OK -> $OutputPath"
+Write-Host "Items instalados: $($rows.Count - 1)"
+Write-Host "Preview:"
+$rows | Select-Object -First 20 | ForEach-Object { Write-Host $_ }
