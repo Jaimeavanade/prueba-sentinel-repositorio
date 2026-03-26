@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0",
+  "parameters": {},
+  "variables": {},
+  "resources": [
+    {
+      "name": "log-sentinel-segittur-015/GitHubDependabotData",
+      "apiVersion": "2022-10-01",
+      "type": "Microsoft.OperationalInsights/workspaces/savedSearches",
+      "location": "",
+      "properties": {
+        "eTag": "*",
+        "displayName": "Parser for GitHubDependabotData",
+        "category": "Microsoft Sentinel Parser",
+        "functionAlias": "GitHubDependabotData",
+        "query": "githubscanaudit_CL \n| where action_s in ('create', 'dismiss', 'resolve')\n| extend EventType='RepositoryVulnerabilityAlert'\n| extend alert = todynamic(alert_s),\n    organization = todynamic(organization_s),\n    repository = todynamic(repository_s),\n    sender = todynamic(sender_s) \n| extend alertcreatedate = alert.created_at, alertaffectedrange = alert.affected_range,   \n    alertexternalidentifier= alert.external_identifier,    \n    alertghsaid = alert.ghsa_id,\n    alertseverity = alert.severity,\n    repositoryfullname = repository.full_name,\n    repositoryOwnerlogin = repository.owner.login,\n    repositoryurl = repository.url,       \n    senderlogin = sender.login,\n    sendertype = sender.type,\n    action=action_s\n| where isnotempty(alertexternalidentifier)\n| project-keep\n    TimeGenerated,\n    EventType,\n    action,\n    alertexternalidentifier,\n    alertghsaid,\n    alertcreatedate,\n    repositoryfullname,\n    repositoryOwnerlogin,\n    repositoryurl,\n    senderlogin,\n    sendertype\n",
+        "functionParameters": "",
+        "version": 2,
+        "tags": [
+          {
+            "name": "description",
+            "value": ""
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/metadata",
+      "apiVersion": "2022-01-01-preview",
+      "name": "log-sentinel-segittur-015/Microsoft.SecurityInsights/Parser-GitHubDependabotData",
+      "dependsOn": [
+        "/subscriptions/00d393de-162e-4a44-9005-3c829e7c070a/resourceGroups/RG-log-sentinel-segittur-015/providers/Microsoft.OperationalInsights/workspaces/log-sentinel-segittur-015/savedSearches/GitHubDependabotData"
+      ],
+      "properties": {
+        "parentId": "/subscriptions/00d393de-162e-4a44-9005-3c829e7c070a/resourceGroups/RG-log-sentinel-segittur-015/providers/Microsoft.OperationalInsights/workspaces/log-sentinel-segittur-015/savedSearches/GitHubDependabotData",
+        "contentId": "GitHubDependabotData-Parser",
+        "kind": "Parser",
+        "version": "1.0.0",
+        "source": {
+          "name": "GitHub",
+          "kind": "Solution",
+          "sourceId": "microsoftcorporation1622712991604.sentinel4github"
+        },
+        "author": {
+          "name": "Microsoft",
+          "email": "support@microsoft.com"
+        },
+        "support": {
+          "name": "Microsoft Corporation",
+          "email": "support@microsoft.com",
+          "tier": "Microsoft",
+          "link": "https://support.microsoft.com"
+        }
+      }
+    }
+  ]
+}
