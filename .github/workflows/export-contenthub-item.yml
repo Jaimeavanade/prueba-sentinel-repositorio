@@ -45,7 +45,7 @@ jobs:
         id: export
         shell: pwsh
         run: |
-          ./Scripts/Export-ContentHubItemToRepo.ps1 `
+          ./scripts/Export-ContentHubItemToRepo.ps1 `
             -SubscriptionId "$env:AZURE_SUBSCRIPTION_ID" `
             -ResourceGroupName "$env:SENTINEL_RESOURCE_GROUP" `
             -WorkspaceName "$env:SENTINEL_WORKSPACE_NAME" `
