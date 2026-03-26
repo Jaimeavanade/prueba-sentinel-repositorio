@@ -1,21 +1,26 @@
-name: Export Content Hub Item to Repo (Repo-ready)
+name: Export Content Hub Item (ScheduledRule style)
 
 on:
   workflow_dispatch:
     inputs:
       contentType:
+        description: "Analytics rules | Hunting queries | Parsers | Workbooks | Playbooks"
         required: true
         default: "Analytics rules"
       solutionName:
+        description: "Nombre exacto de la solución en Content Hub"
         required: true
         default: "Azure Key Vault"
       itemName:
+        description: "Nombre exacto del item (displayName) en el packagedContent"
         required: true
         default: "Mass secret retrieval from Azure Key Vault"
       apiVersion:
+        description: "API version SecurityInsights"
         required: false
         default: "2025-09-01"
       force:
+        description: "Sobreescribir archivo si existe (true/false)"
         required: false
         default: "true"
 
@@ -28,7 +33,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -43,10 +49,11 @@ jobs:
           echo "RESOURCE_GROUP=${{ vars.RESOURCE_GROUP }}"
           echo "WORKSPACE_NAME=${{ vars.WORKSPACE_NAME }}"
 
-      - name: Export Content Hub item
+      - name: Export Content Hub item (ScheduledRule style)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
           $args = @{
             SubscriptionId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
             ResourceGroup  = "${{ vars.RESOURCE_GROUP }}"
@@ -57,13 +64,21 @@ jobs:
             ApiVersion     = "${{ github.event.inputs.apiVersion }}"
             OutputRoot     = "${{ github.workspace }}"
           }
+
           if ("${{ github.event.inputs.force }}".ToLower() -eq "true") { $args["Force"] = $true }
+
           ./scripts/Export-ContentHubItemToRepo.ps1 @args
 
-      - name: Commit and push
+      - name: Commit and push changes
+        shell: bash
         run: |
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet || git commit -m "Add Sentinel content (repo-ready)"
+          if git diff --cached --quiet; then
+            echo "No hay cambios que commitear."
+            exit 0
+          fi
+          git commit -m "Export Sentinel item (ScheduledRule style): ${{ github.event.inputs.itemName }}"
           git push
