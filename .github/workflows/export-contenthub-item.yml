@@ -1,52 +1,31 @@
-name: Export Sentinel Content Hub Item (to Repo)
+name: Export Content Hub item to repo
 
 on:
   workflow_dispatch:
     inputs:
       contentName:
-        description: 'Content name (exacto como en Azure Portal). Ej: Brute force attack against a Cloud PC'
+        description: "Content name (displayName) del item a exportar. Ej: Brute force attack against a Cloud PC"
         required: true
         type: string
-      contentType:
-        description: 'Content type (exacto como en Azure Portal)'
-        required: true
-        type: choice
-        options:
-          - Analytics rule
-          - Hunting query
-          - Parser
-          - Workbook
-          - Playbook
-      overwrite:
-        description: 'Sobrescribir si el fichero ya existe'
-        required: false
-        type: boolean
-        default: true
-      commitChanges:
-        description: 'Hacer commit + push de los cambios'
-        required: false
-        type: boolean
-        default: true
 
 permissions:
-  contents: write
   id-token: write
-
-env:
-  SENTINEL_RESOURCE_GROUP: ${{ vars.SENTINEL_RESOURCE_GROUP }}
-  SENTINEL_WORKSPACE_NAME: ${{ vars.SENTINEL_WORKSPACE_NAME }}
-  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  contents: write
 
 jobs:
   export:
     runs-on: ubuntu-latest
 
+    env:
+      # “Instancia” de Sentinel destino (no se pide por pantalla; sale de Secrets)
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      SENTINEL_RESOURCE_GROUP: ${{ secrets.SENTINEL_RESOURCE_GROUP }}
+      SENTINEL_WORKSPACE_NAME: ${{ secrets.SENTINEL_WORKSPACE_NAME }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Recomendado: azure/login con OIDC (federated credentials)
-      # Necesitarás además AZURE_CLIENT_ID y AZURE_TENANT_ID como secrets/vars.
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
@@ -54,23 +33,35 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Run export script
+      - name: Mostrar target (Sentinel)
+        shell: bash
+        run: |
+          echo "Target Sentinel:"
+          echo "  Subscription: $AZURE_SUBSCRIPTION_ID"
+          echo "  ResourceGroup: $SENTINEL_RESOURCE_GROUP"
+          echo "  Workspace: $SENTINEL_WORKSPACE_NAME"
+
+      - name: Export item (PowerShell)
+        id: export
         shell: pwsh
         run: |
-          ./scripts/export-contenthub-item.ps1 `
+          ./Scripts/Export-ContentHubItemToRepo.ps1 `
+            -SubscriptionId "$env:AZURE_SUBSCRIPTION_ID" `
+            -ResourceGroupName "$env:SENTINEL_RESOURCE_GROUP" `
+            -WorkspaceName "$env:SENTINEL_WORKSPACE_NAME" `
             -ContentName "${{ inputs.contentName }}" `
-            -ContentType "${{ inputs.contentType }}" `
-            -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
-            -ResourceGroupName "${{ env.SENTINEL_RESOURCE_GROUP }}" `
-            -WorkspaceName "${{ env.SENTINEL_WORKSPACE_NAME }}" `
-            -Overwrite:("${{ inputs.overwrite }}" -eq "true")
+            -ApiVersion "2025-09-01"
 
       - name: Commit & Push
-        if: ${{ inputs.commitChanges }}
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
+          set -e
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git status
-          git commit -m "Export Sentinel content: ${{ inputs.contentType }} - ${{ inputs.contentName }}" || echo "Nothing to commit"
+          if git diff --cached --quiet; then
+            echo "No hay cambios que commitear."
+            exit 0
+          fi
+          git commit -m "Add Sentinel content: ${{ inputs.contentName }}"
           git push
