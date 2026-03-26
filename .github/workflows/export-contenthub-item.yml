@@ -1,26 +1,40 @@
-name: Export Content Hub item to repo
+name: Export Content Hub Item to Repo (Repo-ready type)
 
 on:
   workflow_dispatch:
     inputs:
-      contentName:
-        description: "Content name (displayName) del item a exportar. Ej: Brute force attack against a Cloud PC"
+      contentType:
+        description: "Tipo de contenido: Analytics rules | Hunting queries | Parsers | Workbooks | Playbooks"
         required: true
-        type: string
+        default: "Analytics rules"
+      solutionName:
+        description: "Nombre de la solución (carpeta). Ej: Azure Key Vault"
+        required: true
+        default: "Azure Key Vault"
+      itemName:
+        description: "Nombre del item (nombre del fichero). Ej: Mass secret retrieval from Azure Key Vault"
+        required: true
+        default: "Mass secret retrieval from Azure Key Vault"
+      templateId:
+        description: "TemplateId / nombre del recurso a exportar (último segmento del URI SecurityInsights)."
+        required: true
+        default: "AlertRuleTemplates/Mass secret retrieval from Azure Key Vault"
+      apiVersion:
+        description: "API version (SecurityInsights)."
+        required: false
+        default: "2023-11-01-preview"
+      force:
+        description: "Sobreescribir fichero si existe (true/false)"
+        required: false
+        default: "true"
 
 permissions:
-  id-token: write
   contents: write
+  id-token: write
 
 jobs:
   export:
     runs-on: ubuntu-latest
-
-    env:
-      # “Instancia” de Sentinel destino (no se pide por pantalla; sale de Secrets)
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      SENTINEL_RESOURCE_GROUP: ${{ secrets.SENTINEL_RESOURCE_GROUP }}
-      SENTINEL_WORKSPACE_NAME: ${{ secrets.SENTINEL_WORKSPACE_NAME }}
 
     steps:
       - name: Checkout
@@ -32,36 +46,62 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange
+          enable-AzPSSession: true
 
-      - name: Mostrar target (Sentinel)
-        shell: bash
-        run: |
-          echo "Target Sentinel:"
-          echo "  Subscription: $AZURE_SUBSCRIPTION_ID"
-          echo "  ResourceGroup: $SENTINEL_RESOURCE_GROUP"
-          echo "  Workspace: $SENTINEL_WORKSPACE_NAME"
+      - name: Export item and rewrite type for Repositories
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: "latest"
+          errorActionPreference: "Stop"
+          inlineScript: |
+            $ErrorActionPreference = "Stop"
 
-      - name: Export item (PowerShell)
-        id: export
-        shell: pwsh
-        run: |
-          ./scripts/Export-ContentHubItemToRepo.ps1 `
-            -SubscriptionId "$env:AZURE_SUBSCRIPTION_ID" `
-            -ResourceGroupName "$env:SENTINEL_RESOURCE_GROUP" `
-            -WorkspaceName "$env:SENTINEL_WORKSPACE_NAME" `
-            -ContentName "${{ inputs.contentName }}" `
-            -ApiVersion "2025-09-01"
+            $subscriptionId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            $resourceGroup  = "${{ vars.RESOURCE_GROUP }}"
+            $workspaceName  = "${{ vars.WORKSPACE_NAME }}"
 
-      - name: Commit & Push
+            $contentType = "${{ github.event.inputs.contentType }}"
+            $solutionName = "${{ github.event.inputs.solutionName }}"
+            $itemName = "${{ github.event.inputs.itemName }}"
+            $templateId = "${{ github.event.inputs.templateId }}"
+            $apiVersion = "${{ github.event.inputs.apiVersion }}"
+            $force = "${{ github.event.inputs.force }}"
+
+            $forceSwitch = $false
+            if ($force -and $force.ToLower() -eq "true") { $forceSwitch = $true }
+
+            Set-AzContext -SubscriptionId $subscriptionId | Out-Null
+
+            $args = @{
+              SubscriptionId = $subscriptionId
+              ResourceGroup  = $resourceGroup
+              WorkspaceName  = $workspaceName
+              ContentType    = $contentType
+              SolutionName   = $solutionName
+              ItemName       = $itemName
+              TemplateId     = $templateId
+              ApiVersion     = $apiVersion
+              OutputRoot     = "${{ github.workspace }}"
+            }
+
+            if ($forceSwitch) { $args["Force"] = $true }
+
+            & "${{ github.workspace }}/scripts/Export-ContentHubItemToRepo.ps1" @args
+
+      - name: Commit and push changes
         shell: bash
         run: |
           set -e
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add -A
+
           if git diff --cached --quiet; then
             echo "No hay cambios que commitear."
             exit 0
           fi
-          git commit -m "Add Sentinel content: ${{ inputs.contentName }}"
+
+          git commit -m "Add Sentinel content (repo-ready type): ${{ github.event.inputs.itemName }}"
           git push
