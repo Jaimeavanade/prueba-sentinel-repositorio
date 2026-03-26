@@ -65,7 +65,7 @@ function Invoke-ArmGetAll {
 }
 
 # =========================
-# Helper robusto: leer propiedades (soporta null y paths anidados "properties.displayName")
+# Helper robusto: leer propiedades (soporta null y paths anidados)
 # =========================
 function Get-Prop {
   param(
@@ -138,18 +138,12 @@ foreach ($pkg in $installedPackages) {
 
   $catalog = Invoke-ArmGetAll -InitialUri $catalogUri
 
-  if (-not $catalog -or $catalog.Count -eq 0) {
-    Write-Warning "No encontrado en catálogo para: $solutionName"
-    continue
-  }
-
   foreach ($c in $catalog) {
     $packagedContent = Get-Prop $c "properties.packagedContent"
     if (-not $packagedContent) { continue }
 
     foreach ($item in $packagedContent) {
 
-      # Nombre del content item (varía por schema)
       $contentName = First-NonEmpty @(
         (Get-Prop $item "displayName"),
         (Get-Prop $item "properties.displayName"),
@@ -161,7 +155,6 @@ foreach ($pkg in $installedPackages) {
       )
       if (-not $contentName) { $contentName = "UnknownName" }
 
-      # Tipo del content item (varía por schema)
       $contentType = First-NonEmpty @(
         (Get-Prop $item "contentKind"),
         (Get-Prop $item "kind"),
@@ -177,13 +170,11 @@ foreach ($pkg in $installedPackages) {
 }
 
 # =========================
-# Guardado + validación (evitar artifact vacío)
+# Guardado + validación (FIX: asegurar array para .Count)
 # =========================
-# Ordenar dejando header arriba
-$sorted = $rows | Select-Object -First 1
-$sorted += ($rows | Select-Object -Skip 1 | Sort-Object)
+# Construir un ARRAY real (no string) para que .Count exista siempre:
+$sorted = @($rows[0]) + @($rows | Select-Object -Skip 1 | Sort-Object)
 
-# Si solo hay header, aborta
 if ($sorted.Count -le 1) {
   throw "Reporte vacío: no se han obtenido content items. (Soluciones instaladas: $($installedPackages.Count))"
 }
