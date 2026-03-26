@@ -8,21 +8,21 @@ on:
         required: true
         default: "Analytics rules"
       solutionName:
-        description: "Carpeta solución. Ej: Azure Key Vault"
+        description: "Carpeta solución (p.e. Azure Key Vault)"
         required: true
         default: "Azure Key Vault"
       itemName:
-        description: "Nombre fichero. Ej: Mass secret retrieval from Azure Key Vault"
+        description: "Nombre exacto del item en catálogo (displayName)."
         required: true
         default: "Mass secret retrieval from Azure Key Vault"
-      templateId:
-        description: "Path bajo providers/Microsoft.SecurityInsights/. Ej: AlertRuleTemplates/<id>"
-        required: true
-        default: "AlertRuleTemplates/Mass secret retrieval from Azure Key Vault"
+      catalogTemplateId:
+        description: "(Opcional) TemplateId del catálogo (contentProductTemplates/{id}). Si lo pones, no se busca."
+        required: false
+        default: ""
       apiVersion:
         description: "API version SecurityInsights"
         required: false
-        default: "2023-11-01-preview"
+        default: "2025-09-01"
       force:
         description: "Sobreescribir (true/false)"
         required: false
@@ -46,51 +46,46 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           audience: api://AzureADTokenExchange
-          enable-AzPSSession: true
 
-      - name: Export item and rewrite type for Repositories
-        uses: azure/powershell@v2
-        with:
-          azPSVersion: "latest"
-          errorActionPreference: "Stop"
-          inlineScript: |
-            $ErrorActionPreference = "Stop"
+      - name: Export item (catalog) and rewrite type for Repositories
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
 
-            $subscriptionId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-            $resourceGroup  = "${{ vars.RESOURCE_GROUP }}"
-            $workspaceName  = "${{ vars.WORKSPACE_NAME }}"
+          $subscriptionId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          $resourceGroup  = "${{ vars.RESOURCE_GROUP }}"
+          $workspaceName  = "${{ vars.WORKSPACE_NAME }}"
 
-            if ([string]::IsNullOrWhiteSpace($workspaceName)) {
-              throw "WORKSPACE_NAME está vacío/no definido en Variables de Actions."
-            }
+          if ([string]::IsNullOrWhiteSpace($resourceGroup)) { throw "vars.RESOURCE_GROUP vacío/no definido." }
+          if ([string]::IsNullOrWhiteSpace($workspaceName)) { throw "vars.WORKSPACE_NAME vacío/no definido." }
 
-            $contentType  = "${{ github.event.inputs.contentType }}"
-            $solutionName = "${{ github.event.inputs.solutionName }}"
-            $itemName     = "${{ github.event.inputs.itemName }}"
-            $templateId   = "${{ github.event.inputs.templateId }}"
-            $apiVersion   = "${{ github.event.inputs.apiVersion }}"
-            $force        = "${{ github.event.inputs.force }}"
+          $contentType = "${{ github.event.inputs.contentType }}"
+          $solutionName = "${{ github.event.inputs.solutionName }}"
+          $itemName = "${{ github.event.inputs.itemName }}"
+          $catalogTemplateId = "${{ github.event.inputs.catalogTemplateId }}"
+          $apiVersion = "${{ github.event.inputs.apiVersion }}"
+          $force = "${{ github.event.inputs.force }}"
 
-            $forceSwitch = $false
-            if ($force -and $force.ToLower() -eq "true") { $forceSwitch = $true }
+          $forceSwitch = $false
+          if ($force -and $force.ToLower() -eq "true") { $forceSwitch = $true }
 
-            Set-AzContext -SubscriptionId $subscriptionId | Out-Null
+          $args = @{
+            SubscriptionId = $subscriptionId
+            ResourceGroup  = $resourceGroup
+            WorkspaceName  = $workspaceName
+            ContentType    = $contentType
+            SolutionName   = $solutionName
+            ItemName       = $itemName
+            ApiVersion     = $apiVersion
+            OutputRoot     = "${{ github.workspace }}"
+          }
 
-            $args = @{
-              SubscriptionId = $subscriptionId
-              ResourceGroup  = $resourceGroup
-              WorkspaceName  = $workspaceName
-              ContentType    = $contentType
-              SolutionName   = $solutionName
-              ItemName       = $itemName
-              TemplateId     = $templateId
-              ApiVersion     = $apiVersion
-              OutputRoot     = "${{ github.workspace }}"
-            }
+          if (-not [string]::IsNullOrWhiteSpace($catalogTemplateId)) {
+            $args["CatalogTemplateId"] = $catalogTemplateId
+          }
+          if ($forceSwitch) { $args["Force"] = $true }
 
-            if ($forceSwitch) { $args["Force"] = $true }
-
-            & "${{ github.workspace }}/scripts/Export-ContentHubItemToRepo.ps1" @args
+          & "${{ github.workspace }}/scripts/Export-ContentHubItemToRepo.ps1" @args
 
       - name: Commit and push changes
         shell: bash
