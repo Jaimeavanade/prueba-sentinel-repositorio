@@ -7,14 +7,15 @@
   1) Lista soluciones instaladas (contentPackages) y plantillas instaladas (contentTemplates)
   2) Busca la alertRule instalada (alertRules) cuyo properties.displayName coincide con -ContentName
   3) Determina la solución: alertRuleTemplateName -> contentTemplates[templateId].properties.packageId -> contentPackages[packageId].properties.displayName
-  4) Genera ARM template siguiendo el esquema base (deploymentTemplate.json) pero con recurso:
+  4) Genera ARM template con recurso:
         type: Microsoft.SecurityInsights/alertRules
         scope: [resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace'))]
   5) Guarda en: Analytics rules/<Solución>/<ContentName>.json
 
 .NOTES
-  - Requiere que el job haya hecho azure/login (OIDC) para que "az account get-access-token" funcione.
+  - Requiere azure/login (OIDC) antes para que "az account get-access-token" funcione.
   - API version usada: 2025-09-01 (Sentinel REST)
+  - Fix importante: contentPackages NO soporta $top -> NO usar query OData $top aquí.
 #>
 
 [CmdletBinding()]
@@ -87,7 +88,6 @@ function Invoke-Arm {
       $raw = az @args 2>&1
       if ($LASTEXITCODE -ne 0) { throw $raw }
 
-      # az rest devuelve JSON ya, pero como string. Convertimos.
       return ($raw | ConvertFrom-Json)
     }
     catch {
@@ -127,7 +127,6 @@ function Sanitize-FileName {
     if ($invalid -contains $ch) { [void]$sb.Append("-") }
     else { [void]$sb.Append($ch) }
   }
-  # Evita nombres vacíos o espacios finales
   $out = $sb.ToString().Trim()
   if ([string]::IsNullOrWhiteSpace($out)) { $out = "Unnamed-Rule" }
   return $out
@@ -144,9 +143,15 @@ $script:ArmToken = Get-ArmToken
 $base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
 
 Write-Host "== Inventario Content Hub (instalado) =="
+
+# ----------------------------------------------------------------------
 # 1) Soluciones instaladas (contentPackages)
-$packagesUri = "$base/contentPackages?api-version=$ApiVersion&`$top=500"
-$packages = Get-AllPages -Uri $packagesUri
+# FIX: contentPackages NO soporta $top => NO usar OData $top aquí
+# ----------------------------------------------------------------------
+$packagesUri = "$base/contentPackages?api-version=$ApiVersion"
+$packagesResp = Invoke-Arm -Method GET -Uri $packagesUri
+$packages = @()
+if ($packagesResp.value) { $packages = @($packagesResp.value) }
 
 # Mapa packageId -> displayName
 $packageIdToName = @{}
@@ -159,7 +164,9 @@ foreach ($p in $packages) {
 $solutions = $packages | Where-Object { $_.properties.contentKind -eq "Solution" -or $_.properties.packageKind -eq "Solution" }
 Write-Host ("Soluciones instaladas (estimado): {0}" -f ($solutions.Count))
 
-# 2) Plantillas instaladas (contentTemplates)
+# ----------------------------------------------------------------------
+# 2) Plantillas instaladas (contentTemplates) - aquí SÍ se puede paginar
+# ----------------------------------------------------------------------
 $tplUri = "$base/contentTemplates?api-version=$ApiVersion&`$top=500"
 $templates = Get-AllPages -Uri $tplUri
 
@@ -185,16 +192,21 @@ $tplGrouped |
 Write-Host ""
 Write-Host "== Buscar Analytics Rule instalada por DisplayName =="
 
-# 3) Alert Rules instaladas (alertRules)
+# ----------------------------------------------------------------------
+# 3) Alert Rules instaladas (alertRules) - aquí SÍ se puede paginar
+# ----------------------------------------------------------------------
 $rulesUri = "$base/alertRules?api-version=$ApiVersion&`$top=500"
 $rules = Get-AllPages -Uri $rulesUri
 
 # Match exacto (case-insensitive)
-$matchesExact = $rules | Where-Object { $_.properties.displayName -and ($_.properties.displayName).ToLowerInvariant() -eq $ContentName.ToLowerInvariant() }
+$matchesExact = $rules | Where-Object {
+  $_.properties.displayName -and ($_.properties.displayName).ToLowerInvariant() -eq $ContentName.ToLowerInvariant()
+}
 
 if (-not $matchesExact -or $matchesExact.Count -eq 0) {
-  # Fallback: contiene (para ayudar a diagnosticar)
-  $matchesContains = $rules | Where-Object { $_.properties.displayName -and ($_.properties.displayName).ToLowerInvariant().Contains($ContentName.ToLowerInvariant()) }
+  $matchesContains = $rules | Where-Object {
+    $_.properties.displayName -and ($_.properties.displayName).ToLowerInvariant().Contains($ContentName.ToLowerInvariant())
+  }
   $top = $matchesContains | Select-Object -First 10
 
   Write-Host "ERROR: No se encontró ninguna alertRule instalada con displayName EXACTO: '$ContentName'"
@@ -207,10 +219,11 @@ if (-not $matchesExact -or $matchesExact.Count -eq 0) {
   throw "No encontrada la Analytics Rule por displayName exacto."
 }
 
-# Si hay varias iguales, cogemos la primera (raro, pero posible)
 $rule = $matchesExact | Select-Object -First 1
 
-# Determinar contentKind/solución
+# ----------------------------------------------------------------------
+# 4) Determinar solución y contentKind por templateId
+# ----------------------------------------------------------------------
 $templateId = $rule.properties.alertRuleTemplateName
 $solutionName = "Unknown"
 $contentKind = "AnalyticsRule"
@@ -227,25 +240,24 @@ if ($templateId -and $tplById.ContainsKey($templateId)) {
     $solutionName = [string]$pkgId
   }
 } else {
-  # Si no hay templateName (custom rule), dejamos Unknown
   $solutionName = "Unknown"
 }
 
 Write-Host ("Encontrada rule: {0} | kind={1} | templateId={2} | solución={3}" -f $rule.properties.displayName, $rule.kind, $templateId, $solutionName)
 
-# 4) Preparar carpeta destino
-if ($contentKind -ne "AnalyticsRule" -and $contentKind -ne "AnalyticsRuleTemplate") {
-  Write-Host "WARN: contentKind detectado '$contentKind'. Aun así, se exportará como alertRule."
-}
-
+# ----------------------------------------------------------------------
+# 5) Preparar carpeta destino
+# ----------------------------------------------------------------------
 $targetDir = Join-Path $RepoRoot ("Analytics rules/{0}" -f $solutionName)
 New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
 
 $fileName = (Sanitize-FileName -Name $rule.properties.displayName) + ".json"
 $targetPath = Join-Path $targetDir $fileName
 
-# 5) Construir ARM template con recurso Microsoft.SecurityInsights/alertRules
-# Limpieza de propiedades (evitar campos de solo lectura si aparecen)
+# ----------------------------------------------------------------------
+# 6) Construir ARM template con recurso Microsoft.SecurityInsights/alertRules
+# ----------------------------------------------------------------------
+# Copia "deep" y elimina campos típicos de solo lectura si aparecen
 $props = $rule.properties | ConvertTo-Json -Depth 100 | ConvertFrom-Json
 foreach ($ro in @("lastModifiedUtc","createdTimeUtc","modifiedTimeUtc","createdBy","lastModifiedBy")) {
   if ($props.PSObject.Properties.Name -contains $ro) {
@@ -274,7 +286,7 @@ $arm = [ordered]@{
   )
 }
 
-# Guardar UTF-8 (sin BOM)
+# Guardar UTF-8 sin BOM
 $armJson = $arm | ConvertTo-Json -Depth 100
 [System.IO.File]::WriteAllText($targetPath, $armJson, (New-Object System.Text.UTF8Encoding($false)))
 
