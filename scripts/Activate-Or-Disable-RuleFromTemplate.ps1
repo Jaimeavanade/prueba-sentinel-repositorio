@@ -8,9 +8,9 @@ Activa (crea desde template) o deshabilita una regla de Analíticas en Microsoft
 - action=list: lista Rule templates instaladas (opcionalmente filtrando por texto).
 
 NOTAS
-- El nombre recomendado se obtiene desde:
-  Azure Portal > Microsoft Sentinel > Analytics > Rule templates > Name [1](https://avanade-my.sharepoint.com/personal/j_velazquez_santos_avanade_com/_layouts/15/Doc.aspx?action=edit&mobileredirect=true&wdorigin=Sharepoint&DefaultItemOpen=1&sourcedoc={dcde3f4e-f42d-4456-93b2-470a520e4bb2}&wd=target(/Segittur.one/)&wdpartid={e350145b-e83d-4a78-bb29-9981bd5f5ad7}{1}&wdsectionfileid={cfe6086a-3179-430a-9536-53117009c186})
-- Si el nombre no existe, el script devuelve candidatos similares para copiar/pegar.
+- Nombre recomendado:
+  Azure Portal > Microsoft Sentinel > Analytics > Rule templates > Name
+- Si no encuentra coincidencia exacta, sugiere candidatos.
 
 #>
 
@@ -144,15 +144,18 @@ function Print-Candidates {
         displayName = $dn
         kind        = $_.kind
         severity    = $_.properties.severity
-        score       = if ($dn.ToLower().Contains($needle)) { 2 } elseif ($needle.Length -gt 0 -and $dn.ToLower().Contains($needle.Split(" ")[0])) { 1 } else { 0 }
+        score       = if ($dn.ToLower().Contains($needle)) { 2 }
+                      elseif ($needle.Length -gt 0 -and $dn.ToLower().Contains(($needle.Split(" ")[0]))) { 1 }
+                      else { 0 }
       }
     } |
     Where-Object { $_.score -gt 0 } |
-    Sort-Object score -Descending, displayName |
+    # ✅ FIX: Sort-Object correcto con múltiples propiedades y desc sólo en score
+    Sort-Object -Property @{Expression='score';Descending=$true}, @{Expression='displayName';Descending=$false} |
     Select-Object -First $Top
 
   if (-not $cands -or $cands.Count -eq 0) {
-    Write-Host "No hay candidatos por contains. Puedes usar Action=list para sacar todas las plantillas."
+    Write-Host "No hay candidatos por contains. Usa Action=list para listar todas las plantillas."
     return
   }
 
@@ -199,16 +202,18 @@ if ($Action -eq "list") {
 
   Write-Host ""
   $all |
-    Sort-Object { Normalize-Text $_.properties.displayName } |
-    Select-Object -ExpandProperty properties |
-    Select-Object displayName, severity |
-    ForEach-Object { Write-Host ("- {0} | severity={1}" -f (Normalize-Text $_.displayName), $_.severity) }
+    Sort-Object -Property @{Expression={ Normalize-Text $_.properties.displayName }; Descending=$false } |
+    ForEach-Object {
+      $dn = Normalize-Text $_.properties.displayName
+      $sev = $_.properties.severity
+      Write-Host ("- {0} | severity={1}" -f $dn, $sev)
+    }
 
   exit 0
 }
 
 # ----------------------------
-# 1) Load templates for enable
+# 1) Enable from template
 # ----------------------------
 if ($Action -eq "enable") {
 
@@ -233,7 +238,6 @@ if ($Action -eq "enable") {
   $templateId = $match.name
   Write-Host "Encontrado templateId: $templateId"
 
-  # Crear regla Scheduled desde template
   $newRuleGuid = (New-Guid).Guid
   $createRuleUri = "${base}/alertRules/${newRuleGuid}?api-version=$ApiVersion_Rules"
 
@@ -284,7 +288,6 @@ if ($Action -eq "disable") {
   $rule = $ruleList | Where-Object { (Normalize-Text $_.properties.displayName).ToLower() -eq $needle } | Select-Object -First 1
 
   if (-not $rule) {
-    # fallback contains
     $rule = $ruleList | Where-Object { (Normalize-Text $_.properties.displayName).ToLower().Contains($needle) } | Select-Object -First 1
   }
 
