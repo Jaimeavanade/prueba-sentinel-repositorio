@@ -3,36 +3,35 @@
   Crea o habilita una Analytics Rule de Microsoft Sentinel a partir de un template (Content Hub) usando su displayName.
 
 .DESCRIPTION
-  - Busca en alertRuleTemplates del workspace el template cuyo properties.displayName coincide con el input.
-  - Si ya existe una alertRule con ese mismo displayName y kind:
+  - Lista alertRuleTemplates del workspace (templates instalados).
+  - Busca un template por displayName con matching tolerante (normalización + contains + sugerencias).
+  - Si ya existe una alertRule con ese displayName y kind:
       * Enable  -> la habilita (enabled=true)
       * Skip    -> no hace nada
       * Replace -> la reemplaza usando el template como base y la habilita
   - Si no existe, crea una nueva alertRule (Scheduled o NRT) copiando propiedades del template y activándola.
 
+  NotFoundBehavior:
+    - WarnAndExit0 (default): NO falla el job; imprime sugerencias y sale 0.
+    - Fail: falla el job (throw).
+    - WarnOnly: imprime sugerencias y continúa (pero no crea nada) y sale 0.
+
   Auth:
-    - Requiere haber ejecutado azure/login (OIDC) o login previo con az.
-    - El script obtiene token ARM con: az account get-access-token --resource https://management.azure.com/
+    - Requiere azure/login (OIDC) o az login previo.
+    - El script obtiene token ARM con Azure CLI: az account get-access-token --resource https://management.azure.com/
 
 .PARAMETER SubscriptionId
-  Subscription ID donde está el workspace.
-
 .PARAMETER ResourceGroupName
-  Resource Group del workspace.
-
 .PARAMETER WorkspaceName
-  Log Analytics workspace asociado a Sentinel.
-
 .PARAMETER DisplayName
-  Nombre visible del Content Hub item (displayName), por ejemplo:
-  "Brute force attack against a Cloud PC"
-
 .PARAMETER IfExists
-  Qué hacer si ya existe la regla:
   Enable | Skip | Replace
-
+.PARAMETER NotFoundBehavior
+  WarnAndExit0 | Fail | WarnOnly
 .PARAMETER ApiVersion
-  Versión de API para Microsoft.SecurityInsights. Por defecto 2025-09-01.
+  Por defecto 2025-09-01
+.PARAMETER Suggestions
+  Número de sugerencias a mostrar si no hay match (default 15).
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -52,6 +51,13 @@ param(
   [Parameter(Mandatory = $false)]
   [ValidateSet("Enable","Skip","Replace")]
   [string]$IfExists = "Enable",
+
+  [Parameter(Mandatory = $false)]
+  [ValidateSet("WarnAndExit0","Fail","WarnOnly")]
+  [string]$NotFoundBehavior = "WarnAndExit0",
+
+  [Parameter(Mandatory = $false)]
+  [int]$Suggestions = 15,
 
   [Parameter(Mandatory = $false)]
   [string]$ApiVersion = "2025-09-01"
@@ -74,8 +80,6 @@ function Normalize-NextLink {
     [Parameter(Mandatory = $true)][string]$ApiVersion
   )
   if ([string]::IsNullOrWhiteSpace($NextLink)) { return $null }
-
-  # A veces nextLink puede venir sin api-version; lo garantizamos.
   if ($NextLink -notmatch "api-version=") {
     if ($NextLink -match "\?") { return "$NextLink&api-version=$ApiVersion" }
     return "$NextLink?api-version=$ApiVersion"
@@ -124,9 +128,9 @@ function Remove-ReadOnlyProps {
 
 function Get-AllPaged {
   <#
-    Devuelve todos los items de una respuesta paginada de ARM:
-    - Suma r.value
-    - Sigue r.nextLink si existe
+    Devuelve todos los items de una respuesta paginada ARM:
+    - agrega r.value
+    - sigue r.nextLink si existe
     Nota: nextLink NO siempre existe; en StrictMode no podemos acceder si falta.
   #>
   param(
@@ -141,7 +145,6 @@ function Get-AllPaged {
     $r = Invoke-ArmGet -Uri $uri
     if ($r -and $r.value) { $all += $r.value }
 
-    # ✅ nextLink puede NO existir: comprobar antes de leer
     $next = $null
     if ($r -and ($r.PSObject.Properties.Name -contains 'nextLink')) {
       $next = $r.nextLink
@@ -152,12 +155,91 @@ function Get-AllPaged {
   return $all
 }
 
+function Normalize-Name {
+  param([string]$s)
+  if ([string]::IsNullOrWhiteSpace($s)) { return "" }
+
+  # Normaliza:
+  # - NBSP (U+00A0) a espacio normal
+  # - múltiple whitespace a un espacio
+  # - trim + lower
+  $s2 = $s -replace [char]0x00A0, ' '
+  $s2 = $s2 -replace '\s+', ' '
+  return $s2.Trim().ToLowerInvariant()
+}
+
+function LevenshteinDistance {
+  param(
+    [Parameter(Mandatory=$true)][string]$a,
+    [Parameter(Mandatory=$true)][string]$b
+  )
+  if ($a -eq $b) { return 0 }
+  if ([string]::IsNullOrEmpty($a)) { return $b.Length }
+  if ([string]::IsNullOrEmpty($b)) { return $a.Length }
+
+  $n = $a.Length
+  $m = $b.Length
+  $d = New-Object 'int[,]' ($n + 1), ($m + 1)
+
+  for ($i = 0; $i -le $n; $i++) { $d[$i,0] = $i }
+  for ($j = 0; $j -le $m; $j++) { $d[0,$j] = $j }
+
+  for ($i = 1; $i -le $n; $i++) {
+    for ($j = 1; $j -le $m; $j++) {
+      $cost = if ($a[$i-1] -eq $b[$j-1]) { 0 } else { 1 }
+      $del = $d[$i-1,$j] + 1
+      $ins = $d[$i,$j-1] + 1
+      $sub = $d[$i-1,$j-1] + $cost
+      $min = $del
+      if ($ins -lt $min) { $min = $ins }
+      if ($sub -lt $min) { $min = $sub }
+      $d[$i,$j] = $min
+    }
+  }
+  return $d[$n,$m]
+}
+
+function Show-Suggestions {
+  param(
+    [Parameter(Mandatory=$true)][array]$Templates,
+    [Parameter(Mandatory=$true)][string]$TargetDisplayName,
+    [Parameter(Mandatory=$true)][int]$Top
+  )
+
+  $targetN = Normalize-Name $TargetDisplayName
+  $targetFlat = ($targetN -replace ' ','')
+  $items = foreach ($t in $Templates) {
+    $dn = $t.properties.displayName
+    if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+    $dnN = Normalize-Name $dn
+    $dnFlat = ($dnN -replace ' ','')
+    $dist = LevenshteinDistance -a $targetFlat -b $dnFlat
+    [pscustomobject]@{
+      Distance   = $dist
+      Kind       = $t.kind
+      TemplateId = $t.name
+      DisplayName = $dn
+    }
+  }
+
+  $topMatches = $items | Sort-Object Distance, Kind, DisplayName | Select-Object -First $Top
+  if ($topMatches) {
+    Write-Warning "Sugerencias (Top $Top) para '$TargetDisplayName' (más cercano = menor distancia):"
+    foreach ($s in $topMatches) {
+      Write-Warning (" - d={0} | kind={1} | id={2} | name={3}" -f $s.Distance, $s.Kind, $s.TemplateId, $s.DisplayName)
+    }
+  } else {
+    Write-Warning "No hay sugerencias disponibles."
+  }
+}
+
 Write-Host "== Sentinel | Enable/Create Analytics Rule from Content Hub template =="
 Write-Host "SubscriptionId : $SubscriptionId"
 Write-Host "ResourceGroup  : $ResourceGroupName"
 Write-Host "WorkspaceName  : $WorkspaceName"
 Write-Host "DisplayName    : $DisplayName"
 Write-Host "IfExists       : $IfExists"
+Write-Host "NotFoundBehavior: $NotFoundBehavior"
 Write-Host "ApiVersion     : $ApiVersion"
 Write-Host ""
 
@@ -165,51 +247,96 @@ $script:ArmToken = Get-ArmToken
 
 $base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
 
-# 1) Listar templates instalados (alertRuleTemplates)
+# 1) Listar templates instalados
 Write-Host "-> Listando alertRuleTemplates..."
 $templates = Get-AllPaged -FirstUri "$base/alertRuleTemplates?api-version=$ApiVersion" -ApiVersion $ApiVersion
 Write-Host ("   Templates encontrados: {0}" -f $templates.Count)
 
-# 2) Buscar template por displayName exacto (case-insensitive)
-$matches = @($templates | Where-Object {
-  $_.properties.displayName -and ($_.properties.displayName -ieq $DisplayName)
-})
+# 2) Matching tolerante
+$target = Normalize-Name $DisplayName
+$targetFlat = ($target -replace ' ','')
+
+# 2.1 exacto normalizado
+$matches = @(
+  $templates | Where-Object {
+    $dn = $_.properties.displayName
+    -not [string]::IsNullOrWhiteSpace($dn) -and (Normalize-Name $dn) -eq $target
+  }
+)
+
+# 2.2 contains normalizado
+if ($matches.Count -eq 0) {
+  $matches = @(
+    $templates | Where-Object {
+      $dn = $_.properties.displayName
+      -not [string]::IsNullOrWhiteSpace($dn) -and (Normalize-Name $dn) -like "*$target*"
+    }
+  )
+}
+
+# 2.3 contains ignorando espacios
+if ($matches.Count -eq 0) {
+  $matches = @(
+    $templates | Where-Object {
+      $dn = $_.properties.displayName
+      if ([string]::IsNullOrWhiteSpace($dn)) { return $false }
+      $dnFlat = ((Normalize-Name $dn) -replace ' ','')
+      $dnFlat -like "*$targetFlat*"
+    }
+  )
+}
 
 if ($matches.Count -eq 0) {
-  throw @"
-No se encontró ningún alertRuleTemplate con displayName '$DisplayName'.
+  Write-Warning "No se encontró ningún alertRuleTemplate por displayName '$DisplayName' usando matching tolerante."
+  Show-Suggestions -Templates $templates -TargetDisplayName $DisplayName -Top $Suggestions
 
-Causas típicas:
-  - La solución del Content Hub que contiene esa regla NO está instalada en este workspace.
-  - El displayName no coincide exactamente (espacios/comillas).
-"@
+  switch ($NotFoundBehavior) {
+    "Fail" {
+      throw "No se encontró template para '$DisplayName'."
+    }
+    "WarnOnly" {
+      Write-Warning "NotFoundBehavior=WarnOnly -> no se crea/habilita nada y el job termina OK."
+      exit 0
+    }
+    default {
+      Write-Warning "NotFoundBehavior=WarnAndExit0 -> no se crea/habilita nada y el job termina OK."
+      exit 0
+    }
+  }
 }
 
 if ($matches.Count -gt 1) {
-  Write-Warning ("Hay {0} templates con el mismo displayName. Se usará el primero: {1}" -f $matches.Count, $matches[0].name)
+  Write-Warning ("Se encontraron {0} templates candidatos. Usando el primero (puedes afinar el displayName si quieres más precisión):" -f $matches.Count)
+  $matches | Select-Object -First ([Math]::Min($Suggestions,$matches.Count)) | ForEach-Object {
+    Write-Warning (" - kind={0} | id={1} | name={2}" -f $_.kind, $_.name, $_.properties.displayName)
+  }
 }
 
 $template = $matches[0]
 $kind = $template.kind
 
-Write-Host "-> Template encontrado:"
+Write-Host "-> Template seleccionado:"
 Write-Host ("   template.name  : {0}" -f $template.name)
 Write-Host ("   template.kind  : {0}" -f $kind)
 Write-Host ("   displayName    : {0}" -f $template.properties.displayName)
 
-# Solo soportamos Analytics rules típicas aquí
 if ($kind -notin @("Scheduled","NRT")) {
   throw "Template kind '$kind' no soportado por este script (solo Scheduled y NRT)."
 }
 
-# 3) Listar reglas existentes y buscar coincidencia por displayName+kind
+# 3) Listar reglas existentes y buscar coincidencia
 Write-Host ""
-Write-Host "-> Comprobando si ya existe alertRule con ese displayName..."
+Write-Host "-> Comprobando si ya existe alertRule con ese displayName (matching tolerante)..."
 $rules = Get-AllPaged -FirstUri "$base/alertRules?api-version=$ApiVersion" -ApiVersion $ApiVersion
 
-$existing = @($rules | Where-Object {
-  $_.properties.displayName -and ($_.properties.displayName -ieq $DisplayName) -and ($_.kind -eq $kind)
-})
+$existing = @(
+  $rules | Where-Object {
+    $dn = $_.properties.displayName
+    -not [string]::IsNullOrWhiteSpace($dn) -and
+    (Normalize-Name $dn) -eq (Normalize-Name $template.properties.displayName) -and
+    $_.kind -eq $kind
+  }
+)
 
 if ($existing.Count -gt 1) {
   Write-Warning ("Hay {0} alertRules existentes con ese displayName+kind. Se usará la primera: {1}" -f $existing.Count, $existing[0].name)
@@ -217,7 +344,7 @@ if ($existing.Count -gt 1) {
 
 $existingRule = if ($existing.Count -ge 1) { $existing[0] } else { $null }
 
-# Propiedades a copiar desde el template (whitelist segura)
+# Propiedades a copiar desde el template (whitelist)
 $allowedKeys = @(
   "displayName","description","severity",
   "query","queryFrequency","queryPeriod",
@@ -230,9 +357,7 @@ $allowedKeys = @(
 )
 
 function Build-PropsFromTemplate {
-  param(
-    [Parameter(Mandatory=$true)]$Template
-  )
+  param([Parameter(Mandatory=$true)]$Template)
 
   $props = @{}
   foreach ($k in $allowedKeys) {
@@ -262,7 +387,6 @@ if ($existingRule) {
     }
 
     "Enable" {
-      # Obtener definición actual y habilitarla
       $ruleId = $existingRule.name
       $getUri = "$base/alertRules/$ruleId?api-version=$ApiVersion"
       $current = Invoke-ArmGet -Uri $getUri
@@ -291,7 +415,6 @@ if ($existingRule) {
     }
 
     "Replace" {
-      # Reemplazar regla existente usando el template como base (manteniendo ruleId)
       $ruleId = $existingRule.name
       $props = Build-PropsFromTemplate -Template $template
 
@@ -311,7 +434,7 @@ if ($existingRule) {
   }
 }
 
-# 4) No existe: crear nueva regla desde template
+# 4) No existe: crear nueva
 Write-Host ""
 Write-Host "-> No existe alertRule con ese displayName. Creando nueva regla desde template..."
 $ruleId = [guid]::NewGuid().ToString()
@@ -324,7 +447,7 @@ $body = @{
 }
 
 $putUri = "$base/alertRules/$ruleId?api-version=$ApiVersion"
-if ($PSCmdlet.ShouldProcess($ruleId, "Crear alertRule desde template '$DisplayName'")) {
+if ($PSCmdlet.ShouldProcess($ruleId, "Crear alertRule desde template '$($template.properties.displayName)'")) {
   $out = Invoke-ArmPut -Uri $putUri -Body $body
   Write-Host ("✅ Regla creada y habilitada: {0}" -f $out.id)
   Write-Host ("::notice title=Sentinel AlertRule Created::{0}" -f $out.id)
