@@ -11,6 +11,7 @@ NOTAS
 - Nombre recomendado:
   Azure Portal > Microsoft Sentinel > Analytics > Rule templates > Name
 - Si no encuentra coincidencia exacta, sugiere candidatos.
+- Evita Get-AzAccessToken (Az 14+ SecureString) para ARM y usa az account get-access-token.
 
 #>
 
@@ -55,7 +56,6 @@ function Get-ArmToken {
 
 function Get-ErrorBodyFromException {
   param([Parameter(Mandatory=$true)] $Exception)
-
   try {
     if ($Exception.Response -and $Exception.Response.GetResponseStream) {
       $reader = New-Object System.IO.StreamReader($Exception.Response.GetResponseStream())
@@ -78,7 +78,7 @@ function Invoke-ArmRest {
   }
 
   $headers = @{
-    Authorization = "Bearer $script:ArmToken"
+    Authorization  = "Bearer $script:ArmToken"
     "Content-Type" = "application/json"
   }
 
@@ -92,9 +92,7 @@ function Invoke-ArmRest {
   }
   catch {
     $bodyText = Get-ErrorBodyFromException -Exception $_.Exception
-    if ($bodyText) {
-      throw "Fallo REST ($Method). Uri=$Uri. Body=$bodyText"
-    }
+    if ($bodyText) { throw "Fallo REST ($Method). Uri=$Uri. Body=$bodyText" }
     throw
   }
 }
@@ -102,6 +100,24 @@ function Invoke-ArmRest {
 function Normalize-Text([string]$s) {
   if ($null -eq $s) { return "" }
   return ($s.Trim() -replace "\s+", " ")
+}
+
+function Has-Prop {
+  param(
+    [Parameter(Mandatory=$true)] $Obj,
+    [Parameter(Mandatory=$true)] [string] $PropName
+  )
+  return $null -ne $Obj -and $null -ne $Obj.PSObject -and $Obj.PSObject.Properties.Name -contains $PropName
+}
+
+function Get-PropValue {
+  param(
+    [Parameter(Mandatory=$true)] $Obj,
+    [Parameter(Mandatory=$true)] [string] $PropName,
+    [Parameter(Mandatory=$false)] $Default = $null
+  )
+  if (Has-Prop -Obj $Obj -PropName $PropName) { return $Obj.$PropName }
+  return $Default
 }
 
 function Find-TemplateByName {
@@ -114,15 +130,23 @@ function Find-TemplateByName {
   $needle = Normalize-Text $Name
 
   # 1) Exacto (case-sensitive)
-  $m = $Templates | Where-Object { $_.properties.displayName -eq $needleRaw } | Select-Object -First 1
+  $m = $Templates | Where-Object {
+    Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and $_.properties.displayName -eq $needleRaw
+  } | Select-Object -First 1
   if ($m) { return @{ match=$m; mode="exact(case-sensitive)" } }
 
   # 2) Exacto normalizado (case-insensitive)
-  $m = $Templates | Where-Object { (Normalize-Text $_.properties.displayName).ToLower() -eq $needle.ToLower() } | Select-Object -First 1
+  $m = $Templates | Where-Object {
+    Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
+    (Normalize-Text $_.properties.displayName).ToLower() -eq $needle.ToLower()
+  } | Select-Object -First 1
   if ($m) { return @{ match=$m; mode="exact(normalized, case-insensitive)" } }
 
   # 3) Contains (case-insensitive)
-  $m = $Templates | Where-Object { (Normalize-Text $_.properties.displayName).ToLower().Contains($needle.ToLower()) } | Select-Object -First 1
+  $m = $Templates | Where-Object {
+    Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
+    (Normalize-Text $_.properties.displayName).ToLower().Contains($needle.ToLower())
+  } | Select-Object -First 1
   if ($m) { return @{ match=$m; mode="contains(case-insensitive)" } }
 
   return @{ match=$null; mode="not-found" }
@@ -139,23 +163,41 @@ function Print-Candidates {
 
   $cands = $Templates |
     ForEach-Object {
-      $dn = Normalize-Text $_.properties.displayName
+      $dn = ""
+      $sev = "N/A"
+      $knd = "N/A"
+
+      if (Has-Prop $_ "kind") { $knd = $_.kind }
+
+      if (Has-Prop $_ "properties") {
+        if (Has-Prop $_.properties "displayName") { $dn = Normalize-Text $_.properties.displayName }
+        # ✅ FIX: severity es opcional -> no accedemos si no existe
+        if (Has-Prop $_.properties "severity") { $sev = $_.properties.severity }
+      }
+
+      $score = 0
+      if (-not [string]::IsNullOrWhiteSpace($dn)) {
+        $dnLower = $dn.ToLower()
+        if ($dnLower.Contains($needle)) { $score = 2 }
+        elseif ($needle.Length -gt 0) {
+          $firstToken = $needle.Split(" ")[0]
+          if ($firstToken -and $dnLower.Contains($firstToken)) { $score = 1 }
+        }
+      }
+
       [pscustomobject]@{
         displayName = $dn
-        kind        = $_.kind
-        severity    = $_.properties.severity
-        score       = if ($dn.ToLower().Contains($needle)) { 2 }
-                      elseif ($needle.Length -gt 0 -and $dn.ToLower().Contains(($needle.Split(" ")[0]))) { 1 }
-                      else { 0 }
+        kind        = $knd
+        severity    = $sev
+        score       = $score
       }
     } |
-    Where-Object { $_.score -gt 0 } |
-    # ✅ FIX: Sort-Object correcto con múltiples propiedades y desc sólo en score
+    Where-Object { $_.score -gt 0 -and -not [string]::IsNullOrWhiteSpace($_.displayName) } |
     Sort-Object -Property @{Expression='score';Descending=$true}, @{Expression='displayName';Descending=$false} |
     Select-Object -First $Top
 
   if (-not $cands -or $cands.Count -eq 0) {
-    Write-Host "No hay candidatos por contains. Usa Action=list para listar todas las plantillas."
+    Write-Host "No hay candidatos por contains. Usa Action=list para listar todas las plantillas instaladas."
     return
   }
 
@@ -177,7 +219,7 @@ $ApiVersion_Rules     = "2023-11-01"
 
 $base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
 
-Write-Host "==> Acción: $Action"
+Write-Host "==> Acción: enable"
 Write-Host "==> RuleName (DisplayName): $RuleName"
 Write-Host "==> Workspace: $WorkspaceName | RG: $ResourceGroupName | Sub: $SubscriptionId"
 
@@ -190,24 +232,32 @@ $script:ArmToken = Get-ArmToken
 if ($Action -eq "list") {
   $templatesUri = "${base}/alertRuleTemplates?api-version=$ApiVersion_Templates"
   $templates = Invoke-ArmRest -Method GET -Uri $templatesUri
-
   $all = @($templates.value)
+
   Write-Host "Total Rule templates instaladas: $($all.Count)"
 
   if (-not [string]::IsNullOrWhiteSpace($Search)) {
     $s = (Normalize-Text $Search).ToLower()
-    $all = $all | Where-Object { (Normalize-Text $_.properties.displayName).ToLower().Contains($s) }
+    $all = $all | Where-Object {
+      Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
+      (Normalize-Text $_.properties.displayName).ToLower().Contains($s)
+    }
     Write-Host "Filtradas por Search='$Search': $($all.Count)"
   }
 
   Write-Host ""
   $all |
-    Sort-Object -Property @{Expression={ Normalize-Text $_.properties.displayName }; Descending=$false } |
     ForEach-Object {
-      $dn = Normalize-Text $_.properties.displayName
-      $sev = $_.properties.severity
-      Write-Host ("- {0} | severity={1}" -f $dn, $sev)
-    }
+      $dn = if (Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName") { Normalize-Text $_.properties.displayName } else { "" }
+      if (-not [string]::IsNullOrWhiteSpace($dn)) {
+        $sev = if (Has-Prop $_ "properties" -and Has-Prop $_.properties "severity") { $_.properties.severity } else { "N/A" }
+        $knd = if (Has-Prop $_ "kind") { $_.kind } else { "N/A" }
+        [pscustomobject]@{ displayName=$dn; kind=$knd; severity=$sev }
+      }
+    } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_.displayName) } |
+    Sort-Object -Property @{Expression='displayName';Descending=$false} |
+    ForEach-Object { Write-Host ("- {0} | kind={1} | severity={2}" -f $_.displayName, $_.kind, $_.severity) }
 
   exit 0
 }
@@ -231,7 +281,7 @@ if ($Action -eq "enable") {
   if (-not $match) {
     Write-Host "No se encontró Rule template por nombre exacto/normalizado/contains."
     Print-Candidates -Templates $tplList -Name $RuleName -Top 30
-    throw "No se encontró ningún Rule template con displayName compatible con '$RuleName'. Revisa que la solución esté instalada o usa Action=list."
+    throw "No se encontró ningún Rule template compatible con '$RuleName'. Revisa que la solución esté instalada o usa Action=list."
   }
 
   Write-Host "✅ Template encontrado (modo: $($found.mode))"
@@ -244,19 +294,19 @@ if ($Action -eq "enable") {
   $p = $match.properties
 
   $ruleProps = @{
-    displayName         = $p.displayName
-    description         = $p.description
-    severity            = $p.severity
+    displayName         = (Get-PropValue $p "displayName" "")
+    description         = (Get-PropValue $p "description" "")
+    severity            = (Get-PropValue $p "severity" "Medium")
     enabled             = $true
-    query               = $p.query
-    queryFrequency      = $p.queryFrequency
-    queryPeriod         = $p.queryPeriod
-    triggerOperator     = $p.triggerOperator
-    triggerThreshold    = $p.triggerThreshold
-    suppressionDuration = $p.suppressionDuration
-    suppressionEnabled  = $p.suppressionEnabled
-    tactics             = $p.tactics
-    techniques          = $p.techniques
+    query               = (Get-PropValue $p "query" "")
+    queryFrequency      = (Get-PropValue $p "queryFrequency" "PT1H")
+    queryPeriod         = (Get-PropValue $p "queryPeriod" "PT1H")
+    triggerOperator     = (Get-PropValue $p "triggerOperator" "GreaterThan")
+    triggerThreshold    = (Get-PropValue $p "triggerThreshold" 0)
+    suppressionDuration = (Get-PropValue $p "suppressionDuration" "PT0H")
+    suppressionEnabled  = (Get-PropValue $p "suppressionEnabled" $false)
+    tactics             = (Get-PropValue $p "tactics" @())
+    techniques          = (Get-PropValue $p "techniques" @())
   }
 
   $body = @{
@@ -285,10 +335,17 @@ if ($Action -eq "disable") {
   $ruleList = @($rules.value)
 
   $needle = (Normalize-Text $RuleName).ToLower()
-  $rule = $ruleList | Where-Object { (Normalize-Text $_.properties.displayName).ToLower() -eq $needle } | Select-Object -First 1
+
+  $rule = $ruleList | Where-Object {
+    Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
+    (Normalize-Text $_.properties.displayName).ToLower() -eq $needle
+  } | Select-Object -First 1
 
   if (-not $rule) {
-    $rule = $ruleList | Where-Object { (Normalize-Text $_.properties.displayName).ToLower().Contains($needle) } | Select-Object -First 1
+    $rule = $ruleList | Where-Object {
+      Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
+      (Normalize-Text $_.properties.displayName).ToLower().Contains($needle)
+    } | Select-Object -First 1
   }
 
   if (-not $rule) {
@@ -299,11 +356,7 @@ if ($Action -eq "disable") {
   Write-Host "Encontrada reglaId: $ruleId. Marcando enabled=false..."
 
   $patchUri = "${base}/alertRules/${ruleId}?api-version=$ApiVersion_Rules"
-  $patchBody = @{
-    properties = @{
-      enabled = $false
-    }
-  }
+  $patchBody = @{ properties = @{ enabled = $false } }
 
   $updated = Invoke-ArmRest -Method PATCH -Uri $patchUri -Body $patchBody
   Write-Host "✅ Regla deshabilitada: $($updated.properties.displayName)"
