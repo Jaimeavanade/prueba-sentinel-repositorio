@@ -12,7 +12,7 @@ on:
           - disable
           - list
       ruleName:
-        description: "Para enable/disable: nombre EXACTO (Azure Portal > Sentinel > Analytics > Rule templates > Name)"
+        description: "Para enable/disable: nombre EXACTO (Portal > Sentinel > Analytics > Rule templates > Name)"
         required: false
         type: string
       search:
@@ -27,6 +27,7 @@ permissions:
 jobs:
   manage-rule:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -40,7 +41,7 @@ jobs:
           audience: api://AzureADTokenExchange
           enable-AzPSSession: true
 
-      - name: Enable/Disable/List
+      - name: Run
         uses: azure/powershell@v2
         with:
           azPSVersion: "latest"
