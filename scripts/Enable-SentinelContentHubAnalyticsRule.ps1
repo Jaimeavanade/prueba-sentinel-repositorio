@@ -20,15 +20,6 @@
     - WarnAndExit0 (default): NO falla el job; imprime sugerencias y sale 0.
     - Fail: falla el job (throw).
     - WarnOnly: imprime sugerencias y sale 0.
-
-.PARAMETER IfExists
-  Enable | Skip | Replace
-
-.PARAMETER NotFoundBehavior
-  WarnAndExit0 | Fail | WarnOnly
-
-.PARAMETER ApiVersion
-  Por defecto 2025-09-01
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -111,7 +102,10 @@ function Invoke-ArmPut {
   )
 
   $headers = @{ Authorization = "Bearer $script:ArmToken" }
-  $json = $Body | ConvertTo-Json -Depth 120
+
+  # ✅ ConvertTo-Json admite como máximo Depth=100
+  # Si se pasa >100, PowerShell falla con ValidateRange. [1](https://github.com/PowerShell/PowerShell/pull/15344)
+  $json = $Body | ConvertTo-Json -Depth 100
 
   try {
     return Invoke-RestMethod -Method PUT -Uri $Uri -Headers $headers -Body $json -ContentType "application/json"
@@ -259,25 +253,20 @@ function Ensure-RequiredPropsForKind {
   )
 
   if ($Kind -eq "Scheduled") {
-    # REQUIRED en Scheduled (si falta cualquiera, el API puede devolver 400)
     Set-DefaultIfMissing -Props $Props -Name "severity"            -DefaultValue "Medium"
     Set-DefaultIfMissing -Props $Props -Name "queryFrequency"      -DefaultValue "PT1H"
     Set-DefaultIfMissing -Props $Props -Name "queryPeriod"         -DefaultValue "PT1H"
     Set-DefaultIfMissing -Props $Props -Name "suppressionEnabled"  -DefaultValue $false
-    # ✅ ESTE ERA TU ERROR:
     Set-DefaultIfMissing -Props $Props -Name "suppressionDuration" -DefaultValue "PT1H"
     Set-DefaultIfMissing -Props $Props -Name "triggerOperator"     -DefaultValue "GreaterThan"
     Set-DefaultIfMissing -Props $Props -Name "triggerThreshold"    -DefaultValue 0
 
-    # Si el template no trae eventGroupingSettings, el portal suele poner algo.
-    # Lo dejamos opcional, pero si quieres forzarlo:
     if (-not $Props.ContainsKey("eventGroupingSettings")) {
       $Props["eventGroupingSettings"] = @{ aggregationKind = "SingleAlert" }
       Write-Host "   [default] eventGroupingSettings.aggregationKind = SingleAlert"
     }
   }
   elseif ($Kind -eq "NRT") {
-    # NRT suele requerir menos campos (depende del schema), pero aseguramos mínimos razonables
     Set-DefaultIfMissing -Props $Props -Name "severity" -DefaultValue "Medium"
   }
 }
@@ -301,7 +290,6 @@ Write-Host "-> Listando alertRuleTemplates..."
 $templates = Get-AllPaged -FirstUri "$base/alertRuleTemplates?api-version=$ApiVersion" -ApiVersion $ApiVersion
 Write-Host ("   Templates encontrados: {0}" -f $templates.Count)
 
-# Matching tolerante
 $target = Normalize-Name $DisplayName
 $targetFlat = ($target -replace ' ','')
 
@@ -372,7 +360,6 @@ $existing = @(
 
 $existingRule = if ($existing.Count -ge 1) { $existing[0] } else { $null }
 
-# Whitelist props
 $allowedKeys = @(
   "displayName","description","severity",
   "query","queryFrequency","queryPeriod",
@@ -398,7 +385,6 @@ function Build-PropsFromTemplate {
     }
   }
 
-  # Required / recommended base
   $props["displayName"] = $Template.properties.displayName
   $props["enabled"] = $true
   $props["alertRuleTemplateName"] = $Template.name
@@ -407,10 +393,8 @@ function Build-PropsFromTemplate {
     $props["templateVersion"] = $Template.properties.templateVersion
   }
 
-  # ✅ Ensure REQUIRED fields for this kind (soluciona el 400 de suppressionDuration)
   Ensure-RequiredPropsForKind -Props $props -Kind $Kind
 
-  # Seguridad: query es imprescindible para Scheduled/NRT
   if (-not $props.ContainsKey("query") -or [string]::IsNullOrWhiteSpace([string]$props["query"])) {
     throw "El template no trae 'query' (imprescindible). No se puede crear la regla."
   }
