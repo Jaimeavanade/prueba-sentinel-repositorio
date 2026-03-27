@@ -16,6 +16,15 @@ on:
           - Enable
           - Skip
           - Replace
+      notFoundBehavior:
+        description: 'Qué hacer si no se encuentra el template (evita que falle el workflow)'
+        required: false
+        default: WarnAndExit0
+        type: choice
+        options:
+          - WarnAndExit0
+          - WarnOnly
+          - Fail
 
 permissions:
   id-token: write
@@ -57,4 +66,5 @@ jobs:
             -ResourceGroupName "${{ env.RESOURCE_GROUP }}" `
             -WorkspaceName "${{ env.WORKSPACE_NAME }}" `
             -DisplayName "${{ inputs.displayName }}" `
-            -IfExists "${{ inputs.ifExists }}"
+            -IfExists "${{ inputs.ifExists }}" `
+            -NotFoundBehavior "${{ inputs.notFoundBehavior }}"
