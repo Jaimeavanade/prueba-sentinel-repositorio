@@ -20,6 +20,14 @@
     - WarnAndExit0 (default): NO falla el job; imprime sugerencias y sale 0.
     - Fail: falla el job (throw).
     - WarnOnly: imprime sugerencias y sale 0.
+
+  FIXES:
+    - nextLink opcional (StrictMode safe)
+    - templateVersion opcional (StrictMode safe)
+    - ${ruleId}?api-version (StrictMode safe)
+    - ConvertTo-Json -Depth máx 100
+    - LevenshteinDistance: fuerza string (evita System.Object[] / op_Subtraction)
+    - Show-Suggestions: nunca debe romper el pipeline (try/catch)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -85,7 +93,6 @@ function Normalize-NextLink {
 
 function Invoke-ArmGet {
   param([Parameter(Mandatory = $true)][string]$Uri)
-
   $headers = @{ Authorization = "Bearer $script:ArmToken" }
   try {
     return Invoke-RestMethod -Method GET -Uri $Uri -Headers $headers -ContentType "application/json"
@@ -100,11 +107,9 @@ function Invoke-ArmPut {
     [Parameter(Mandatory = $true)][string]$Uri,
     [Parameter(Mandatory = $true)][object]$Body
   )
-
   $headers = @{ Authorization = "Bearer $script:ArmToken" }
 
-  # ✅ ConvertTo-Json admite como máximo Depth=100
-  # Si se pasa >100, PowerShell falla con ValidateRange. [1](https://github.com/PowerShell/PowerShell/pull/15344)
+  # ConvertTo-Json Depth máximo 100 (si no, PowerShell falla)
   $json = $Body | ConvertTo-Json -Depth 100
 
   try {
@@ -130,10 +135,8 @@ function Get-AllPaged {
     [Parameter(Mandatory=$true)][string]$FirstUri,
     [Parameter(Mandatory=$true)][string]$ApiVersion
   )
-
   $all = @()
   $uri = $FirstUri
-
   while (-not [string]::IsNullOrWhiteSpace($uri)) {
     $r = Invoke-ArmGet -Uri $uri
     if ($r -and (Has-Prop $r 'value') -and $r.value) { $all += $r.value }
@@ -142,13 +145,16 @@ function Get-AllPaged {
     if ($r -and (Has-Prop $r 'nextLink')) { $next = $r.nextLink }
     $uri = Normalize-NextLink -NextLink $next -ApiVersion $ApiVersion
   }
-
   return $all
 }
 
 function Normalize-Name {
-  param([string]$s)
+  param([object]$s)
+
+  # ✅ FUERZA STRING SIEMPRE (evita que -replace devuelva arrays)
+  $s = [string]$s
   if ([string]::IsNullOrWhiteSpace($s)) { return "" }
+
   $s2 = $s -replace [char]0x00A0, ' '
   $s2 = $s2 -replace '\s+', ' '
   return $s2.Trim().ToLowerInvariant()
@@ -156,9 +162,14 @@ function Normalize-Name {
 
 function LevenshteinDistance {
   param(
-    [Parameter(Mandatory=$true)][string]$a,
-    [Parameter(Mandatory=$true)][string]$b
+    [Parameter(Mandatory=$true)][object]$a,
+    [Parameter(Mandatory=$true)][object]$b
   )
+
+  # ✅ FUERZA STRING SIEMPRE (evita System.Object[] y el error op_Subtraction)
+  $a = [string]$a
+  $b = [string]$b
+
   if ($a -eq $b) { return 0 }
   if ([string]::IsNullOrWhiteSpace($a)) { return $b.Length }
   if ([string]::IsNullOrWhiteSpace($b)) { return $a.Length }
@@ -192,35 +203,44 @@ function Show-Suggestions {
     [Parameter(Mandatory=$true)][int]$Top
   )
 
-  $targetN = Normalize-Name $TargetDisplayName
-  $targetFlat = ($targetN -replace ' ','')
+  # ✅ esta función NO debe romper el pipeline nunca
+  try {
+    $targetN = Normalize-Name $TargetDisplayName
+    $targetFlat = ([string]($targetN -replace ' ',''))
 
-  $items = foreach ($t in $Templates) {
-    if (-not $t) { continue }
-    if (-not (Has-Prop $t 'properties')) { continue }
-    if (-not (Has-Prop $t.properties 'displayName')) { continue }
+    $items = foreach ($t in $Templates) {
+      if (-not $t) { continue }
+      if (-not (Has-Prop $t 'properties')) { continue }
+      if (-not (Has-Prop $t.properties 'displayName')) { continue }
 
-    $dn = $t.properties.displayName
-    if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+      $dn = [string]$t.properties.displayName
+      if ([string]::IsNullOrWhiteSpace($dn)) { continue }
 
-    $dnN = Normalize-Name $dn
-    $dnFlat = ($dnN -replace ' ','')
-    $dist = LevenshteinDistance -a $targetFlat -b $dnFlat
+      $dnN = Normalize-Name $dn
+      $dnFlat = ([string]($dnN -replace ' ',''))
 
-    [pscustomobject]@{
-      Distance    = $dist
-      Kind        = if (Has-Prop $t 'kind') { $t.kind } else { "" }
-      TemplateId  = if (Has-Prop $t 'name') { $t.name } else { "" }
-      DisplayName = $dn
+      $dist = LevenshteinDistance -a $targetFlat -b $dnFlat
+
+      [pscustomobject]@{
+        Distance    = $dist
+        Kind        = if (Has-Prop $t 'kind') { [string]$t.kind } else { "" }
+        TemplateId  = if (Has-Prop $t 'name') { [string]$t.name } else { "" }
+        DisplayName = $dn
+      }
+    }
+
+    $topMatches = $items | Sort-Object Distance, Kind, DisplayName | Select-Object -First $Top
+    if ($topMatches) {
+      Write-Warning "Sugerencias (Top $Top) para '$TargetDisplayName' (menor distancia = más cercano):"
+      foreach ($s in $topMatches) {
+        Write-Warning (" - d={0} | kind={1} | id={2} | name={3}" -f $s.Distance, $s.Kind, $s.TemplateId, $s.DisplayName)
+      }
+    } else {
+      Write-Warning "No hay sugerencias disponibles."
     }
   }
-
-  $topMatches = $items | Sort-Object Distance, Kind, DisplayName | Select-Object -First $Top
-  if ($topMatches) {
-    Write-Warning "Sugerencias (Top $Top) para '$TargetDisplayName' (menor distancia = más cercano):"
-    foreach ($s in $topMatches) {
-      Write-Warning (" - d={0} | kind={1} | id={2} | name={3}" -f $s.Distance, $s.Kind, $s.TemplateId, $s.DisplayName)
-    }
+  catch {
+    Write-Warning "No se pudieron calcular sugerencias (se ignora para no romper el job): $($_.Exception.Message)"
   }
 }
 
@@ -290,8 +310,9 @@ Write-Host "-> Listando alertRuleTemplates..."
 $templates = Get-AllPaged -FirstUri "$base/alertRuleTemplates?api-version=$ApiVersion" -ApiVersion $ApiVersion
 Write-Host ("   Templates encontrados: {0}" -f $templates.Count)
 
+# Matching tolerante
 $target = Normalize-Name $DisplayName
-$targetFlat = ($target -replace ' ','')
+$targetFlat = ([string]($target -replace ' ',''))
 
 $matches = @(
   $templates | Where-Object {
@@ -316,7 +337,7 @@ if ($matches.Count -eq 0) {
     $templates | Where-Object {
       $t = $_
       if (-not ((Has-Prop $t 'properties') -and (Has-Prop $t.properties 'displayName'))) { return $false }
-      $dnFlat = ((Normalize-Name $t.properties.displayName) -replace ' ','')
+      $dnFlat = ([string](((Normalize-Name $t.properties.displayName) -replace ' ','')))
       $dnFlat -like "*$targetFlat*"
     }
   )
@@ -334,7 +355,7 @@ if ($matches.Count -eq 0) {
 }
 
 $template = $matches[0]
-$kind = if (Has-Prop $template 'kind') { $template.kind } else { "" }
+$kind = if (Has-Prop $template 'kind') { [string]$template.kind } else { "" }
 
 Write-Host "-> Template seleccionado:"
 Write-Host ("   template.name  : {0}" -f $template.name)
@@ -354,7 +375,7 @@ $existing = @(
   $rules | Where-Object {
     $r = $_
     (Has-Prop $r 'properties') -and (Has-Prop $r.properties 'displayName') -and (Has-Prop $r 'kind') -and
-    (Normalize-Name $r.properties.displayName) -eq $templateDnNorm -and $r.kind -eq $kind
+    (Normalize-Name $r.properties.displayName) -eq $templateDnNorm -and ([string]$r.kind) -eq $kind
   }
 )
 
@@ -419,6 +440,7 @@ if ($existingRule) {
 
       $props["enabled"] = $true
       $props["alertRuleTemplateName"] = $template.name
+
       if (Has-Prop $template.properties 'templateVersion') {
         $props["templateVersion"] = $template.properties.templateVersion
       }
