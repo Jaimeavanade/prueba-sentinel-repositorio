@@ -1,19 +1,24 @@
-name: Manage Sentinel Analytics Rule (Enable/Disable by Template Name)
+name: Manage Sentinel Analytics Rule (Enable/Disable/List Templates)
 
 on:
   workflow_dispatch:
     inputs:
-      ruleName:
-        description: "Nombre EXACTO (Display name). Cópialo de Azure Portal > Microsoft Sentinel > Analytics > Rule templates > Name"
-        required: true
-        type: string
       action:
-        description: "enable = crear/activar desde Rule template | disable = deshabilitar regla existente"
+        description: "enable = crear/activar desde Rule template | disable = deshabilitar regla existente | list = listar Rule templates instaladas"
         required: true
         type: choice
         options:
           - enable
           - disable
+          - list
+      ruleName:
+        description: "Para enable/disable: nombre EXACTO (Azure Portal > Sentinel > Analytics > Rule templates > Name)"
+        required: false
+        type: string
+      search:
+        description: "Para list: filtra por texto (contains). Ej: 'Conditional Access'"
+        required: false
+        type: string
 
 permissions:
   id-token: write
@@ -22,7 +27,6 @@ permissions:
 jobs:
   manage-rule:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -36,15 +40,7 @@ jobs:
           audience: api://AzureADTokenExchange
           enable-AzPSSession: true
 
-      # Opcional (pero útil): valida rápido quién eres y que hay token ARM
-      - name: WhoAmI (debug)
-        uses: azure/cli@v2
-        with:
-          inlineScript: |
-            az account show
-            az account get-access-token --resource https://management.azure.com/ --query expiresOn -o tsv
-
-      - name: Enable/Disable rule by template name
+      - name: Enable/Disable/List
         uses: azure/powershell@v2
         with:
           azPSVersion: "latest"
@@ -62,17 +58,17 @@ jobs:
 
             Set-AzContext -SubscriptionId $sub | Out-Null
 
-            $ruleName = "${{ github.event.inputs.ruleName }}"
             $action   = "${{ github.event.inputs.action }}"
+            $ruleName = "${{ github.event.inputs.ruleName }}"
+            $search   = "${{ github.event.inputs.search }}"
 
             $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts/Activate-Or-Disable-RuleFromTemplate.ps1"
-            if (-not (Test-Path $scriptPath)) {
-              throw "No existe el script en: $scriptPath"
-            }
+            if (-not (Test-Path $scriptPath)) { throw "No existe el script en: $scriptPath" }
 
             & $scriptPath `
               -SubscriptionId $sub `
               -ResourceGroupName $rg `
               -WorkspaceName $ws `
               -Action $action `
-              -RuleName $ruleName
+              -RuleName $ruleName `
+              -Search $search
