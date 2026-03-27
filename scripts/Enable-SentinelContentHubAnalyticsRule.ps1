@@ -9,29 +9,26 @@
       * Enable  -> la habilita (enabled=true)
       * Skip    -> no hace nada
       * Replace -> la reemplaza usando el template como base y la habilita
-  - Si no existe, crea una nueva alertRule (Scheduled o NRT) copiando propiedades del template y activándola.
+  - Si no existe, crea una nueva alertRule (Scheduled o NRT) copiando propiedades del template.
+
+  Importante (FIX 400):
+    - El API exige propiedades REQUIRED en reglas Scheduled (p.ej. suppressionDuration).
+    - Algunos templates no traen esas propiedades (o vienen vacías).
+    - Este script rellena defaults como hace el portal.
 
   NotFoundBehavior:
     - WarnAndExit0 (default): NO falla el job; imprime sugerencias y sale 0.
     - Fail: falla el job (throw).
     - WarnOnly: imprime sugerencias y sale 0.
 
-  Auth:
-    - Requiere azure/login (OIDC) o az login previo.
-    - El script obtiene token ARM con Azure CLI: az account get-access-token --resource https://management.azure.com/
-
-.PARAMETER SubscriptionId
-.PARAMETER ResourceGroupName
-.PARAMETER WorkspaceName
-.PARAMETER DisplayName
 .PARAMETER IfExists
   Enable | Skip | Replace
+
 .PARAMETER NotFoundBehavior
   WarnAndExit0 | Fail | WarnOnly
+
 .PARAMETER ApiVersion
   Por defecto 2025-09-01
-.PARAMETER Suggestions
-  Número de sugerencias a mostrar si no hay match (default 15).
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -114,7 +111,7 @@ function Invoke-ArmPut {
   )
 
   $headers = @{ Authorization = "Bearer $script:ArmToken" }
-  $json = $Body | ConvertTo-Json -Depth 100
+  $json = $Body | ConvertTo-Json -Depth 120
 
   try {
     return Invoke-RestMethod -Method PUT -Uri $Uri -Headers $headers -Body $json -ContentType "application/json"
@@ -148,9 +145,7 @@ function Get-AllPaged {
     if ($r -and (Has-Prop $r 'value') -and $r.value) { $all += $r.value }
 
     $next = $null
-    if ($r -and (Has-Prop $r 'nextLink')) {
-      $next = $r.nextLink
-    }
+    if ($r -and (Has-Prop $r 'nextLink')) { $next = $r.nextLink }
     $uri = Normalize-NextLink -NextLink $next -ApiVersion $ApiVersion
   }
 
@@ -215,7 +210,7 @@ function Show-Suggestions {
     if ([string]::IsNullOrWhiteSpace($dn)) { continue }
 
     $dnN = Normalize-Name $dn
-    $dnFlat = ($dnN -replace ' ', '')
+    $dnFlat = ($dnN -replace ' ','')
     $dist = LevenshteinDistance -a $targetFlat -b $dnFlat
 
     [pscustomobject]@{
@@ -232,10 +227,62 @@ function Show-Suggestions {
     foreach ($s in $topMatches) {
       Write-Warning (" - d={0} | kind={1} | id={2} | name={3}" -f $s.Distance, $s.Kind, $s.TemplateId, $s.DisplayName)
     }
-  } else {
-    Write-Warning "No hay sugerencias disponibles."
   }
 }
+
+function Set-DefaultIfMissing {
+  param(
+    [Parameter(Mandatory=$true)][hashtable]$Props,
+    [Parameter(Mandatory=$true)][string]$Name,
+    [Parameter(Mandatory=$true)]$DefaultValue
+  )
+
+  $missing = $false
+  if (-not $Props.ContainsKey($Name)) {
+    $missing = $true
+  } else {
+    $v = $Props[$Name]
+    if ($null -eq $v) { $missing = $true }
+    elseif ($v -is [string] -and [string]::IsNullOrWhiteSpace($v)) { $missing = $true }
+  }
+
+  if ($missing) {
+    $Props[$Name] = $DefaultValue
+    Write-Host ("   [default] {0} = {1}" -f $Name, ($DefaultValue | Out-String).Trim())
+  }
+}
+
+function Ensure-RequiredPropsForKind {
+  param(
+    [Parameter(Mandatory=$true)][hashtable]$Props,
+    [Parameter(Mandatory=$true)][string]$Kind
+  )
+
+  if ($Kind -eq "Scheduled") {
+    # REQUIRED en Scheduled (si falta cualquiera, el API puede devolver 400)
+    Set-DefaultIfMissing -Props $Props -Name "severity"            -DefaultValue "Medium"
+    Set-DefaultIfMissing -Props $Props -Name "queryFrequency"      -DefaultValue "PT1H"
+    Set-DefaultIfMissing -Props $Props -Name "queryPeriod"         -DefaultValue "PT1H"
+    Set-DefaultIfMissing -Props $Props -Name "suppressionEnabled"  -DefaultValue $false
+    # ✅ ESTE ERA TU ERROR:
+    Set-DefaultIfMissing -Props $Props -Name "suppressionDuration" -DefaultValue "PT1H"
+    Set-DefaultIfMissing -Props $Props -Name "triggerOperator"     -DefaultValue "GreaterThan"
+    Set-DefaultIfMissing -Props $Props -Name "triggerThreshold"    -DefaultValue 0
+
+    # Si el template no trae eventGroupingSettings, el portal suele poner algo.
+    # Lo dejamos opcional, pero si quieres forzarlo:
+    if (-not $Props.ContainsKey("eventGroupingSettings")) {
+      $Props["eventGroupingSettings"] = @{ aggregationKind = "SingleAlert" }
+      Write-Host "   [default] eventGroupingSettings.aggregationKind = SingleAlert"
+    }
+  }
+  elseif ($Kind -eq "NRT") {
+    # NRT suele requerir menos campos (depende del schema), pero aseguramos mínimos razonables
+    Set-DefaultIfMissing -Props $Props -Name "severity" -DefaultValue "Medium"
+  }
+}
+
+# ---------------- MAIN ----------------
 
 Write-Host "== Sentinel | Enable/Create Analytics Rule from Content Hub template =="
 Write-Host "SubscriptionId : $SubscriptionId"
@@ -250,12 +297,11 @@ Write-Host ""
 $script:ArmToken = Get-ArmToken
 $base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
 
-# 1) Templates instalados
 Write-Host "-> Listando alertRuleTemplates..."
 $templates = Get-AllPaged -FirstUri "$base/alertRuleTemplates?api-version=$ApiVersion" -ApiVersion $ApiVersion
 Write-Host ("   Templates encontrados: {0}" -f $templates.Count)
 
-# 2) Matching tolerante
+# Matching tolerante
 $target = Normalize-Name $DisplayName
 $targetFlat = ($target -replace ' ','')
 
@@ -289,7 +335,7 @@ if ($matches.Count -eq 0) {
 }
 
 if ($matches.Count -eq 0) {
-  Write-Warning "No se encontró ningún alertRuleTemplate por displayName '$DisplayName' usando matching tolerante."
+  Write-Warning "No se encontró ningún alertRuleTemplate por displayName '$DisplayName'."
   Show-Suggestions -Templates $templates -TargetDisplayName $DisplayName -Top $Suggestions
 
   switch ($NotFoundBehavior) {
@@ -311,11 +357,9 @@ if ($kind -notin @("Scheduled","NRT")) {
   throw "Template kind '$kind' no soportado por este script (solo Scheduled y NRT)."
 }
 
-# 3) Buscar rule existente (matching tolerante contra el displayName del template)
 Write-Host ""
 Write-Host "-> Comprobando si ya existe alertRule con ese displayName (matching tolerante)..."
 $rules = Get-AllPaged -FirstUri "$base/alertRules?api-version=$ApiVersion" -ApiVersion $ApiVersion
-
 $templateDnNorm = Normalize-Name $template.properties.displayName
 
 $existing = @(
@@ -328,7 +372,7 @@ $existing = @(
 
 $existingRule = if ($existing.Count -ge 1) { $existing[0] } else { $null }
 
-# 4) Build props
+# Whitelist props
 $allowedKeys = @(
   "displayName","description","severity",
   "query","queryFrequency","queryPeriod",
@@ -341,21 +385,34 @@ $allowedKeys = @(
 )
 
 function Build-PropsFromTemplate {
-  param([Parameter(Mandatory=$true)]$Template)
+  param(
+    [Parameter(Mandatory=$true)]$Template,
+    [Parameter(Mandatory=$true)][string]$Kind
+  )
 
   $props = @{}
+
   foreach ($k in $allowedKeys) {
     if (Has-Prop $Template.properties $k) {
       $props[$k] = $Template.properties.$k
     }
   }
 
+  # Required / recommended base
   $props["displayName"] = $Template.properties.displayName
   $props["enabled"] = $true
   $props["alertRuleTemplateName"] = $Template.name
 
   if (Has-Prop $Template.properties 'templateVersion') {
     $props["templateVersion"] = $Template.properties.templateVersion
+  }
+
+  # ✅ Ensure REQUIRED fields for this kind (soluciona el 400 de suppressionDuration)
+  Ensure-RequiredPropsForKind -Props $props -Kind $Kind
+
+  # Seguridad: query es imprescindible para Scheduled/NRT
+  if (-not $props.ContainsKey("query") -or [string]::IsNullOrWhiteSpace([string]$props["query"])) {
+    throw "El template no trae 'query' (imprescindible). No se puede crear la regla."
   }
 
   Remove-ReadOnlyProps -Props $props
@@ -370,7 +427,7 @@ if ($existingRule) {
 
     "Enable" {
       $ruleId = $existingRule.name
-      $getUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"   # ✅ FIX: ${ruleId}
+      $getUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"
       $current = Invoke-ArmGet -Uri $getUri
 
       $props = @{}
@@ -382,6 +439,7 @@ if ($existingRule) {
         $props["templateVersion"] = $template.properties.templateVersion
       }
 
+      Ensure-RequiredPropsForKind -Props $props -Kind $kind
       Remove-ReadOnlyProps -Props $props
 
       $body = @{
@@ -389,7 +447,7 @@ if ($existingRule) {
         properties = $props
       }
 
-      $putUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"   # ✅ FIX: ${ruleId}
+      $putUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"
       if ($PSCmdlet.ShouldProcess($ruleId, "Habilitar alertRule existente")) {
         $out = Invoke-ArmPut -Uri $putUri -Body $body
         Write-Host ("✅ Regla habilitada: {0}" -f $out.id)
@@ -400,14 +458,14 @@ if ($existingRule) {
 
     "Replace" {
       $ruleId = $existingRule.name
-      $props = Build-PropsFromTemplate -Template $template
+      $props = Build-PropsFromTemplate -Template $template -Kind $kind
 
       $body = @{
         kind       = $kind
         properties = $props
       }
 
-      $putUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"   # ✅ FIX: ${ruleId}
+      $putUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"
       if ($PSCmdlet.ShouldProcess($ruleId, "Reemplazar alertRule existente desde template")) {
         $out = Invoke-ArmPut -Uri $putUri -Body $body
         Write-Host ("✅ Regla reemplazada y habilitada: {0}" -f $out.id)
@@ -418,19 +476,17 @@ if ($existingRule) {
   }
 }
 
-# 5) Crear nueva
 Write-Host ""
 Write-Host "-> No existe alertRule con ese displayName. Creando nueva regla desde template..."
-$ruleId = [guid]::NewGuid().ToString()
 
-$props = Build-PropsFromTemplate -Template $template
+$ruleId = [guid]::NewGuid().ToString()
+$props = Build-PropsFromTemplate -Template $template -Kind $kind
 
 $body = @{
   kind       = $kind
   properties = $props
 }
 
-# ✅ FIX CRÍTICO: ${ruleId} para que no lo interprete como $ruleId?api
 $putUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"
 
 if ($PSCmdlet.ShouldProcess($ruleId, "Crear alertRule desde template '$($template.properties.displayName)'")) {
