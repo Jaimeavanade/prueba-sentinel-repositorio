@@ -36,7 +36,7 @@ jobs:
           audience: api://AzureADTokenExchange
           enable-AzPSSession: true
 
-      # (Opcional) Debug rápido: valida que CLI tiene token ARM (patrón que ya tienes)
+      # Opcional (pero útil): valida rápido quién eres y que hay token ARM
       - name: WhoAmI (debug)
         uses: azure/cli@v2
         with:
