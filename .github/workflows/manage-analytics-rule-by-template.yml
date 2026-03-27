@@ -1,0 +1,70 @@
+name: Manage Sentinel Analytics Rule (Enable/Disable by Template Name)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ruleName:
+        description: "Nombre EXACTO de la plantilla/regla (Display name). Ej: 'AV detections related to SpringShell Vulnerability'"
+        required: true
+        type: string
+      action:
+        description: "enable = crear/activar desde Rule template | disable = deshabilitar regla existente"
+        required: true
+        type: choice
+        options:
+          - enable
+          - disable
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  manage-rule:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange
+          enable-AzPSSession: true
+
+      - name: Enable/Disable rule by template name
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: "latest"
+          errorActionPreference: "Stop"
+          inlineScript: |
+            $ErrorActionPreference = "Stop"
+
+            $sub = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            $ws  = "${{ secrets.SENTINEL_WORKSPACE_NAME }}"
+            $rg  = "${{ secrets.SENTINEL_RESOURCE_GROUP }}"
+
+            if ([string]::IsNullOrWhiteSpace($sub)) { throw "Secret AZURE_SUBSCRIPTION_ID vacío o no definido." }
+            if ([string]::IsNullOrWhiteSpace($ws))  { throw "Secret SENTINEL_WORKSPACE_NAME vacío o no definido." }
+            if ([string]::IsNullOrWhiteSpace($rg))  { throw "Secret SENTINEL_RESOURCE_GROUP vacío o no definido." }
+
+            Set-AzContext -SubscriptionId $sub | Out-Null
+
+            $ruleName = "${{ github.event.inputs.ruleName }}"
+            $action   = "${{ github.event.inputs.action }}"
+
+            $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts/Activate-Or-Disable-RuleFromTemplate.ps1"
+            if (-not (Test-Path $scriptPath)) {
+              throw "No existe el wrapper script en: $scriptPath"
+            }
+
+            & $scriptPath `
+              -SubscriptionId $sub `
+              -ResourceGroupName $rg `
+              -WorkspaceName $ws `
+              -Action $action `
+              -RuleName $ruleName
