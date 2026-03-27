@@ -1,0 +1,59 @@
+name: Enable Content Hub Analytics Rule in Sentinel (by displayName)
+
+on:
+  workflow_dispatch:
+    inputs:
+      displayName:
+        description: 'Content name (displayName) del item a activar. Ej: Brute force attack against a Cloud PC'
+        required: true
+        type: string
+      ifExists:
+        description: 'Qué hacer si ya existe una Analytics rule con ese displayName'
+        required: false
+        default: Enable
+        type: choice
+        options:
+          - Enable
+          - Skip
+          - Replace
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+
+    env:
+      SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      RESOURCE_GROUP: ${{ vars.SENTINEL_RESOURCE_GROUP }}
+      WORKSPACE_NAME: ${{ vars.SENTINEL_WORKSPACE_NAME }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Preflight (whoami)
+        shell: bash
+        run: |
+          az account show -o table
+          echo "RG=$RESOURCE_GROUP"
+          echo "WS=$WORKSPACE_NAME"
+
+      - name: Enable/Create rule from template (displayName)
+        shell: pwsh
+        run: |
+          ./scripts/Enable-SentinelContentHubAnalyticsRule.ps1 `
+            -SubscriptionId "${{ env.SUBSCRIPTION_ID }}" `
+            -ResourceGroupName "${{ env.RESOURCE_GROUP }}" `
+            -WorkspaceName "${{ env.WORKSPACE_NAME }}" `
+            -DisplayName "${{ inputs.displayName }}" `
+            -IfExists "${{ inputs.ifExists }}"
