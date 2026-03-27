@@ -1,0 +1,169 @@
+name: Sentinel - Create Analytics Rule From Template
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Acción a ejecutar: list (listar templates) o create (crear regla)"
+        required: true
+        default: "list"
+        type: choice
+        options:
+          - list
+          - create
+
+      # Para listar
+      filter:
+        description: "Filtro opcional para list (busca por texto en displayName). Ej: SpringShell"
+        required: false
+        type: string
+
+      # Para crear
+      ruleDisplayName:
+        description: "displayName EXACTO de la Rule Template (ej: AV detections related to SpringShell Vulnerability)"
+        required: false
+        type: string
+
+      subscriptionId:
+        description: "Azure Subscription ID"
+        required: true
+        type: string
+
+      resourceGroup:
+        description: "Resource Group del workspace"
+        required: true
+        type: string
+
+      workspaceName:
+        description: "Log Analytics Workspace name"
+        required: true
+        type: string
+
+      location:
+        description: "Azure location (ej: westeurope)"
+        required: false
+        default: "westeurope"
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  sentinel:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ inputs.subscriptionId }}
+
+      - name: Setup PowerShell modules (if needed)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Si tu script requiere módulos, instálalos aquí.
+          # Ejemplo (solo si procede):
+          # Install-Module Az.Accounts -Scope CurrentUser -Force
+          # Install-Module Az.Resources -Scope CurrentUser -Force
+
+      - name: Validate inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $action = '${{ inputs.action }}'
+
+          if ($action -eq 'create') {
+            if ([string]::IsNullOrWhiteSpace('${{ inputs.ruleDisplayName }}')) {
+              throw "Para action=create debes informar inputs.ruleDisplayName (displayName exacto)."
+            }
+          }
+
+      - name: List Rule Templates (by displayName)
+        if: ${{ inputs.action == 'list' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $subId = '${{ inputs.subscriptionId }}'
+          $rg    = '${{ inputs.resourceGroup }}'
+          $ws    = '${{ inputs.workspaceName }}'
+          $filter = '${{ inputs.filter }}'
+
+          # Sacar token ARM
+          $token = az account get-access-token --resource https://management.azure.com/ | ConvertFrom-Json
+          $authHeader = @{
+            Authorization = "Bearer $($token.accessToken)"
+            "Content-Type" = "application/json"
+          }
+
+          # API version (ajústala si tu script usa otra)
+          $api = "2025-09-01"
+
+          # List content templates (Rule Templates) en el workspace
+          $uri = "https://management.azure.com/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.OperationalInsights/workspaces/$ws/providers/Microsoft.SecurityInsights/contentTemplates?api-version=$api"
+
+          $resp = Invoke-RestMethod -Method GET -Uri $uri -Headers $authHeader
+
+          $items = @($resp.value)
+
+          # Quedarnos con Analytics Rules (Scheduled) si quieres: contentKind == AnalyticsRule
+          # O dejarlo genérico. Depende de tu caso.
+          # Aquí lo filtramos a AnalyticsRule, porque es tu objetivo.
+          $items = $items | Where-Object { $_.properties.contentKind -eq "AnalyticsRule" }
+
+          if (-not [string]::IsNullOrWhiteSpace($filter)) {
+            $items = $items | Where-Object { $_.properties.displayName -like "*$filter*" }
+          }
+
+          $names = $items | Select-Object -ExpandProperty properties | Select-Object -ExpandProperty displayName | Sort-Object -Unique
+
+          Write-Host ""
+          Write-Host "=== Templates (AnalyticsRule) encontrados: $($names.Count) ==="
+          $names | ForEach-Object { Write-Host " - $($_)" }
+
+          # Guardar a archivo para artifact
+          $outDir = "artifacts"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $outFile = Join-Path $outDir "analytics-rule-templates.txt"
+          $names | Out-File -FilePath $outFile -Encoding utf8
+
+          # Añadir a Summary (más cómodo para copiar/pegar)
+          $summary = Join-Path $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $summary "## Analytics Rule Templates (displayName)"
+          Add-Content $summary ""
+          foreach ($n in $names) { Add-Content $summary "- $n" }
+
+      - name: Upload templates list artifact
+        if: ${{ inputs.action == 'list' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: analytics-rule-templates
+          path: artifacts/analytics-rule-templates.txt
+
+      - name: Create Analytics Rule from Template (by displayName)
+        if: ${{ inputs.action == 'create' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $subId = '${{ inputs.subscriptionId }}'
+          $rg    = '${{ inputs.resourceGroup }}'
+          $ws    = '${{ inputs.workspaceName }}'
+          $name  = '${{ inputs.ruleDisplayName }}'
+
+          Write-Host "Creando Analytics Rule desde template con displayName: $name"
+
+          # Ejecuta TU script
+          # Ajusta los parámetros a los que acepte scripts/Create-AnalyticsRulesFromTemplates.ps1
+          pwsh -File "./scripts/Create-AnalyticsRulesFromTemplates.ps1" `
+            -SubscriptionId $subId `
+            -ResourceGroup $rg `
+            -WorkspaceName $ws `
+            -DisplayName $name
