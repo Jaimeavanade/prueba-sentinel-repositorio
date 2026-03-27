@@ -32,7 +32,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Ajusta a tus nombres reales de variables/vars si difieren:
           $sub  = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
           $rg   = "${{ vars.RESOURCE_GROUP }}"
           $ws   = "${{ vars.WORKSPACE_NAME }}"
