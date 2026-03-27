@@ -15,10 +15,6 @@ on:
         description: "Para enable/disable: nombre EXACTO (Portal > Sentinel > Analytics > Rule templates > Name)"
         required: false
         type: string
-      search:
-        description: "Para list: filtra por texto (contains). Ej: 'Conditional Access'"
-        required: false
-        type: string
 
 permissions:
   id-token: write
