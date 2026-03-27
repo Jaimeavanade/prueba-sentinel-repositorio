@@ -14,7 +14,7 @@
   NotFoundBehavior:
     - WarnAndExit0 (default): NO falla el job; imprime sugerencias y sale 0.
     - Fail: falla el job (throw).
-    - WarnOnly: imprime sugerencias y continúa (pero no crea nada) y sale 0.
+    - WarnOnly: imprime sugerencias y sale 0.
 
   Auth:
     - Requiere azure/login (OIDC) o az login previo.
@@ -65,6 +65,14 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function Has-Prop {
+  param(
+    [Parameter(Mandatory=$true)][object]$Obj,
+    [Parameter(Mandatory=$true)][string]$Name
+  )
+  return ($null -ne $Obj -and $Obj.PSObject -and ($Obj.PSObject.Properties.Name -contains $Name))
+}
 
 function Get-ArmToken {
   $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv
@@ -127,12 +135,6 @@ function Remove-ReadOnlyProps {
 }
 
 function Get-AllPaged {
-  <#
-    Devuelve todos los items de una respuesta paginada ARM:
-    - agrega r.value
-    - sigue r.nextLink si existe
-    Nota: nextLink NO siempre existe; en StrictMode no podemos acceder si falta.
-  #>
   param(
     [Parameter(Mandatory=$true)][string]$FirstUri,
     [Parameter(Mandatory=$true)][string]$ApiVersion
@@ -143,10 +145,10 @@ function Get-AllPaged {
 
   while (-not [string]::IsNullOrWhiteSpace($uri)) {
     $r = Invoke-ArmGet -Uri $uri
-    if ($r -and $r.value) { $all += $r.value }
+    if ($r -and (Has-Prop $r 'value') -and $r.value) { $all += $r.value }
 
     $next = $null
-    if ($r -and ($r.PSObject.Properties.Name -contains 'nextLink')) {
+    if ($r -and (Has-Prop $r 'nextLink')) {
       $next = $r.nextLink
     }
     $uri = Normalize-NextLink -NextLink $next -ApiVersion $ApiVersion
@@ -158,11 +160,6 @@ function Get-AllPaged {
 function Normalize-Name {
   param([string]$s)
   if ([string]::IsNullOrWhiteSpace($s)) { return "" }
-
-  # Normaliza:
-  # - NBSP (U+00A0) a espacio normal
-  # - múltiple whitespace a un espacio
-  # - trim + lower
   $s2 = $s -replace [char]0x00A0, ' '
   $s2 = $s2 -replace '\s+', ' '
   return $s2.Trim().ToLowerInvariant()
@@ -174,8 +171,8 @@ function LevenshteinDistance {
     [Parameter(Mandatory=$true)][string]$b
   )
   if ($a -eq $b) { return 0 }
-  if ([string]::IsNullOrEmpty($a)) { return $b.Length }
-  if ([string]::IsNullOrEmpty($b)) { return $a.Length }
+  if ([string]::IsNullOrWhiteSpace($a)) { return $b.Length }
+  if ([string]::IsNullOrWhiteSpace($b)) { return $a.Length }
 
   $n = $a.Length
   $m = $b.Length
@@ -208,23 +205,29 @@ function Show-Suggestions {
 
   $targetN = Normalize-Name $TargetDisplayName
   $targetFlat = ($targetN -replace ' ','')
+
   $items = foreach ($t in $Templates) {
-    $dn = $t.properties.displayName
+    $dn = $null
+    if ($t -and (Has-Prop $t 'properties') -and $t.properties -and (Has-Prop $t.properties 'displayName')) {
+      $dn = $t.properties.displayName
+    }
     if ([string]::IsNullOrWhiteSpace($dn)) { continue }
+
     $dnN = Normalize-Name $dn
-    $dnFlat = ($dnN -replace ' ','')
+    $dnFlat = ($dnN -replace ' ', '')
     $dist = LevenshteinDistance -a $targetFlat -b $dnFlat
+
     [pscustomobject]@{
-      Distance   = $dist
-      Kind       = $t.kind
-      TemplateId = $t.name
+      Distance    = $dist
+      Kind        = if (Has-Prop $t 'kind') { $t.kind } else { "" }
+      TemplateId  = if (Has-Prop $t 'name') { $t.name } else { "" }
       DisplayName = $dn
     }
   }
 
   $topMatches = $items | Sort-Object Distance, Kind, DisplayName | Select-Object -First $Top
   if ($topMatches) {
-    Write-Warning "Sugerencias (Top $Top) para '$TargetDisplayName' (más cercano = menor distancia):"
+    Write-Warning "Sugerencias (Top $Top) para '$TargetDisplayName' (menor distancia = más cercano):"
     foreach ($s in $topMatches) {
       Write-Warning (" - d={0} | kind={1} | id={2} | name={3}" -f $s.Distance, $s.Kind, $s.TemplateId, $s.DisplayName)
     }
@@ -244,10 +247,9 @@ Write-Host "ApiVersion     : $ApiVersion"
 Write-Host ""
 
 $script:ArmToken = Get-ArmToken
-
 $base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
 
-# 1) Listar templates instalados
+# 1) Templates instalados
 Write-Host "-> Listando alertRuleTemplates..."
 $templates = Get-AllPaged -FirstUri "$base/alertRuleTemplates?api-version=$ApiVersion" -ApiVersion $ApiVersion
 Write-Host ("   Templates encontrados: {0}" -f $templates.Count)
@@ -256,31 +258,36 @@ Write-Host ("   Templates encontrados: {0}" -f $templates.Count)
 $target = Normalize-Name $DisplayName
 $targetFlat = ($target -replace ' ','')
 
-# 2.1 exacto normalizado
+# exacto normalizado
 $matches = @(
   $templates | Where-Object {
-    $dn = $_.properties.displayName
-    -not [string]::IsNullOrWhiteSpace($dn) -and (Normalize-Name $dn) -eq $target
+    $t = $_
+    if (-not (Has-Prop $t 'properties')) { return $false }
+    if (-not (Has-Prop $t.properties 'displayName')) { return $false }
+    (Normalize-Name $t.properties.displayName) -eq $target
   }
 )
 
-# 2.2 contains normalizado
+# contains normalizado
 if ($matches.Count -eq 0) {
   $matches = @(
     $templates | Where-Object {
-      $dn = $_.properties.displayName
-      -not [string]::IsNullOrWhiteSpace($dn) -and (Normalize-Name $dn) -like "*$target*"
+      $t = $_
+      if (-not (Has-Prop $t 'properties')) { return $false }
+      if (-not (Has-Prop $t.properties 'displayName')) { return $false }
+      (Normalize-Name $t.properties.displayName) -like "*$target*"
     }
   )
 }
 
-# 2.3 contains ignorando espacios
+# contains ignorando espacios
 if ($matches.Count -eq 0) {
   $matches = @(
     $templates | Where-Object {
-      $dn = $_.properties.displayName
-      if ([string]::IsNullOrWhiteSpace($dn)) { return $false }
-      $dnFlat = ((Normalize-Name $dn) -replace ' ','')
+      $t = $_
+      if (-not (Has-Prop $t 'properties')) { return $false }
+      if (-not (Has-Prop $t.properties 'displayName')) { return $false }
+      $dnFlat = ((Normalize-Name $t.properties.displayName) -replace ' ','')
       $dnFlat -like "*$targetFlat*"
     }
   )
@@ -291,9 +298,7 @@ if ($matches.Count -eq 0) {
   Show-Suggestions -Templates $templates -TargetDisplayName $DisplayName -Top $Suggestions
 
   switch ($NotFoundBehavior) {
-    "Fail" {
-      throw "No se encontró template para '$DisplayName'."
-    }
+    "Fail" { throw "No se encontró template para '$DisplayName'." }
     "WarnOnly" {
       Write-Warning "NotFoundBehavior=WarnOnly -> no se crea/habilita nada y el job termina OK."
       exit 0
@@ -306,14 +311,14 @@ if ($matches.Count -eq 0) {
 }
 
 if ($matches.Count -gt 1) {
-  Write-Warning ("Se encontraron {0} templates candidatos. Usando el primero (puedes afinar el displayName si quieres más precisión):" -f $matches.Count)
-  $matches | Select-Object -First ([Math]::Min($Suggestions,$matches.Count)) | ForEach-Object {
+  Write-Warning ("Se encontraron {0} templates candidatos. Usando el primero:" -f $matches.Count)
+  $matches | Select-Object -First ([Math]::Min(10, $matches.Count)) | ForEach-Object {
     Write-Warning (" - kind={0} | id={1} | name={2}" -f $_.kind, $_.name, $_.properties.displayName)
   }
 }
 
 $template = $matches[0]
-$kind = $template.kind
+$kind = if (Has-Prop $template 'kind') { $template.kind } else { "" }
 
 Write-Host "-> Template seleccionado:"
 Write-Host ("   template.name  : {0}" -f $template.name)
@@ -324,27 +329,30 @@ if ($kind -notin @("Scheduled","NRT")) {
   throw "Template kind '$kind' no soportado por este script (solo Scheduled y NRT)."
 }
 
-# 3) Listar reglas existentes y buscar coincidencia
+# 3) Buscar rule existente (matching tolerante contra el displayName del template ya seleccionado)
 Write-Host ""
 Write-Host "-> Comprobando si ya existe alertRule con ese displayName (matching tolerante)..."
 $rules = Get-AllPaged -FirstUri "$base/alertRules?api-version=$ApiVersion" -ApiVersion $ApiVersion
 
+$templateDnNorm = Normalize-Name $template.properties.displayName
+
 $existing = @(
   $rules | Where-Object {
-    $dn = $_.properties.displayName
-    -not [string]::IsNullOrWhiteSpace($dn) -and
-    (Normalize-Name $dn) -eq (Normalize-Name $template.properties.displayName) -and
-    $_.kind -eq $kind
+    $r = $_
+    if (-not (Has-Prop $r 'properties')) { return $false }
+    if (-not (Has-Prop $r.properties 'displayName')) { return $false }
+    if (-not (Has-Prop $r 'kind')) { return $false }
+
+    (Normalize-Name $r.properties.displayName) -eq $templateDnNorm -and $r.kind -eq $kind
   }
 )
 
 if ($existing.Count -gt 1) {
   Write-Warning ("Hay {0} alertRules existentes con ese displayName+kind. Se usará la primera: {1}" -f $existing.Count, $existing[0].name)
 }
-
 $existingRule = if ($existing.Count -ge 1) { $existing[0] } else { $null }
 
-# Propiedades a copiar desde el template (whitelist)
+# propiedades permitidas
 $allowedKeys = @(
   "displayName","description","severity",
   "query","queryFrequency","queryPeriod",
@@ -360,8 +368,9 @@ function Build-PropsFromTemplate {
   param([Parameter(Mandatory=$true)]$Template)
 
   $props = @{}
+
   foreach ($k in $allowedKeys) {
-    if ($Template.properties.PSObject.Properties.Name -contains $k) {
+    if (Has-Prop $Template.properties $k) {
       $props[$k] = $Template.properties.$k
     }
   }
@@ -370,7 +379,11 @@ function Build-PropsFromTemplate {
   $props["displayName"] = $Template.properties.displayName
   $props["enabled"] = $true
   $props["alertRuleTemplateName"] = $Template.name
-  if ($Template.properties.templateVersion) { $props["templateVersion"] = $Template.properties.templateVersion }
+
+  # ✅ FIX: templateVersion solo si existe
+  if (Has-Prop $Template.properties 'templateVersion') {
+    $props["templateVersion"] = $Template.properties.templateVersion
+  }
 
   Remove-ReadOnlyProps -Props $props
   return $props
@@ -396,7 +409,11 @@ if ($existingRule) {
 
       $props["enabled"] = $true
       $props["alertRuleTemplateName"] = $template.name
-      if ($template.properties.templateVersion) { $props["templateVersion"] = $template.properties.templateVersion }
+
+      # ✅ FIX: templateVersion solo si existe en template
+      if (Has-Prop $template.properties 'templateVersion') {
+        $props["templateVersion"] = $template.properties.templateVersion
+      }
 
       Remove-ReadOnlyProps -Props $props
 
