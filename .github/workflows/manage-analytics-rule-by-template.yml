@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       ruleName:
-        description: "Nombre EXACTO de la plantilla/regla (Display name). Ej: 'AV detections related to SpringShell Vulnerability'"
+        description: "Nombre EXACTO (Display name). Cópialo de Azure Portal > Microsoft Sentinel > Analytics > Rule templates > Name"
         required: true
         type: string
       action:
@@ -36,6 +36,14 @@ jobs:
           audience: api://AzureADTokenExchange
           enable-AzPSSession: true
 
+      # (Opcional) Debug rápido: valida que CLI tiene token ARM (patrón que ya tienes)
+      - name: WhoAmI (debug)
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az account show
+            az account get-access-token --resource https://management.azure.com/ --query expiresOn -o tsv
+
       - name: Enable/Disable rule by template name
         uses: azure/powershell@v2
         with:
@@ -59,7 +67,7 @@ jobs:
 
             $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts/Activate-Or-Disable-RuleFromTemplate.ps1"
             if (-not (Test-Path $scriptPath)) {
-              throw "No existe el wrapper script en: $scriptPath"
+              throw "No existe el script en: $scriptPath"
             }
 
             & $scriptPath `
