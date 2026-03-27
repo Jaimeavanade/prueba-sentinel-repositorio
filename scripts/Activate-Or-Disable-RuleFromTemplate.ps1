@@ -107,7 +107,7 @@ function Has-Prop {
     [Parameter(Mandatory=$true)] $Obj,
     [Parameter(Mandatory=$true)] [string] $PropName
   )
-  return $null -ne $Obj -and $null -ne $Obj.PSObject -and $Obj.PSObject.Properties.Name -contains $PropName
+  return $null -ne $Obj -and $null -ne $Obj.PSObject -and ($Obj.PSObject.Properties.Name -contains $PropName)
 }
 
 function Get-PropValue {
@@ -131,21 +131,25 @@ function Find-TemplateByName {
 
   # 1) Exacto (case-sensitive)
   $m = $Templates | Where-Object {
-    Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and $_.properties.displayName -eq $needleRaw
+    (Has-Prop $_ "properties") -and
+    (Has-Prop $_.properties "displayName") -and
+    ($_.properties.displayName -eq $needleRaw)
   } | Select-Object -First 1
   if ($m) { return @{ match=$m; mode="exact(case-sensitive)" } }
 
   # 2) Exacto normalizado (case-insensitive)
   $m = $Templates | Where-Object {
-    Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
-    (Normalize-Text $_.properties.displayName).ToLower() -eq $needle.ToLower()
+    (Has-Prop $_ "properties") -and
+    (Has-Prop $_.properties "displayName") -and
+    ((Normalize-Text $_.properties.displayName).ToLower() -eq $needle.ToLower())
   } | Select-Object -First 1
   if ($m) { return @{ match=$m; mode="exact(normalized, case-insensitive)" } }
 
   # 3) Contains (case-insensitive)
   $m = $Templates | Where-Object {
-    Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
-    (Normalize-Text $_.properties.displayName).ToLower().Contains($needle.ToLower())
+    (Has-Prop $_ "properties") -and
+    (Has-Prop $_.properties "displayName") -and
+    ((Normalize-Text $_.properties.displayName).ToLower().Contains($needle.ToLower()))
   } | Select-Object -First 1
   if ($m) { return @{ match=$m; mode="contains(case-insensitive)" } }
 
@@ -163,7 +167,7 @@ function Print-Candidates {
 
   $cands = $Templates |
     ForEach-Object {
-      $dn = ""
+      $dn  = ""
       $sev = "N/A"
       $knd = "N/A"
 
@@ -171,8 +175,7 @@ function Print-Candidates {
 
       if (Has-Prop $_ "properties") {
         if (Has-Prop $_.properties "displayName") { $dn = Normalize-Text $_.properties.displayName }
-        # ✅ FIX: severity es opcional -> no accedemos si no existe
-        if (Has-Prop $_.properties "severity") { $sev = $_.properties.severity }
+        if (Has-Prop $_.properties "severity")    { $sev = $_.properties.severity }  # opcional
       }
 
       $score = 0
@@ -219,7 +222,7 @@ $ApiVersion_Rules     = "2023-11-01"
 
 $base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
 
-Write-Host "==> Acción: enable"
+Write-Host "==> Acción: $Action"
 Write-Host "==> RuleName (DisplayName): $RuleName"
 Write-Host "==> Workspace: $WorkspaceName | RG: $ResourceGroupName | Sub: $SubscriptionId"
 
@@ -227,7 +230,7 @@ Write-Host "==> Workspace: $WorkspaceName | RG: $ResourceGroupName | Sub: $Subsc
 $script:ArmToken = Get-ArmToken
 
 # ----------------------------
-# 0) List templates
+# LIST
 # ----------------------------
 if ($Action -eq "list") {
   $templatesUri = "${base}/alertRuleTemplates?api-version=$ApiVersion_Templates"
@@ -239,8 +242,9 @@ if ($Action -eq "list") {
   if (-not [string]::IsNullOrWhiteSpace($Search)) {
     $s = (Normalize-Text $Search).ToLower()
     $all = $all | Where-Object {
-      Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
-      (Normalize-Text $_.properties.displayName).ToLower().Contains($s)
+      (Has-Prop $_ "properties") -and
+      (Has-Prop $_.properties "displayName") -and
+      ((Normalize-Text $_.properties.displayName).ToLower().Contains($s))
     }
     Write-Host "Filtradas por Search='$Search': $($all.Count)"
   }
@@ -248,9 +252,9 @@ if ($Action -eq "list") {
   Write-Host ""
   $all |
     ForEach-Object {
-      $dn = if (Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName") { Normalize-Text $_.properties.displayName } else { "" }
-      if (-not [string]::IsNullOrWhiteSpace($dn)) {
-        $sev = if (Has-Prop $_ "properties" -and Has-Prop $_.properties "severity") { $_.properties.severity } else { "N/A" }
+      if ((Has-Prop $_ "properties") -and (Has-Prop $_.properties "displayName")) {
+        $dn  = Normalize-Text $_.properties.displayName
+        $sev = if (Has-Prop $_.properties "severity") { $_.properties.severity } else { "N/A" }
         $knd = if (Has-Prop $_ "kind") { $_.kind } else { "N/A" }
         [pscustomobject]@{ displayName=$dn; kind=$knd; severity=$sev }
       }
@@ -263,7 +267,7 @@ if ($Action -eq "list") {
 }
 
 # ----------------------------
-# 1) Enable from template
+# ENABLE
 # ----------------------------
 if ($Action -eq "enable") {
 
@@ -322,7 +326,7 @@ if ($Action -eq "enable") {
 }
 
 # ----------------------------
-# 2) Disable existing rule
+# DISABLE
 # ----------------------------
 if ($Action -eq "disable") {
 
@@ -337,14 +341,16 @@ if ($Action -eq "disable") {
   $needle = (Normalize-Text $RuleName).ToLower()
 
   $rule = $ruleList | Where-Object {
-    Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
-    (Normalize-Text $_.properties.displayName).ToLower() -eq $needle
+    (Has-Prop $_ "properties") -and
+    (Has-Prop $_.properties "displayName") -and
+    ((Normalize-Text $_.properties.displayName).ToLower() -eq $needle)
   } | Select-Object -First 1
 
   if (-not $rule) {
     $rule = $ruleList | Where-Object {
-      Has-Prop $_ "properties" -and Has-Prop $_.properties "displayName" -and
-      (Normalize-Text $_.properties.displayName).ToLower().Contains($needle)
+      (Has-Prop $_ "properties") -and
+      (Has-Prop $_.properties "displayName") -and
+      ((Normalize-Text $_.properties.displayName).ToLower().Contains($needle))
     } | Select-Object -First 1
   }
 
