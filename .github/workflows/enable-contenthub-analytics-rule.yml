@@ -51,6 +51,7 @@ jobs:
       - name: Enable/Create rule from template (displayName)
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           ./scripts/Enable-SentinelContentHubAnalyticsRule.ps1 `
             -SubscriptionId "${{ env.SUBSCRIPTION_ID }}" `
             -ResourceGroupName "${{ env.RESOURCE_GROUP }}" `
