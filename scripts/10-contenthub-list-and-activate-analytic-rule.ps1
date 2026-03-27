@@ -1,363 +1,130 @@
-<#
-.SYNOPSIS
-  Lista soluciones instaladas de Content Hub y sus content items (desde packagedContent).
-  Opcionalmente, activa (despliega) una Analytics Rule por displayName.
-
-.DESCRIPTION
-  - Lee soluciones instaladas: Microsoft.SecurityInsights/contentPackages (en el workspace)
-  - Para cada solución instalada, obtiene el paquete del catálogo:
-      Microsoft.SecurityInsights/contentProductPackages?$expand=properties/packagedContent
-  - Enumera items dentro del ARM template "packagedContent"
-  - Si -DisplayName coincide con un recurso tipo alertRules, hace un deployment RG incremental
-    SOLO con esa regla.
-
-.REQUIREMENTS
-  - Ejecutar tras azure/login (OIDC) en GitHub Actions.
-  - Requiere Azure CLI (az) para obtener token ARM.
-#>
-
-[CmdletBinding(SupportsShouldProcess)]
+[CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$SubscriptionId,
-
-  [Parameter(Mandatory = $true)]
-  [string]$ResourceGroupName,
-
-  [Parameter(Mandatory = $true)]
-  [string]$WorkspaceName,
-
-  [Parameter(Mandatory = $false)]
-  [string]$DisplayName = "",
-
-  [Parameter(Mandatory = $false)]
-  [string]$ApiVersionSecurityInsights = "2025-09-01",
-
-  [Parameter(Mandatory = $false)]
-  [string]$ApiVersionOperationalInsights = "2025-07-01",
-
-  [Parameter(Mandatory = $false)]
-  [string]$ApiVersionDeployments = "2022-09-01",
-
-  [Parameter(Mandatory = $false)]
+  [Parameter(Mandatory = $true)][string]$SubscriptionId,
+  [Parameter(Mandatory = $true)][string]$ResourceGroupName,
+  [Parameter(Mandatory = $true)][string]$WorkspaceName,
+  [string]$ApiVersion = "2025-09-01",
   [string]$OutReportJson = "Solutions/contenthub-installed-items-report.json"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# ---------- Helpers ----------
+
 function Get-ArmToken {
-  $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv
-  if (-not $t -or $t.Trim().Length -lt 100) {
-    throw "Token ARM inválido. Asegura que 'azure/login' (OIDC) se ejecutó antes."
-  }
-  return $t
+  az account get-access-token `
+    --resource https://management.azure.com/ `
+    --query accessToken -o tsv
 }
 
 function Invoke-ArmGet {
-  param([Parameter(Mandatory=$true)][string]$Uri)
-  $headers = @{ Authorization = "Bearer $script:ArmToken" }
-  return Invoke-RestMethod -Method GET -Uri $Uri -Headers $headers
-}
-
-function Invoke-ArmPut {
-  param(
-    [Parameter(Mandatory=$true)][string]$Uri,
-    [Parameter(Mandatory=$true)][object]$Body
-  )
-  $headers = @{ Authorization = "Bearer $script:ArmToken" }
-  $json = ($Body | ConvertTo-Json -Depth 80)
-  return Invoke-RestMethod -Method PUT -Uri $Uri -Headers $headers -ContentType "application/json" -Body $json
+  param([string]$Uri)
+  Invoke-RestMethod -Method GET -Uri $Uri -Headers @{
+    Authorization = "Bearer $script:ArmToken"
+  }
 }
 
 function Get-AllPages {
-  param([Parameter(Mandatory=$true)][string]$FirstUri)
+  param([string]$Uri)
   $all = @()
-  $uri = $FirstUri
-  while ($uri) {
-    $resp = Invoke-ArmGet -Uri $uri
-    if ($resp.value) { $all += $resp.value }
-    $uri = $null
-    if ($resp.nextLink) { $uri = $resp.nextLink }
+  while ($Uri) {
+    $r = Invoke-ArmGet $Uri
+    if ($r.value) { $all += $r.value }
+    $Uri = $r.nextLink
   }
   return $all
 }
 
-function Get-WorkspaceInfo {
-  # FIX: usar ${WorkspaceName} porque va seguido de '?api-version'
-  $wsUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/${WorkspaceName}?api-version=$ApiVersionOperationalInsights"
-  return Invoke-ArmGet -Uri $wsUri
-}
-
-function Try-Get-CatalogPackageById {
-  param([Parameter(Mandatory=$true)][string]$CatalogId)
-
-  # FIX CLAVE: usar ${CatalogId} porque va seguido de '?api-version'
-  $u = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.SecurityInsights/contentProductPackages/${CatalogId}?api-version=$ApiVersionSecurityInsights&`$expand=properties/packagedContent"
-  try {
-    return Invoke-ArmGet -Uri $u
-  } catch {
-    return $null
+function Map-Kind {
+  param([string]$Type)
+  switch -Wildcard ($Type.ToLower()) {
+    "*/alertrules"      { "AnalyticsRule" }
+    "*/workbooks"       { "Workbook" }
+    "*/huntqueries"     { "HuntingQuery" }
+    "*/automationrules" { "AutomationRule" }
+    "*/parsers"         { "Parser" }
+    default             { "Other" }
   }
 }
 
-function Try-Get-CatalogPackageByContentProductId {
-  param([Parameter(Mandatory=$true)][string]$ContentProductId)
+# ---------- START ----------
 
-  $u = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.SecurityInsights/contentProductPackages?api-version=$ApiVersionSecurityInsights&`$filter=properties/contentProductId eq '$ContentProductId'&`$expand=properties/packagedContent&`$top=1"
-  try {
-    $r = Invoke-ArmGet -Uri $u
-    if ($r.value -and $r.value.Count -ge 1) { return $r.value[0] }
-    return $null
-  } catch {
-    return $null
-  }
-}
-
-function Normalize-PackagedContentTemplate {
-  param([Parameter(Mandatory=$true)][object]$CatalogObj)
-
-  $pc = $CatalogObj.properties.packagedContent
-  if (-not $pc) { return $null }
-
-  if ($pc -is [string]) {
-    try { $pc = $pc | ConvertFrom-Json -Depth 80 } catch { }
-  }
-
-  if ($pc.template)     { return $pc.template }
-  if ($pc.mainTemplate) { return $pc.mainTemplate }
-  if ($pc.resources -or $pc.parameters) { return $pc }
-
-  return $null
-}
-
-function Map-KindFromResourceType {
-  param([Parameter(Mandatory=$true)][string]$Type)
-
-  $t = $Type.ToLowerInvariant()
-  if ($t -like "*/alertrules")      { return "AnalyticsRule" }
-  if ($t -like "*/workbooks")       { return "Workbook" }
-  if ($t -like "*/automationrules") { return "AutomationRule" }
-  if ($t -like "*/watchlists")      { return "Watchlist" }
-  if ($t -like "*/parsers")         { return "Parser" }
-  if ($t -like "*/huntqueries")     { return "HuntingQuery" }
-  if ($t -like "*/savedsearches")   { return "SavedSearch" }
-  return "Other"
-}
-
-function Build-DeploymentParameters {
-  param(
-    [Parameter(Mandatory=$true)][hashtable]$TemplateParameters,
-    [Parameter(Mandatory=$true)][string]$WorkspaceResourceId,
-    [Parameter(Mandatory=$true)][string]$WorkspaceLocation
-  )
-
-  $p = @{}
-
-  foreach ($k in $TemplateParameters.Keys) {
-    $kLower = $k.ToLowerInvariant()
-
-    $hasDefault = $false
-    try { if ($TemplateParameters[$k].defaultValue) { $hasDefault = $true } } catch { }
-
-    if ($kLower -in @("workspace", "workspaceid", "workspace_resource_id")) {
-      $p[$k] = @{ value = $WorkspaceResourceId }
-      continue
-    }
-    if ($kLower -in @("workspacename", "workspace_name")) {
-      $p[$k] = @{ value = $WorkspaceName }
-      continue
-    }
-    if ($kLower -in @("location", "workspacelocation", "workspace_location")) {
-      $p[$k] = @{ value = $WorkspaceLocation }
-      continue
-    }
-    if ($kLower -in @("subscriptionid")) {
-      $p[$k] = @{ value = $SubscriptionId }
-      continue
-    }
-    if ($kLower -in @("resourcegroup", "resourcegroupname")) {
-      $p[$k] = @{ value = $ResourceGroupName }
-      continue
-    }
-
-    if (-not $hasDefault) {
-      $p[$k] = $null
-    }
-  }
-
-  return $p
-}
-
-# ---------------- MAIN ----------------
-
-Write-Host "==> Obteniendo token ARM..."
 $script:ArmToken = Get-ArmToken
+$report = @()
 
-Write-Host "==> Obteniendo info del workspace..."
-$ws = Get-WorkspaceInfo
-$workspaceLocation = $ws.location
-$workspaceResourceId = $ws.id
+Write-Host "==> Listando soluciones de Content Hub INSTALADAS..."
 
-Write-Host "Workspace: $WorkspaceName | Location: $workspaceLocation"
-Write-Host "Workspace ResourceId: $workspaceResourceId"
+$packagesUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/${WorkspaceName}/providers/Microsoft.SecurityInsights/contentPackages?api-version=$ApiVersion"
+$packages = Get-AllPages $packagesUri
 
-Write-Host "==> Listando soluciones instaladas (contentPackages)..."
-# FIX: ${WorkspaceName} (aquí NO va con '?' pero lo dejamos consistente)
-$installedUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/${WorkspaceName}/providers/Microsoft.SecurityInsights/contentPackages?api-version=$ApiVersionSecurityInsights"
-$installed = Get-AllPages -FirstUri $installedUri
+foreach ($pkg in $packages) {
 
-Write-Host ("Soluciones instaladas encontradas: {0}" -f ($installed.Count))
-
-$report = [System.Collections.Generic.List[object]]::new()
-
-foreach ($pkg in $installed) {
-  $solutionName     = $pkg.name
-  $solutionDisplay  = $pkg.properties.displayName
-  $contentProductId = $pkg.properties.contentProductId
-  $contentId        = $pkg.properties.contentId
+  $solutionName    = $pkg.name
+  $solutionDisplay = $pkg.properties.displayName
+  $contentId       = $pkg.properties.contentId
 
   Write-Host "----"
-  Write-Host "Solution installed: $solutionDisplay"
-  Write-Host " contentProductId: $contentProductId"
-  Write-Host " contentId:        $contentId"
+  Write-Host "Solución: $solutionDisplay"
 
-  $catalog = $null
-  if ($contentId) { $catalog = Try-Get-CatalogPackageById -CatalogId $contentId }
-  if (-not $catalog -and $contentProductId) { $catalog = Try-Get-CatalogPackageByContentProductId -ContentProductId $contentProductId }
+  # ==========================
+  # 1️⃣ CONTENT ITEMS INSTALADOS
+  # ==========================
 
-  if (-not $catalog) {
-    Write-Warning "No se pudo resolver packagedContent desde catálogo para: $solutionDisplay"
-    continue
+  $installedUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/${WorkspaceName}/providers/Microsoft.SecurityInsights/contentPackages/${solutionName}/contentTemplates?api-version=$ApiVersion"
+
+  try {
+    $installedItems = Get-AllPages $installedUri
+  } catch {
+    $installedItems = @()
   }
 
-  $tmpl = Normalize-PackagedContentTemplate -CatalogObj $catalog
-  if (-not $tmpl -or -not $tmpl.resources) {
-    Write-Warning "packagedContent sin template/resources para: $solutionDisplay"
-    continue
-  }
-
-  foreach ($res in $tmpl.resources) {
-    $rtype = [string]$res.type
-    $rname = [string]$res.name
-    $kind  = Map-KindFromResourceType -Type $rtype
-
-    $itemDisplay = $null
-    try { if ($res.properties.displayName) { $itemDisplay = [string]$res.properties.displayName } } catch { }
-    if (-not $itemDisplay) {
-      try { if ($res.properties.DisplayName) { $itemDisplay = [string]$res.properties.DisplayName } } catch { }
-    }
-    if (-not $itemDisplay) { $itemDisplay = "" }
-
-    $report.Add([pscustomobject]@{
+  foreach ($item in $installedItems) {
+    $report += [pscustomobject]@{
       solutionDisplayName = $solutionDisplay
       solutionName        = $solutionName
-      contentProductId    = $contentProductId
-      contentId           = $contentId
-      itemKind            = $kind
-      itemType            = $rtype
-      itemName            = $rname
-      itemDisplayName     = $itemDisplay
-    })
+      itemDisplayName     = $item.properties.displayName
+      itemKind            = Map-Kind $item.type
+      itemType            = $item.type
+      source              = "installed"
+    }
+  }
+
+  # ==========================
+  # 2️⃣ CONTENT ITEMS DEL CATÁLOGO
+  # ==========================
+
+  if (-not $contentId) { continue }
+
+  $catalogUri = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.SecurityInsights/contentProductPackages/${contentId}?api-version=$ApiVersion&`$expand=properties/packagedContent"
+
+  try {
+    $catalog = Invoke-ArmGet $catalogUri
+    $template = $catalog.properties.packagedContent.template
+  } catch {
+    continue
+  }
+
+  foreach ($res in $template.resources) {
+    if (-not $res.properties.displayName) { continue }
+
+    $report += [pscustomobject]@{
+      solutionDisplayName = $solutionDisplay
+      solutionName        = $solutionName
+      itemDisplayName     = $res.properties.displayName
+      itemKind            = Map-Kind $res.type
+      itemType            = $res.type
+      source              = "catalog"
+    }
   }
 }
 
-$reportDir = Split-Path -Parent $OutReportJson
-if ($reportDir -and -not (Test-Path $reportDir)) { New-Item -ItemType Directory -Path $reportDir | Out-Null }
+# ---------- OUTPUT ----------
 
-($report | Sort-Object solutionDisplayName, itemKind, itemDisplayName | ConvertTo-Json -Depth 20) |
-  Out-File -FilePath $OutReportJson -Encoding utf8
+$report |
+  Sort-Object solutionDisplayName, itemKind, itemDisplayName |
+  ConvertTo-Json -Depth 20 |
+  Out-File $OutReportJson -Encoding utf8
 
-Write-Host "==> Report guardado en: $OutReportJson"
-Write-Host "==> Total content items enumerados: $($report.Count)"
-
-if ([string]::IsNullOrWhiteSpace($DisplayName)) {
-  Write-Host "==> No se indicó -DisplayName. Finalizando (solo listado)."
-  exit 0
-}
-
-Write-Host "==> Buscando item con displayName EXACTO: '$DisplayName' (case-insensitive)..."
-$match = $report | Where-Object {
-  $_.itemDisplayName -and $_.itemDisplayName.Equals($DisplayName, [System.StringComparison]::InvariantCultureIgnoreCase)
-}
-
-if (-not $match -or $match.Count -eq 0) {
-  throw "No se encontró ningún content item con displayName='$DisplayName' en las soluciones instaladas."
-}
-
-$chosen = $match | Where-Object { $_.itemKind -eq "AnalyticsRule" } | Select-Object -First 1
-if (-not $chosen) { $chosen = $match | Select-Object -First 1 }
-
-Write-Host "==> Match elegido:"
-$chosen | Format-List | Out-String | Write-Host
-
-if ($chosen.itemKind -ne "AnalyticsRule") {
-  throw "El item encontrado NO es una AnalyticsRule (es '$($chosen.itemKind)'). Este script solo crea reglas analíticas."
-}
-
-$catalog2 = $null
-if ($chosen.contentId) { $catalog2 = Try-Get-CatalogPackageById -CatalogId $chosen.contentId }
-if (-not $catalog2 -and $chosen.contentProductId) { $catalog2 = Try-Get-CatalogPackageByContentProductId -ContentProductId $chosen.contentProductId }
-if (-not $catalog2) { throw "No se pudo re-resolver el paquete del catálogo para desplegar." }
-
-$tmpl2 = Normalize-PackagedContentTemplate -CatalogObj $catalog2
-if (-not $tmpl2 -or -not $tmpl2.resources) { throw "Template inválido en packagedContent (sin resources)." }
-
-$resourceToDeploy = $null
-foreach ($r in $tmpl2.resources) {
-  $rtype = [string]$r.type
-  if (-not $rtype.ToLowerInvariant().EndsWith("/alertrules")) { continue }
-  $d = $null
-  try { if ($r.properties.displayName) { $d = [string]$r.properties.displayName } } catch { }
-  if (-not $d) { continue }
-
-  if ($d.Equals($DisplayName, [System.StringComparison]::InvariantCultureIgnoreCase)) {
-    $resourceToDeploy = $r
-    break
-  }
-}
-
-if (-not $resourceToDeploy) {
-  throw "No se encontró el recurso alertRules con displayName '$DisplayName' dentro del packagedContent."
-}
-
-$newTemplate = @{
-  '$schema'      = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
-  contentVersion = "1.0.0.0"
-  parameters     = $tmpl2.parameters
-  variables      = $tmpl2.variables
-  resources      = @($resourceToDeploy)
-  outputs        = @{}
-}
-
-$templateParams = @{}
-if ($tmpl2.parameters) {
-  $templateParams = Build-DeploymentParameters -TemplateParameters $tmpl2.parameters -WorkspaceResourceId $workspaceResourceId -WorkspaceLocation $workspaceLocation
-}
-
-$missing = @()
-foreach ($k in $templateParams.Keys) {
-  if ($null -eq $templateParams[$k]) { $missing += $k }
-}
-if ($missing.Count -gt 0) {
-  throw "No puedo rellenar automáticamente estos parámetros requeridos del template: $($missing -join ', '). Ajusta el script para mapearlos o usa un template con defaultValue."
-}
-
-$deploymentName = ("deploy-analyticrule-{0}" -f (Get-Date -Format "yyyyMMddHHmmss"))
-$deployUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$deploymentName?api-version=$ApiVersionDeployments"
-
-$payload = @{
-  properties = @{
-    mode       = "Incremental"
-    template   = $newTemplate
-    parameters = $templateParams
-  }
-}
-
-if ($PSCmdlet.ShouldProcess("RG $ResourceGroupName", "Deploy AnalyticsRule '$DisplayName' (deployment: $deploymentName)")) {
-  Write-Host "==> Desplegando AnalyticsRule via deployment incremental..."
-  $resp = Invoke-ArmPut -Uri $deployUri -Body $payload
-  Write-Host "==> Deployment enviado OK: $deploymentName"
-  Write-Host ("ProvisioningState: {0}" -f $resp.properties.provisioningState)
-  Write-Host "==> Hecho."
-}
+Write-Host "✅ Report generado correctamente:"
+Write-Host "   $OutReportJson"
