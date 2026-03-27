@@ -3,16 +3,14 @@
 Activa (crea desde template) o deshabilita una regla de Analíticas en Microsoft Sentinel usando el Display Name.
 
 .DESCRIPTION
-- action=enable: localiza el Rule template (Analytics > Rule templates) por displayName y crea la regla (Scheduled) habilitada.
-- action=disable: localiza la regla existente (Analytics > Active rules) por displayName y la marca enabled=false.
+- action=enable: busca Rule template (Analytics > Rule templates) por displayName y crea la regla (Scheduled) habilitada.
+- action=disable: busca regla existente (Analytics > Active rules) por displayName y la marca enabled=false.
+- action=list: lista Rule templates instaladas (opcionalmente filtrando por texto).
 
-IMPORTANTE (GitHub Actions + Az 14+):
-- Evitamos Get-AzAccessToken para ARM porque el Token puede venir como SecureString y romper el header.
-- Usamos 'az account get-access-token --resource https://management.azure.com/' para obtener un token en texto plano.
-
-NOTAS:
-- El nombre debe coincidir EXACTO con el "Name" en:
-  Azure Portal > Microsoft Sentinel > Analytics > Rule templates > Name
+NOTAS
+- El nombre recomendado se obtiene desde:
+  Azure Portal > Microsoft Sentinel > Analytics > Rule templates > Name [1](https://avanade-my.sharepoint.com/personal/j_velazquez_santos_avanade_com/_layouts/15/Doc.aspx?action=edit&mobileredirect=true&wdorigin=Sharepoint&DefaultItemOpen=1&sourcedoc={dcde3f4e-f42d-4456-93b2-470a520e4bb2}&wd=target(/Segittur.one/)&wdpartid={e350145b-e83d-4a78-bb29-9981bd5f5ad7}{1}&wdsectionfileid={cfe6086a-3179-430a-9536-53117009c186})
+- Si el nombre no existe, el script devuelve candidatos similares para copiar/pegar.
 
 #>
 
@@ -31,12 +29,14 @@ param(
   [string] $WorkspaceName,
 
   [Parameter(Mandatory=$true)]
-  [ValidateSet("enable","disable")]
+  [ValidateSet("enable","disable","list")]
   [string] $Action,
 
-  [Parameter(Mandatory=$true)]
-  [ValidateNotNullOrEmpty()]
-  [string] $RuleName
+  [Parameter(Mandatory=$false)]
+  [string] $RuleName = "",
+
+  [Parameter(Mandatory=$false)]
+  [string] $Search = ""
 )
 
 Set-StrictMode -Version Latest
@@ -48,7 +48,7 @@ $ErrorActionPreference = "Stop"
 function Get-ArmToken {
   $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv
   if (-not $t -or $t.Trim().Length -lt 100) {
-    throw "Token ARM inválido o vacío. Revisa que azure/login (OIDC) se haya ejecutado y que el SP tenga permisos."
+    throw "Token ARM inválido o vacío. Revisa que azure/login (OIDC) se haya ejecutado y permisos del SP."
   }
   return $t
 }
@@ -99,10 +99,76 @@ function Invoke-ArmRest {
   }
 }
 
+function Normalize-Text([string]$s) {
+  if ($null -eq $s) { return "" }
+  return ($s.Trim() -replace "\s+", " ")
+}
+
+function Find-TemplateByName {
+  param(
+    [Parameter(Mandatory=$true)] [object[]] $Templates,
+    [Parameter(Mandatory=$true)] [string] $Name
+  )
+
+  $needleRaw = $Name
+  $needle = Normalize-Text $Name
+
+  # 1) Exacto (case-sensitive)
+  $m = $Templates | Where-Object { $_.properties.displayName -eq $needleRaw } | Select-Object -First 1
+  if ($m) { return @{ match=$m; mode="exact(case-sensitive)" } }
+
+  # 2) Exacto normalizado (case-insensitive)
+  $m = $Templates | Where-Object { (Normalize-Text $_.properties.displayName).ToLower() -eq $needle.ToLower() } | Select-Object -First 1
+  if ($m) { return @{ match=$m; mode="exact(normalized, case-insensitive)" } }
+
+  # 3) Contains (case-insensitive)
+  $m = $Templates | Where-Object { (Normalize-Text $_.properties.displayName).ToLower().Contains($needle.ToLower()) } | Select-Object -First 1
+  if ($m) { return @{ match=$m; mode="contains(case-insensitive)" } }
+
+  return @{ match=$null; mode="not-found" }
+}
+
+function Print-Candidates {
+  param(
+    [Parameter(Mandatory=$true)] [object[]] $Templates,
+    [Parameter(Mandatory=$true)] [string] $Name,
+    [int] $Top = 30
+  )
+
+  $needle = (Normalize-Text $Name).ToLower()
+
+  $cands = $Templates |
+    ForEach-Object {
+      $dn = Normalize-Text $_.properties.displayName
+      [pscustomobject]@{
+        displayName = $dn
+        kind        = $_.kind
+        severity    = $_.properties.severity
+        score       = if ($dn.ToLower().Contains($needle)) { 2 } elseif ($needle.Length -gt 0 -and $dn.ToLower().Contains($needle.Split(" ")[0])) { 1 } else { 0 }
+      }
+    } |
+    Where-Object { $_.score -gt 0 } |
+    Sort-Object score -Descending, displayName |
+    Select-Object -First $Top
+
+  if (-not $cands -or $cands.Count -eq 0) {
+    Write-Host "No hay candidatos por contains. Puedes usar Action=list para sacar todas las plantillas."
+    return
+  }
+
+  Write-Host ""
+  Write-Host "=== CANDIDATOS (copiar/pegar displayName) ==="
+  $i = 0
+  foreach ($c in $cands) {
+    $i++
+    Write-Host ("{0}. {1} | kind={2} | severity={3}" -f $i, $c.displayName, $c.kind, $c.severity)
+  }
+  Write-Host "==========================================="
+}
+
 # ----------------------------
 # Config
 # ----------------------------
-# Si te diera problemas de API version, dime tu API version actual y lo ajustamos.
 $ApiVersion_Templates = "2023-11-01"
 $ApiVersion_Rules     = "2023-11-01"
 
@@ -112,35 +178,67 @@ Write-Host "==> Acción: $Action"
 Write-Host "==> RuleName (DisplayName): $RuleName"
 Write-Host "==> Workspace: $WorkspaceName | RG: $ResourceGroupName | Sub: $SubscriptionId"
 
-# Fuerza token ARM al inicio (fail fast)
+# Token ARM (fail fast)
 $script:ArmToken = Get-ArmToken
 
 # ----------------------------
-# Logic
+# 0) List templates
 # ----------------------------
-if ($Action -eq "enable") {
-
-  # 1) Listar Rule templates instaladas
+if ($Action -eq "list") {
   $templatesUri = "${base}/alertRuleTemplates?api-version=$ApiVersion_Templates"
   $templates = Invoke-ArmRest -Method GET -Uri $templatesUri
 
-  $match = $templates.value | Where-Object { $_.properties.displayName -eq $RuleName } | Select-Object -First 1
-  if (-not $match) {
-    throw "No se encontró ningún Rule template con displayName EXACTO = '$RuleName'. Copia el nombre desde Sentinel > Analytics > Rule templates > Name."
+  $all = @($templates.value)
+  Write-Host "Total Rule templates instaladas: $($all.Count)"
+
+  if (-not [string]::IsNullOrWhiteSpace($Search)) {
+    $s = (Normalize-Text $Search).ToLower()
+    $all = $all | Where-Object { (Normalize-Text $_.properties.displayName).ToLower().Contains($s) }
+    Write-Host "Filtradas por Search='$Search': $($all.Count)"
   }
 
+  Write-Host ""
+  $all |
+    Sort-Object { Normalize-Text $_.properties.displayName } |
+    Select-Object -ExpandProperty properties |
+    Select-Object displayName, severity |
+    ForEach-Object { Write-Host ("- {0} | severity={1}" -f (Normalize-Text $_.displayName), $_.severity) }
+
+  exit 0
+}
+
+# ----------------------------
+# 1) Load templates for enable
+# ----------------------------
+if ($Action -eq "enable") {
+
+  if ([string]::IsNullOrWhiteSpace($RuleName)) {
+    throw "RuleName es obligatorio para Action=enable."
+  }
+
+  $templatesUri = "${base}/alertRuleTemplates?api-version=$ApiVersion_Templates"
+  $templates = Invoke-ArmRest -Method GET -Uri $templatesUri
+  $tplList = @($templates.value)
+
+  $found = Find-TemplateByName -Templates $tplList -Name $RuleName
+  $match = $found.match
+
+  if (-not $match) {
+    Write-Host "No se encontró Rule template por nombre exacto/normalizado/contains."
+    Print-Candidates -Templates $tplList -Name $RuleName -Top 30
+    throw "No se encontró ningún Rule template con displayName compatible con '$RuleName'. Revisa que la solución esté instalada o usa Action=list."
+  }
+
+  Write-Host "✅ Template encontrado (modo: $($found.mode))"
   $templateId = $match.name
   Write-Host "Encontrado templateId: $templateId"
 
-  # 2) Crear regla Scheduled desde template
+  # Crear regla Scheduled desde template
   $newRuleGuid = (New-Guid).Guid
-
-  # IMPORTANTE: usar ${} para evitar el bug $newRuleGuid?api
   $createRuleUri = "${base}/alertRules/${newRuleGuid}?api-version=$ApiVersion_Rules"
 
   $p = $match.properties
 
-  # Mapeo básico desde template (Scheduled)
   $ruleProps = @{
     displayName         = $p.displayName
     description         = $p.description
@@ -166,25 +264,38 @@ if ($Action -eq "enable") {
   $created = Invoke-ArmRest -Method PUT -Uri $createRuleUri -Body $body
 
   Write-Host "✅ Regla creada/activada: $($created.properties.displayName) (id: $newRuleGuid)"
+  exit 0
 }
-else {
-  # disable
 
-  # 1) Listar reglas existentes
+# ----------------------------
+# 2) Disable existing rule
+# ----------------------------
+if ($Action -eq "disable") {
+
+  if ([string]::IsNullOrWhiteSpace($RuleName)) {
+    throw "RuleName es obligatorio para Action=disable."
+  }
+
   $rulesUri = "${base}/alertRules?api-version=$ApiVersion_Rules"
   $rules = Invoke-ArmRest -Method GET -Uri $rulesUri
+  $ruleList = @($rules.value)
 
-  $rule = $rules.value | Where-Object { $_.properties.displayName -eq $RuleName } | Select-Object -First 1
+  $needle = (Normalize-Text $RuleName).ToLower()
+  $rule = $ruleList | Where-Object { (Normalize-Text $_.properties.displayName).ToLower() -eq $needle } | Select-Object -First 1
+
   if (-not $rule) {
-    throw "No se encontró ninguna regla creada con displayName EXACTO = '$RuleName'. (Revisa en Analytics > Active rules)."
+    # fallback contains
+    $rule = $ruleList | Where-Object { (Normalize-Text $_.properties.displayName).ToLower().Contains($needle) } | Select-Object -First 1
+  }
+
+  if (-not $rule) {
+    throw "No se encontró ninguna regla activa con displayName='$RuleName'. Revisa Analytics > Active rules."
   }
 
   $ruleId = $rule.name
   Write-Host "Encontrada reglaId: $ruleId. Marcando enabled=false..."
 
-  # IMPORTANTE: usar ${} para evitar $ruleId?api
   $patchUri = "${base}/alertRules/${ruleId}?api-version=$ApiVersion_Rules"
-
   $patchBody = @{
     properties = @{
       enabled = $false
@@ -193,4 +304,7 @@ else {
 
   $updated = Invoke-ArmRest -Method PATCH -Uri $patchUri -Body $patchBody
   Write-Host "✅ Regla deshabilitada: $($updated.properties.displayName)"
+  exit 0
 }
+
+throw "Action no soportada: $Action"
