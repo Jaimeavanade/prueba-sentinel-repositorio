@@ -6,9 +6,14 @@ Activa (crea desde template) o deshabilita una regla de Analíticas en Microsoft
 - action=enable: localiza el Rule template (Analytics > Rule templates) por displayName y crea la regla (Scheduled) habilitada.
 - action=disable: localiza la regla existente (Analytics > Active rules) por displayName y la marca enabled=false.
 
-NOTA IMPORTANTE (GitHub Actions + Az 14+):
+IMPORTANTE (GitHub Actions + Az 14+):
 - Evitamos Get-AzAccessToken para ARM porque el Token puede venir como SecureString y romper el header.
-- Usamos 'az account get-access-token --resource https://management.azure.com/' (patrón ya usado en tu repo).
+- Usamos 'az account get-access-token --resource https://management.azure.com/' para obtener un token en texto plano.
+
+NOTAS:
+- El nombre debe coincidir EXACTO con el "Name" en:
+  Azure Portal > Microsoft Sentinel > Analytics > Rule templates > Name
+
 #>
 
 [CmdletBinding()]
@@ -37,20 +42,35 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# ----------------------------
+# Helpers
+# ----------------------------
 function Get-ArmToken {
-  # Obtiene token ARM en texto plano (evita SecureString / Az 14+)
   $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv
   if (-not $t -or $t.Trim().Length -lt 100) {
-    throw "Token ARM inválido o vacío. Revisa azure/login (OIDC) y permisos."
+    throw "Token ARM inválido o vacío. Revisa que azure/login (OIDC) se haya ejecutado y que el SP tenga permisos."
   }
   return $t
+}
+
+function Get-ErrorBodyFromException {
+  param([Parameter(Mandatory=$true)] $Exception)
+
+  try {
+    if ($Exception.Response -and $Exception.Response.GetResponseStream) {
+      $reader = New-Object System.IO.StreamReader($Exception.Response.GetResponseStream())
+      $body = $reader.ReadToEnd()
+      if ($body) { return $body }
+    }
+  } catch { }
+  return $null
 }
 
 function Invoke-ArmRest {
   param(
     [Parameter(Mandatory=$true)][ValidateSet("GET","PUT","POST","PATCH","DELETE")] [string] $Method,
     [Parameter(Mandatory=$true)] [string] $Uri,
-    [Parameter(Mandatory=$false)] $Body
+    [Parameter(Mandatory=$false)] [object] $Body
   )
 
   if (-not $script:ArmToken) {
@@ -58,8 +78,8 @@ function Invoke-ArmRest {
   }
 
   $headers = @{
-    "Authorization" = "Bearer $script:ArmToken"
-    "Content-Type"  = "application/json"
+    Authorization = "Bearer $script:ArmToken"
+    "Content-Type" = "application/json"
   }
 
   try {
@@ -71,14 +91,7 @@ function Invoke-ArmRest {
     }
   }
   catch {
-    # Intenta extraer body de error para diagnóstico
-    $bodyText = $null
-    try {
-      if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream) {
-        $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-        $bodyText = $reader.ReadToEnd()
-      }
-    } catch {}
+    $bodyText = Get-ErrorBodyFromException -Exception $_.Exception
     if ($bodyText) {
       throw "Fallo REST ($Method). Uri=$Uri. Body=$bodyText"
     }
@@ -86,7 +99,10 @@ function Invoke-ArmRest {
   }
 }
 
-# API versions (ajustables si tu tenant exige otra)
+# ----------------------------
+# Config
+# ----------------------------
+# Si te diera problemas de API version, dime tu API version actual y lo ajustamos.
 $ApiVersion_Templates = "2023-11-01"
 $ApiVersion_Rules     = "2023-11-01"
 
@@ -96,13 +112,16 @@ Write-Host "==> Acción: $Action"
 Write-Host "==> RuleName (DisplayName): $RuleName"
 Write-Host "==> Workspace: $WorkspaceName | RG: $ResourceGroupName | Sub: $SubscriptionId"
 
-# Fuerza token ARM al inicio (para fallar pronto si auth está mal)
+# Fuerza token ARM al inicio (fail fast)
 $script:ArmToken = Get-ArmToken
 
+# ----------------------------
+# Logic
+# ----------------------------
 if ($Action -eq "enable") {
 
-  # 1) Listar templates instalados (Rule templates)
-  $templatesUri = "$base/alertRuleTemplates?api-version=$ApiVersion_Templates"
+  # 1) Listar Rule templates instaladas
+  $templatesUri = "${base}/alertRuleTemplates?api-version=$ApiVersion_Templates"
   $templates = Invoke-ArmRest -Method GET -Uri $templatesUri
 
   $match = $templates.value | Where-Object { $_.properties.displayName -eq $RuleName } | Select-Object -First 1
@@ -113,26 +132,29 @@ if ($Action -eq "enable") {
   $templateId = $match.name
   Write-Host "Encontrado templateId: $templateId"
 
-  # 2) Crear regla (Scheduled) usando propiedades del template
+  # 2) Crear regla Scheduled desde template
   $newRuleGuid = (New-Guid).Guid
-  $createRuleUri = "$base/alertRules/$newRuleGuid?api-version=$ApiVersion_Rules"
+
+  # IMPORTANTE: usar ${} para evitar el bug $newRuleGuid?api
+  $createRuleUri = "${base}/alertRules/${newRuleGuid}?api-version=$ApiVersion_Rules"
 
   $p = $match.properties
 
+  # Mapeo básico desde template (Scheduled)
   $ruleProps = @{
-    displayName        = $p.displayName
-    description        = $p.description
-    severity           = $p.severity
-    enabled            = $true
-    query              = $p.query
-    queryFrequency     = $p.queryFrequency
-    queryPeriod        = $p.queryPeriod
-    triggerOperator    = $p.triggerOperator
-    triggerThreshold   = $p.triggerThreshold
+    displayName         = $p.displayName
+    description         = $p.description
+    severity            = $p.severity
+    enabled             = $true
+    query               = $p.query
+    queryFrequency      = $p.queryFrequency
+    queryPeriod         = $p.queryPeriod
+    triggerOperator     = $p.triggerOperator
+    triggerThreshold    = $p.triggerThreshold
     suppressionDuration = $p.suppressionDuration
     suppressionEnabled  = $p.suppressionEnabled
-    tactics            = $p.tactics
-    techniques         = $p.techniques
+    tactics             = $p.tactics
+    techniques          = $p.techniques
   }
 
   $body = @{
@@ -148,19 +170,21 @@ if ($Action -eq "enable") {
 else {
   # disable
 
-  # 1) Buscar regla existente por displayName
-  $rulesUri = "$base/alertRules?api-version=$ApiVersion_Rules"
+  # 1) Listar reglas existentes
+  $rulesUri = "${base}/alertRules?api-version=$ApiVersion_Rules"
   $rules = Invoke-ArmRest -Method GET -Uri $rulesUri
 
   $rule = $rules.value | Where-Object { $_.properties.displayName -eq $RuleName } | Select-Object -First 1
   if (-not $rule) {
-    throw "No se encontró ninguna regla creada con displayName EXACTO = '$RuleName'."
+    throw "No se encontró ninguna regla creada con displayName EXACTO = '$RuleName'. (Revisa en Analytics > Active rules)."
   }
 
   $ruleId = $rule.name
   Write-Host "Encontrada reglaId: $ruleId. Marcando enabled=false..."
 
-  $patchUri = "$base/alertRules/$ruleId?api-version=$ApiVersion_Rules"
+  # IMPORTANTE: usar ${} para evitar $ruleId?api
+  $patchUri = "${base}/alertRules/${ruleId}?api-version=$ApiVersion_Rules"
+
   $patchBody = @{
     properties = @{
       enabled = $false
