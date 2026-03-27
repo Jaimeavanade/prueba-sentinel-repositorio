@@ -1,13 +1,14 @@
 <#
 .SYNOPSIS
-Activa (crea desde template) o deshabilita una regla de Analíticas en Microsoft Sentinel usando como clave el Display Name.
+Activa (crea desde template) o deshabilita una regla de Analíticas en Microsoft Sentinel usando el Display Name.
 
 .DESCRIPTION
-- action=enable: localiza el template (Rule template) cuyo displayName coincide y crea la regla desde ese template.
-- action=disable: localiza la regla ya creada (Scheduled analytics rule) por displayName y la marca como enabled=false.
+- action=enable: localiza el Rule template (Analytics > Rule templates) por displayName y crea la regla (Scheduled) habilitada.
+- action=disable: localiza la regla existente (Analytics > Active rules) por displayName y la marca enabled=false.
 
-.NOTES
-Requiere Az.Accounts para obtener token (Get-AzAccessToken). Se ejecuta bien en GitHub Actions con azure/login@v2 + azure/powershell@v2.
+NOTA IMPORTANTE (GitHub Actions + Az 14+):
+- Evitamos Get-AzAccessToken para ARM porque el Token puede venir como SecureString y romper el header.
+- Usamos 'az account get-access-token --resource https://management.azure.com/' (patrón ya usado en tu repo).
 #>
 
 [CmdletBinding()]
@@ -33,7 +34,17 @@ param(
   [string] $RuleName
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function Get-ArmToken {
+  # Obtiene token ARM en texto plano (evita SecureString / Az 14+)
+  $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv
+  if (-not $t -or $t.Trim().Length -lt 100) {
+    throw "Token ARM inválido o vacío. Revisa azure/login (OIDC) y permisos."
+  }
+  return $t
+}
 
 function Invoke-ArmRest {
   param(
@@ -42,23 +53,40 @@ function Invoke-ArmRest {
     [Parameter(Mandatory=$false)] $Body
   )
 
-  $token = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
+  if (-not $script:ArmToken) {
+    $script:ArmToken = Get-ArmToken
+  }
+
   $headers = @{
-    "Authorization" = "Bearer $token"
+    "Authorization" = "Bearer $script:ArmToken"
     "Content-Type"  = "application/json"
   }
 
-  if ($null -ne $Body) {
-    $json = $Body | ConvertTo-Json -Depth 80
-    return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
-  } else {
-    return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
+  try {
+    if ($null -ne $Body) {
+      $json = $Body | ConvertTo-Json -Depth 80
+      return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
+    } else {
+      return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
+    }
+  }
+  catch {
+    # Intenta extraer body de error para diagnóstico
+    $bodyText = $null
+    try {
+      if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream) {
+        $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+        $bodyText = $reader.ReadToEnd()
+      }
+    } catch {}
+    if ($bodyText) {
+      throw "Fallo REST ($Method). Uri=$Uri. Body=$bodyText"
+    }
+    throw
   }
 }
 
-# API versions (puedes ajustar si tu tenant requiere otra)
-# OJO: estos endpoints pueden variar según evolución del servicio.
-# Si tuvieras ya una ApiVersion definida en tu repo, úsala.
+# API versions (ajustables si tu tenant exige otra)
 $ApiVersion_Templates = "2023-11-01"
 $ApiVersion_Rules     = "2023-11-01"
 
@@ -68,51 +96,45 @@ Write-Host "==> Acción: $Action"
 Write-Host "==> RuleName (DisplayName): $RuleName"
 Write-Host "==> Workspace: $WorkspaceName | RG: $ResourceGroupName | Sub: $SubscriptionId"
 
+# Fuerza token ARM al inicio (para fallar pronto si auth está mal)
+$script:ArmToken = Get-ArmToken
+
 if ($Action -eq "enable") {
 
   # 1) Listar templates instalados (Rule templates)
-  # En portal: Sentinel > Analytics > Rule templates (las plantillas) [1](https://learn.microsoft.com/en-us/azure/sentinel/create-analytics-rule-from-template)
   $templatesUri = "$base/alertRuleTemplates?api-version=$ApiVersion_Templates"
   $templates = Invoke-ArmRest -Method GET -Uri $templatesUri
 
   $match = $templates.value | Where-Object { $_.properties.displayName -eq $RuleName } | Select-Object -First 1
   if (-not $match) {
-    throw "No se encontró ningún Rule template con displayName EXACTO = '$RuleName'. Revisa el nombre en Sentinel > Analytics > Rule templates > Name."
+    throw "No se encontró ningún Rule template con displayName EXACTO = '$RuleName'. Copia el nombre desde Sentinel > Analytics > Rule templates > Name."
   }
 
-  $templateId = ($match.name)
+  $templateId = $match.name
   Write-Host "Encontrado templateId: $templateId"
 
-  # 2) Crear la regla desde template
-  # Crear “una regla desde una plantilla” es el mismo flujo conceptual del portal (Create rule from template). [1](https://learn.microsoft.com/en-us/azure/sentinel/create-analytics-rule-from-template)
-  # Para scheduled rules, se crea un recurso 'alertRules' (Scheduled).
-  # Nota: El template no siempre expone directamente un payload listo sin adaptación, pero la mayoría de templates Scheduled
-  # incluyen query, severity, tactics, etc.
+  # 2) Crear regla (Scheduled) usando propiedades del template
   $newRuleGuid = (New-Guid).Guid
-
   $createRuleUri = "$base/alertRules/$newRuleGuid?api-version=$ApiVersion_Rules"
 
-  # Construimos properties a partir del template (Scheduled)
   $p = $match.properties
 
-  # Campos mínimos típicos (si tu template trae más, se pueden mapear)
   $ruleProps = @{
-    displayName       = $p.displayName
-    description       = $p.description
-    severity          = $p.severity
-    enabled           = $true
-    query             = $p.query
-    queryFrequency    = $p.queryFrequency
-    queryPeriod       = $p.queryPeriod
-    triggerOperator   = $p.triggerOperator
-    triggerThreshold  = $p.triggerThreshold
+    displayName        = $p.displayName
+    description        = $p.description
+    severity           = $p.severity
+    enabled            = $true
+    query              = $p.query
+    queryFrequency     = $p.queryFrequency
+    queryPeriod        = $p.queryPeriod
+    triggerOperator    = $p.triggerOperator
+    triggerThreshold   = $p.triggerThreshold
     suppressionDuration = $p.suppressionDuration
     suppressionEnabled  = $p.suppressionEnabled
-    tactics           = $p.tactics
-    techniques        = $p.techniques
+    tactics            = $p.tactics
+    techniques         = $p.techniques
   }
 
-  # Tipo Scheduled
   $body = @{
     kind       = "Scheduled"
     properties = $ruleProps
@@ -126,7 +148,7 @@ if ($Action -eq "enable") {
 else {
   # disable
 
-  # 1) Buscar reglas existentes
+  # 1) Buscar regla existente por displayName
   $rulesUri = "$base/alertRules?api-version=$ApiVersion_Rules"
   $rules = Invoke-ArmRest -Method GET -Uri $rulesUri
 
