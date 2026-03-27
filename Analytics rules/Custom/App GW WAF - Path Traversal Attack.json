@@ -1,0 +1,86 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspace": {
+            "type": "String"
+        }
+    },
+    "resources": [
+        {
+            "id": "[concat(resourceId('Microsoft.OperationalInsights/workspaces/providers', parameters('workspace'), 'Microsoft.SecurityInsights'),'/alertRules/0997afd1-5a96-4621-ac7c-54cc6212fff1')]",
+            "name": "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/0997afd1-5a96-4621-ac7c-54cc6212fff1')]",
+            "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+            "kind": "Scheduled",
+            "apiVersion": "2023-12-01-preview",
+            "properties": {
+                "displayName": "App GW WAF - Path Traversal Attack Prueba",
+                "description": "Identifies a match for a Path Traversal based attack in the App Gateway WAF logs. The threshold value in the query can be changed as per your infrastructure's requirements.\nReferences: https://owasp.org/www-community/attacks/Path_Traversal",
+                "severity": "High",
+                "enabled": true,
+                "query": "let Threshold = 3;  \nAGWFirewallLogs\n| where Action == \"Matched\"\n| where Message has \"Path Traversal Attack\"\n| project TransactionId, Hostname, RequestUri, TimeGenerated, ClientIp, Message, DetailedMessage, DetailedData\n| join kind = inner(\nAGWFirewallLogs\n| where Action == \"Blocked\") on TransactionId\n| extend Uri = strcat(Hostname,RequestUri)\n| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), TransactionID = make_set(TransactionId,100), Message = make_set(Message,100), Detail_Message = make_set(DetailedMessage,100), Detail_Data = make_set(DetailedData,100), Total_TransactionId = dcount(TransactionId) by ClientIp, Uri, Action\n| where Total_TransactionId >= Threshold\n",
+                "queryFrequency": "PT6H",
+                "queryPeriod": "PT6H",
+                "triggerOperator": "GreaterThan",
+                "triggerThreshold": 0,
+                "suppressionDuration": "PT1H",
+                "suppressionEnabled": false,
+                "startTimeUtc": null,
+                "tactics": [
+                    "DefenseEvasion",
+                    "Execution",
+                    "InitialAccess",
+                    "PrivilegeEscalation",
+                    "Discovery"
+                ],
+                "techniques": [
+                    "T1548",
+                    "T1203",
+                    "T1190",
+                    "T1087"
+                ],
+                "subTechniques": [],
+                "alertRuleTemplateName": "b6c3a8a6-d22c-4882-9c57-abc01690938b",
+                "incidentConfiguration": {
+                    "createIncident": true,
+                    "groupingConfiguration": {
+                        "enabled": false,
+                        "reopenClosedIncident": false,
+                        "lookbackDuration": "PT5H",
+                        "matchingMethod": "AllEntities",
+                        "groupByEntities": [],
+                        "groupByAlertDetails": [],
+                        "groupByCustomDetails": []
+                    }
+                },
+                "eventGroupingSettings": {
+                    "aggregationKind": "SingleAlert"
+                },
+                "alertDetailsOverride": null,
+                "customDetails": null,
+                "entityMappings": [
+                    {
+                        "entityType": "URL",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Url",
+                                "columnName": "Uri"
+                            }
+                        ]
+                    },
+                    {
+                        "entityType": "IP",
+                        "fieldMappings": [
+                            {
+                                "identifier": "Address",
+                                "columnName": "ClientIp"
+                            }
+                        ]
+                    }
+                ],
+                "sentinelEntitiesMappings": null,
+                "templateVersion": "1.0.3"
+            }
+        }
+    ]
+}
