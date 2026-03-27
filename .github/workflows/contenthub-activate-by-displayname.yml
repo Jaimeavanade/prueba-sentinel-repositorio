@@ -1,23 +1,18 @@
-name: Content Hub - List & Activate Analytics Rule by displayName
+name: Content Hub - List Installed & Catalog Content Items
 
 on:
   workflow_dispatch:
-    inputs:
-      displayName:
-        description: 'displayName exacto del content item (p.ej. "AV detections related to SpringShell Vulnerability"). Deja vacío para solo listar.'
-        required: false
-        default: ''
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  list-and-activate:
+  list-contenthub:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
@@ -27,25 +22,15 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Run script (list installed solutions/items + optional activation)
+      - name: List Content Hub installed & catalog items
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $sub  = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-          $rg   = "${{ vars.RESOURCE_GROUP }}"
-          $ws   = "${{ vars.WORKSPACE_NAME }}"
-          $dn   = "${{ github.event.inputs.displayName }}"
-
-          if (-not $sub -or -not $rg -or -not $ws) {
-            throw "Faltan valores. Revisa secrets/vars: AZURE_SUBSCRIPTION_ID, vars.RESOURCE_GROUP, vars.WORKSPACE_NAME"
-          }
-
-          ./scripts/10-contenthub-list-and-activate-analytic-rule.ps1 `
-            -SubscriptionId $sub `
-            -ResourceGroupName $rg `
-            -WorkspaceName $ws `
-            -DisplayName $dn `
+          ./scripts/10-contenthub-list-installed-and-catalog-items.ps1 `
+            -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
+            -ResourceGroupName "${{ vars.RESOURCE_GROUP }}" `
+            -WorkspaceName "${{ vars.WORKSPACE_NAME }}" `
             -OutReportJson "Solutions/contenthub-installed-items-report.json"
 
       - name: Upload report artifact
