@@ -1,0 +1,81 @@
+name: Create Analytics Rules From Templates
+
+on:
+  workflow_dispatch:
+    inputs:
+      subscriptionId:
+        description: "Azure Subscription ID (opcional; si no se indica, usa AZURE_SUBSCRIPTION_ID)"
+        required: false
+        type: string
+      dryRun:
+        description: "Si true, no crea nada (solo validación/what-if si tu script lo soporta)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  create-rules:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ github.event.inputs.subscriptionId || secrets.AZURE_SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange
+          enable-AzPSSession: true
+
+      - name: Run Create-AnalyticsRulesFromTemplates.ps1
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: "latest"
+          errorActionPreference: "Stop"
+          inlineScript: |
+            $ErrorActionPreference = "Stop"
+
+            # Variables desde secrets (sin inputs)
+            $ws  = "${{ secrets.SENTINEL_WORKSPACE_NAME }}"
+            $rg  = "${{ secrets.SENTINEL_RESOURCE_GROUP }}"
+            $dry = "${{ github.event.inputs.dryRun }}"
+
+            if ([string]::IsNullOrWhiteSpace($ws)) { throw "Secret SENTINEL_WORKSPACE_NAME vacío o no definido." }
+            if ([string]::IsNullOrWhiteSpace($rg)) { throw "Secret SENTINEL_RESOURCE_GROUP vacío o no definido." }
+
+            # Contexto de subscripción (por si acaso)
+            $subId = "${{ github.event.inputs.subscriptionId }}"
+            if ([string]::IsNullOrWhiteSpace($subId)) {
+              $subId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            }
+            if (-not [string]::IsNullOrWhiteSpace($subId)) {
+              Set-AzContext -SubscriptionId $subId | Out-Null
+            }
+
+            Write-Host "WorkspaceName: $ws"
+            Write-Host "ResourceGroupName: $rg"
+            Write-Host "DryRun: $dry"
+
+            $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts/Create-AnalyticsRulesFromTemplates.ps1"
+            if (-not (Test-Path $scriptPath)) {
+              throw "No existe el script en: $scriptPath"
+            }
+
+            # Ejecuta el script (asumiendo parámetros típicos del original) entinel/blob/master/Tools/PowerShell/Create-AnalyticsRulesFromTemplates/Create-AnalyticsRulesFromTemplates.ps1)
+            if ($dry -eq "true") {
+              Write-Host "DryRun habilitado (si el script no soporta WhatIf/DryRun, esto ejecutará igualmente)."
+              # Si tu script soporta -WhatIf o -DryRun, cámbialo aquí.
+              & $scriptPath -WorkSpaceName $ws -ResourceGroupName $rg
+            } else {
+              & $scriptPath -WorkSpaceName $ws -ResourceGroupName $rg
+            }
