@@ -4,16 +4,26 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "enable = crear/activar desde Rule template | disable = deshabilitar regla existente | list = listar Rule templates instaladas"
+        description: "enable | disable | list"
         required: true
         type: choice
-        options:
-          - enable
-          - disable
-          - list
+        options: [ enable, disable, list ]
       ruleName:
-        description: "Para enable/disable: nombre EXACTO (Portal > Sentinel > Analytics > Rule templates > Name)"
+        description: "Para enable/disable: displayName (si no existe, usa pickCandidate o templateId)"
         required: false
+        type: string
+      search:
+        description: "Para list: filtro contains (ej: admin, local group, WAF, etc.)"
+        required: false
+        type: string
+      templateId:
+        description: "Para enable: templateId (GUID) si lo tienes"
+        required: false
+        type: string
+      pickCandidate:
+        description: "Para enable: si no hay match, elige candidato 1..N"
+        required: false
+        default: "0"
         type: string
 
 permissions:
@@ -23,7 +33,6 @@ permissions:
 jobs:
   manage-rule:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -55,9 +64,11 @@ jobs:
 
             Set-AzContext -SubscriptionId $sub | Out-Null
 
-            $action   = "${{ github.event.inputs.action }}"
-            $ruleName = "${{ github.event.inputs.ruleName }}"
-            $search   = "${{ github.event.inputs.search }}"
+            $action        = "${{ github.event.inputs.action }}"
+            $ruleName      = "${{ github.event.inputs.ruleName }}"
+            $search        = "${{ github.event.inputs.search }}"
+            $templateId    = "${{ github.event.inputs.templateId }}"
+            $pickCandidate = [int]("${{ github.event.inputs.pickCandidate }}")
 
             $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts/Activate-Or-Disable-RuleFromTemplate.ps1"
             if (-not (Test-Path $scriptPath)) { throw "No existe el script en: $scriptPath" }
@@ -68,4 +79,6 @@ jobs:
               -WorkspaceName $ws `
               -Action $action `
               -RuleName $ruleName `
-              -Search $search
+              -Search $search `
+              -TemplateId $templateId `
+              -PickCandidate $pickCandidate
