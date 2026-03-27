@@ -1,0 +1,56 @@
+name: Content Hub - List & Activate Analytics Rule by displayName
+
+on:
+  workflow_dispatch:
+    inputs:
+      displayName:
+        description: 'displayName exacto del content item (p.ej. "AV detections related to SpringShell Vulnerability"). Deja vacío para solo listar.'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  list-and-activate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run script (list installed solutions/items + optional activation)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Ajusta a tus nombres reales de variables/vars si difieren:
+          $sub  = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          $rg   = "${{ vars.RESOURCE_GROUP }}"
+          $ws   = "${{ vars.WORKSPACE_NAME }}"
+          $dn   = "${{ github.event.inputs.displayName }}"
+
+          if (-not $sub -or -not $rg -or -not $ws) {
+            throw "Faltan valores. Revisa secrets/vars: AZURE_SUBSCRIPTION_ID, vars.RESOURCE_GROUP, vars.WORKSPACE_NAME"
+          }
+
+          ./scripts/10-contenthub-list-and-activate-analytic-rule.ps1 `
+            -SubscriptionId $sub `
+            -ResourceGroupName $rg `
+            -WorkspaceName $ws `
+            -DisplayName $dn `
+            -OutReportJson "Solutions/contenthub-installed-items-report.json"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: contenthub-installed-items-report
+          path: Solutions/contenthub-installed-items-report.json
