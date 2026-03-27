@@ -74,6 +74,8 @@ function Normalize-NextLink {
     [Parameter(Mandatory = $true)][string]$ApiVersion
   )
   if ([string]::IsNullOrWhiteSpace($NextLink)) { return $null }
+
+  # A veces nextLink puede venir sin api-version; lo garantizamos.
   if ($NextLink -notmatch "api-version=") {
     if ($NextLink -match "\?") { return "$NextLink&api-version=$ApiVersion" }
     return "$NextLink?api-version=$ApiVersion"
@@ -120,6 +122,36 @@ function Remove-ReadOnlyProps {
   }
 }
 
+function Get-AllPaged {
+  <#
+    Devuelve todos los items de una respuesta paginada de ARM:
+    - Suma r.value
+    - Sigue r.nextLink si existe
+    Nota: nextLink NO siempre existe; en StrictMode no podemos acceder si falta.
+  #>
+  param(
+    [Parameter(Mandatory=$true)][string]$FirstUri,
+    [Parameter(Mandatory=$true)][string]$ApiVersion
+  )
+
+  $all = @()
+  $uri = $FirstUri
+
+  while (-not [string]::IsNullOrWhiteSpace($uri)) {
+    $r = Invoke-ArmGet -Uri $uri
+    if ($r -and $r.value) { $all += $r.value }
+
+    # ✅ nextLink puede NO existir: comprobar antes de leer
+    $next = $null
+    if ($r -and ($r.PSObject.Properties.Name -contains 'nextLink')) {
+      $next = $r.nextLink
+    }
+    $uri = Normalize-NextLink -NextLink $next -ApiVersion $ApiVersion
+  }
+
+  return $all
+}
+
 Write-Host "== Sentinel | Enable/Create Analytics Rule from Content Hub template =="
 Write-Host "SubscriptionId : $SubscriptionId"
 Write-Host "ResourceGroup  : $ResourceGroupName"
@@ -133,15 +165,9 @@ $script:ArmToken = Get-ArmToken
 
 $base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights"
 
-# 1) Listar templates
+# 1) Listar templates instalados (alertRuleTemplates)
 Write-Host "-> Listando alertRuleTemplates..."
-$templates = @()
-$uri = "$base/alertRuleTemplates?api-version=$ApiVersion"
-while ($uri) {
-  $r = Invoke-ArmGet -Uri $uri
-  if ($r.value) { $templates += $r.value }
-  $uri = Normalize-NextLink -NextLink $r.nextLink -ApiVersion $ApiVersion
-}
+$templates = Get-AllPaged -FirstUri "$base/alertRuleTemplates?api-version=$ApiVersion" -ApiVersion $ApiVersion
 Write-Host ("   Templates encontrados: {0}" -f $templates.Count)
 
 # 2) Buscar template por displayName exacto (case-insensitive)
@@ -171,6 +197,7 @@ Write-Host ("   template.name  : {0}" -f $template.name)
 Write-Host ("   template.kind  : {0}" -f $kind)
 Write-Host ("   displayName    : {0}" -f $template.properties.displayName)
 
+# Solo soportamos Analytics rules típicas aquí
 if ($kind -notin @("Scheduled","NRT")) {
   throw "Template kind '$kind' no soportado por este script (solo Scheduled y NRT)."
 }
@@ -178,13 +205,7 @@ if ($kind -notin @("Scheduled","NRT")) {
 # 3) Listar reglas existentes y buscar coincidencia por displayName+kind
 Write-Host ""
 Write-Host "-> Comprobando si ya existe alertRule con ese displayName..."
-$rules = @()
-$uri = "$base/alertRules?api-version=$ApiVersion"
-while ($uri) {
-  $r = Invoke-ArmGet -Uri $uri
-  if ($r.value) { $rules += $r.value }
-  $uri = Normalize-NextLink -NextLink $r.nextLink -ApiVersion $ApiVersion
-}
+$rules = Get-AllPaged -FirstUri "$base/alertRules?api-version=$ApiVersion" -ApiVersion $ApiVersion
 
 $existing = @($rules | Where-Object {
   $_.properties.displayName -and ($_.properties.displayName -ieq $DisplayName) -and ($_.kind -eq $kind)
@@ -196,7 +217,7 @@ if ($existing.Count -gt 1) {
 
 $existingRule = if ($existing.Count -ge 1) { $existing[0] } else { $null }
 
-# Propiedades que vamos a copiar desde el template (whitelist segura)
+# Propiedades a copiar desde el template (whitelist segura)
 $allowedKeys = @(
   "displayName","description","severity",
   "query","queryFrequency","queryPeriod",
@@ -210,8 +231,7 @@ $allowedKeys = @(
 
 function Build-PropsFromTemplate {
   param(
-    [Parameter(Mandatory=$true)]$Template,
-    [Parameter(Mandatory=$true)][string]$ApiVersion
+    [Parameter(Mandatory=$true)]$Template
   )
 
   $props = @{}
@@ -235,12 +255,14 @@ if ($existingRule) {
   Write-Host ("   Existe ruleId: {0}" -f $existingRule.name)
 
   switch ($IfExists) {
+
     "Skip" {
       Write-Host "==> IfExists=Skip: no se realiza ninguna acción."
       exit 0
     }
 
     "Enable" {
+      # Obtener definición actual y habilitarla
       $ruleId = $existingRule.name
       $getUri = "$base/alertRules/$ruleId?api-version=$ApiVersion"
       $current = Invoke-ArmGet -Uri $getUri
@@ -269,8 +291,9 @@ if ($existingRule) {
     }
 
     "Replace" {
+      # Reemplazar regla existente usando el template como base (manteniendo ruleId)
       $ruleId = $existingRule.name
-      $props = Build-PropsFromTemplate -Template $template -ApiVersion $ApiVersion
+      $props = Build-PropsFromTemplate -Template $template
 
       $body = @{
         kind       = $kind
@@ -288,12 +311,12 @@ if ($existingRule) {
   }
 }
 
-# No existe: crear nueva
+# 4) No existe: crear nueva regla desde template
 Write-Host ""
 Write-Host "-> No existe alertRule con ese displayName. Creando nueva regla desde template..."
 $ruleId = [guid]::NewGuid().ToString()
 
-$props = Build-PropsFromTemplate -Template $template -ApiVersion $ApiVersion
+$props = Build-PropsFromTemplate -Template $template
 
 $body = @{
   kind       = $kind
