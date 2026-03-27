@@ -1,18 +1,39 @@
-name: Content Hub - List Installed & Catalog Content Items
+name: Content Hub - List Installed Items + Activate Analytics Rule by displayName
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Acción a ejecutar"
+        required: true
+        type: choice
+        options:
+          - list-only
+          - activate
+        default: list-only
+      displayName:
+        description: 'displayName del content item (p.ej. "AV detections related to SpringShell Vulnerability"). Requerido si mode=activate.'
+        required: false
+        default: ""
+      matchMode:
+        description: "Cómo matchear el displayName"
+        required: true
+        type: choice
+        options:
+          - exact
+          - contains
+        default: exact
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  list-contenthub:
+  run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
@@ -22,15 +43,18 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: List Content Hub installed & catalog items
+      - name: List installed + catalog and optional activate
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          ./scripts/10-contenthub-list-installed-and-catalog-items.ps1 `
+          ./scripts/10-contenthub-list-installed-and-activate-by-displayname.ps1 `
             -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
             -ResourceGroupName "${{ vars.RESOURCE_GROUP }}" `
             -WorkspaceName "${{ vars.WORKSPACE_NAME }}" `
+            -Mode "${{ github.event.inputs.mode }}" `
+            -DisplayName "${{ github.event.inputs.displayName }}" `
+            -MatchMode "${{ github.event.inputs.matchMode }}" `
             -OutReportJson "Solutions/contenthub-installed-items-report.json"
 
       - name: Upload report artifact
