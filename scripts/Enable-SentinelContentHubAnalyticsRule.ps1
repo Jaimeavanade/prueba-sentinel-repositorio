@@ -207,10 +207,11 @@ function Show-Suggestions {
   $targetFlat = ($targetN -replace ' ','')
 
   $items = foreach ($t in $Templates) {
-    $dn = $null
-    if ($t -and (Has-Prop $t 'properties') -and $t.properties -and (Has-Prop $t.properties 'displayName')) {
-      $dn = $t.properties.displayName
-    }
+    if (-not $t) { continue }
+    if (-not (Has-Prop $t 'properties')) { continue }
+    if (-not (Has-Prop $t.properties 'displayName')) { continue }
+
+    $dn = $t.properties.displayName
     if ([string]::IsNullOrWhiteSpace($dn)) { continue }
 
     $dnN = Normalize-Name $dn
@@ -258,35 +259,29 @@ Write-Host ("   Templates encontrados: {0}" -f $templates.Count)
 $target = Normalize-Name $DisplayName
 $targetFlat = ($target -replace ' ','')
 
-# exacto normalizado
 $matches = @(
   $templates | Where-Object {
     $t = $_
-    if (-not (Has-Prop $t 'properties')) { return $false }
-    if (-not (Has-Prop $t.properties 'displayName')) { return $false }
+    (Has-Prop $t 'properties') -and (Has-Prop $t.properties 'displayName') -and
     (Normalize-Name $t.properties.displayName) -eq $target
   }
 )
 
-# contains normalizado
 if ($matches.Count -eq 0) {
   $matches = @(
     $templates | Where-Object {
       $t = $_
-      if (-not (Has-Prop $t 'properties')) { return $false }
-      if (-not (Has-Prop $t.properties 'displayName')) { return $false }
+      (Has-Prop $t 'properties') -and (Has-Prop $t.properties 'displayName') -and
       (Normalize-Name $t.properties.displayName) -like "*$target*"
     }
   )
 }
 
-# contains ignorando espacios
 if ($matches.Count -eq 0) {
   $matches = @(
     $templates | Where-Object {
       $t = $_
-      if (-not (Has-Prop $t 'properties')) { return $false }
-      if (-not (Has-Prop $t.properties 'displayName')) { return $false }
+      if (-not ((Has-Prop $t 'properties') -and (Has-Prop $t.properties 'displayName'))) { return $false }
       $dnFlat = ((Normalize-Name $t.properties.displayName) -replace ' ','')
       $dnFlat -like "*$targetFlat*"
     }
@@ -299,21 +294,8 @@ if ($matches.Count -eq 0) {
 
   switch ($NotFoundBehavior) {
     "Fail" { throw "No se encontró template para '$DisplayName'." }
-    "WarnOnly" {
-      Write-Warning "NotFoundBehavior=WarnOnly -> no se crea/habilita nada y el job termina OK."
-      exit 0
-    }
-    default {
-      Write-Warning "NotFoundBehavior=WarnAndExit0 -> no se crea/habilita nada y el job termina OK."
-      exit 0
-    }
-  }
-}
-
-if ($matches.Count -gt 1) {
-  Write-Warning ("Se encontraron {0} templates candidatos. Usando el primero:" -f $matches.Count)
-  $matches | Select-Object -First ([Math]::Min(10, $matches.Count)) | ForEach-Object {
-    Write-Warning (" - kind={0} | id={1} | name={2}" -f $_.kind, $_.name, $_.properties.displayName)
+    "WarnOnly" { Write-Warning "NotFoundBehavior=WarnOnly -> no se crea/habilita nada y el job termina OK."; exit 0 }
+    default { Write-Warning "NotFoundBehavior=WarnAndExit0 -> no se crea/habilita nada y el job termina OK."; exit 0 }
   }
 }
 
@@ -329,7 +311,7 @@ if ($kind -notin @("Scheduled","NRT")) {
   throw "Template kind '$kind' no soportado por este script (solo Scheduled y NRT)."
 }
 
-# 3) Buscar rule existente (matching tolerante contra el displayName del template ya seleccionado)
+# 3) Buscar rule existente (matching tolerante contra el displayName del template)
 Write-Host ""
 Write-Host "-> Comprobando si ya existe alertRule con ese displayName (matching tolerante)..."
 $rules = Get-AllPaged -FirstUri "$base/alertRules?api-version=$ApiVersion" -ApiVersion $ApiVersion
@@ -339,20 +321,14 @@ $templateDnNorm = Normalize-Name $template.properties.displayName
 $existing = @(
   $rules | Where-Object {
     $r = $_
-    if (-not (Has-Prop $r 'properties')) { return $false }
-    if (-not (Has-Prop $r.properties 'displayName')) { return $false }
-    if (-not (Has-Prop $r 'kind')) { return $false }
-
+    (Has-Prop $r 'properties') -and (Has-Prop $r.properties 'displayName') -and (Has-Prop $r 'kind') -and
     (Normalize-Name $r.properties.displayName) -eq $templateDnNorm -and $r.kind -eq $kind
   }
 )
 
-if ($existing.Count -gt 1) {
-  Write-Warning ("Hay {0} alertRules existentes con ese displayName+kind. Se usará la primera: {1}" -f $existing.Count, $existing[0].name)
-}
 $existingRule = if ($existing.Count -ge 1) { $existing[0] } else { $null }
 
-# propiedades permitidas
+# 4) Build props
 $allowedKeys = @(
   "displayName","description","severity",
   "query","queryFrequency","queryPeriod",
@@ -368,19 +344,16 @@ function Build-PropsFromTemplate {
   param([Parameter(Mandatory=$true)]$Template)
 
   $props = @{}
-
   foreach ($k in $allowedKeys) {
     if (Has-Prop $Template.properties $k) {
       $props[$k] = $Template.properties.$k
     }
   }
 
-  # obligatorias / recomendadas
   $props["displayName"] = $Template.properties.displayName
   $props["enabled"] = $true
   $props["alertRuleTemplateName"] = $Template.name
 
-  # ✅ FIX: templateVersion solo si existe
   if (Has-Prop $Template.properties 'templateVersion') {
     $props["templateVersion"] = $Template.properties.templateVersion
   }
@@ -393,15 +366,11 @@ if ($existingRule) {
   Write-Host ("   Existe ruleId: {0}" -f $existingRule.name)
 
   switch ($IfExists) {
-
-    "Skip" {
-      Write-Host "==> IfExists=Skip: no se realiza ninguna acción."
-      exit 0
-    }
+    "Skip" { Write-Host "==> IfExists=Skip: no se realiza ninguna acción."; exit 0 }
 
     "Enable" {
       $ruleId = $existingRule.name
-      $getUri = "$base/alertRules/$ruleId?api-version=$ApiVersion"
+      $getUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"   # ✅ FIX: ${ruleId}
       $current = Invoke-ArmGet -Uri $getUri
 
       $props = @{}
@@ -409,8 +378,6 @@ if ($existingRule) {
 
       $props["enabled"] = $true
       $props["alertRuleTemplateName"] = $template.name
-
-      # ✅ FIX: templateVersion solo si existe en template
       if (Has-Prop $template.properties 'templateVersion') {
         $props["templateVersion"] = $template.properties.templateVersion
       }
@@ -422,7 +389,7 @@ if ($existingRule) {
         properties = $props
       }
 
-      $putUri = "$base/alertRules/$ruleId?api-version=$ApiVersion"
+      $putUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"   # ✅ FIX: ${ruleId}
       if ($PSCmdlet.ShouldProcess($ruleId, "Habilitar alertRule existente")) {
         $out = Invoke-ArmPut -Uri $putUri -Body $body
         Write-Host ("✅ Regla habilitada: {0}" -f $out.id)
@@ -440,7 +407,7 @@ if ($existingRule) {
         properties = $props
       }
 
-      $putUri = "$base/alertRules/$ruleId?api-version=$ApiVersion"
+      $putUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"   # ✅ FIX: ${ruleId}
       if ($PSCmdlet.ShouldProcess($ruleId, "Reemplazar alertRule existente desde template")) {
         $out = Invoke-ArmPut -Uri $putUri -Body $body
         Write-Host ("✅ Regla reemplazada y habilitada: {0}" -f $out.id)
@@ -451,7 +418,7 @@ if ($existingRule) {
   }
 }
 
-# 4) No existe: crear nueva
+# 5) Crear nueva
 Write-Host ""
 Write-Host "-> No existe alertRule con ese displayName. Creando nueva regla desde template..."
 $ruleId = [guid]::NewGuid().ToString()
@@ -463,7 +430,9 @@ $body = @{
   properties = $props
 }
 
-$putUri = "$base/alertRules/$ruleId?api-version=$ApiVersion"
+# ✅ FIX CRÍTICO: ${ruleId} para que no lo interprete como $ruleId?api
+$putUri = "$base/alertRules/${ruleId}?api-version=$ApiVersion"
+
 if ($PSCmdlet.ShouldProcess($ruleId, "Crear alertRule desde template '$($template.properties.displayName)'")) {
   $out = Invoke-ArmPut -Uri $putUri -Body $body
   Write-Host ("✅ Regla creada y habilitada: {0}" -f $out.id)
