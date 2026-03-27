@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       content_name:
-        description: "DisplayName exacto de la Analytics Rule (content_name)"
+        description: "DisplayName exacto (content_name) de la Analytics Rule"
         required: true
         type: string
 
