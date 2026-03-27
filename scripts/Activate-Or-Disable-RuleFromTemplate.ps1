@@ -8,10 +8,8 @@ Activa (crea desde template) o deshabilita una regla de Analíticas en Microsoft
 - action=list: lista Rule templates instaladas (opcionalmente filtrando por texto).
 
 NOTAS
-- Nombre recomendado:
-  Azure Portal > Microsoft Sentinel > Analytics > Rule templates > Name
-- Si no encuentra coincidencia exacta, sugiere candidatos.
 - Evita Get-AzAccessToken (Az 14+ SecureString) para ARM y usa az account get-access-token.
+- La API espera tactics como array: tactics: [ 'string' ] [1](https://learn.microsoft.com/en-us/azure/templates/microsoft.securityinsights/alertrules)
 
 #>
 
@@ -120,6 +118,43 @@ function Get-PropValue {
   return $Default
 }
 
+function Normalize-StringArray {
+  <#
+    Convierte:
+      - $null -> @()
+      - "InitialAccess" -> @("InitialAccess")
+      - @("InitialAccess","Execution") -> @("InitialAccess","Execution")
+    Además:
+      - Elimina null/empty
+      - Quita espacios ("Initial Access" -> "InitialAccess") para evitar inconsistencias
+  #>
+  param([Parameter(Mandatory=$false)] $Value)
+
+  if ($null -eq $Value) { return @() }
+
+  $arr = @()
+  if ($Value -is [string]) {
+    $arr = @($Value)
+  }
+  elseif ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+    foreach ($x in $Value) { $arr += $x }
+  }
+  else {
+    $arr = @($Value)
+  }
+
+  $arr = @(
+    $arr |
+      Where-Object { $null -ne $_ } |
+      ForEach-Object { $_.ToString().Trim() } |
+      Where-Object { $_ -ne "" } |
+      ForEach-Object { $_.Replace(" ", "") } |
+      Select-Object -Unique
+  )
+
+  return $arr
+}
+
 function Find-TemplateByName {
   param(
     [Parameter(Mandatory=$true)] [object[]] $Templates,
@@ -172,10 +207,9 @@ function Print-Candidates {
       $knd = "N/A"
 
       if (Has-Prop $_ "kind") { $knd = $_.kind }
-
       if (Has-Prop $_ "properties") {
         if (Has-Prop $_.properties "displayName") { $dn = Normalize-Text $_.properties.displayName }
-        if (Has-Prop $_.properties "severity")    { $sev = $_.properties.severity }  # opcional
+        if (Has-Prop $_.properties "severity")    { $sev = $_.properties.severity }
       }
 
       $score = 0
@@ -217,6 +251,7 @@ function Print-Candidates {
 # ----------------------------
 # Config
 # ----------------------------
+# Si tu tenant requiere otra versión, se puede mover a variables/secrets.
 $ApiVersion_Templates = "2023-11-01"
 $ApiVersion_Rules     = "2023-11-01"
 
@@ -297,6 +332,10 @@ if ($Action -eq "enable") {
 
   $p = $match.properties
 
+  # ✅ FIX: tactics/techniques SIEMPRE como array
+  $tacticsArr    = Normalize-StringArray (Get-PropValue $p "tactics" $null)
+  $techniquesArr = Normalize-StringArray (Get-PropValue $p "techniques" $null)
+
   $ruleProps = @{
     displayName         = (Get-PropValue $p "displayName" "")
     description         = (Get-PropValue $p "description" "")
@@ -309,9 +348,13 @@ if ($Action -eq "enable") {
     triggerThreshold    = (Get-PropValue $p "triggerThreshold" 0)
     suppressionDuration = (Get-PropValue $p "suppressionDuration" "PT0H")
     suppressionEnabled  = (Get-PropValue $p "suppressionEnabled" $false)
-    tactics             = (Get-PropValue $p "tactics" @())
-    techniques          = (Get-PropValue $p "techniques" @())
+    tactics             = $tacticsArr
+    techniques          = $techniquesArr
   }
+
+  # Limpieza: si vienen vacíos, fuera del payload
+  if ($ruleProps.tactics.Count -eq 0)    { $ruleProps.Remove("tactics") }
+  if ($ruleProps.techniques.Count -eq 0) { $ruleProps.Remove("techniques") }
 
   $body = @{
     kind       = "Scheduled"
