@@ -1,32 +1,50 @@
-name: Sentinel - Analytics Rule Templates (List/Create)
+name: "Sentinel - Analytics Rule Templates (List/Create)"
 
 on:
   workflow_dispatch:
     inputs:
       action:
+        description: "Acción a ejecutar: list o create"
         required: true
-        default: list
+        default: "create"
         type: choice
-        options: [list, create]
-      templateId:
-        required: false
-        type: string
-      templateDisplayName:
-        required: false
-        type: string
-      matchMode:
-        required: false
-        default: contains
-        type: choice
-        options: [exact, contains]
-      newRuleDisplayName:
-        required: false
-        type: string
+        options:
+          - list
+          - create
+
       enabled:
-        required: false
+        description: "Habilitar la regla creada (solo create)"
+        required: true
         default: "true"
         type: choice
-        options: ["true","false"]
+        options:
+          - "true"
+          - "false"
+
+      templateId:
+        description: "TemplateId (GUID) de la plantilla (recomendado para create)"
+        required: false
+        default: ""
+
+      templateDisplayName:
+        description: "Nombre (displayName) de la plantilla (alternativa a TemplateId)"
+        required: false
+        default: ""
+
+      matchMode:
+        description: "Modo de búsqueda por displayName"
+        required: true
+        default: "contains"
+        type: choice
+        options:
+          - contains
+          - equals
+          - startswith
+
+      newRuleDisplayName:
+        description: "Nombre de la nueva regla (si vacío usa el displayName de la plantilla)"
+        required: false
+        default: ""
 
 permissions:
   id-token: write
@@ -36,28 +54,47 @@ jobs:
   sentinel:
     runs-on: ubuntu-latest
 
-    env:
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
-      SENTINEL_RESOURCE_GROUP:  ${{ secrets.SENTINEL_RESOURCE_GROUP }}
-      SENTINEL_WORKSPACE_NAME:  ${{ secrets.SENTINEL_WORKSPACE_NAME }}
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: azure/login@v2
+      # Login OIDC a Azure (tu log ya muestra que esto funciona)
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
         with:
-          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run Sentinel Script
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
+          # Convierte input enabled a boolean real
           $enabled = [System.Convert]::ToBoolean("${{ inputs.enabled }}")
 
+          # Toma SubscriptionId desde Secret (recomendado) o desde 'az account show' si quisieras
+          $subId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          if ([string]::IsNullOrWhiteSpace($subId)) {
+            $subId = az account show --query id -o tsv
+          }
+
+          # ResourceGroup y Workspace desde variables/secrets
+          $rg = "${{ vars.SENTINEL_RESOURCE_GROUP }}"
+          if ([string]::IsNullOrWhiteSpace($rg)) { $rg = "${{ secrets.SENTINEL_RESOURCE_GROUP }}" }
+
+          $ws = "${{ vars.SENTINEL_WORKSPACE_NAME }}"
+          if ([string]::IsNullOrWhiteSpace($ws)) { $ws = "${{ secrets.SENTINEL_WORKSPACE_NAME }}" }
+
+          if ([string]::IsNullOrWhiteSpace($subId) -or [string]::IsNullOrWhiteSpace($rg) -or [string]::IsNullOrWhiteSpace($ws)) {
+            throw "Faltan valores obligatorios: AZURE_SUBSCRIPTION_ID y/o SENTINEL_RESOURCE_GROUP y/o SENTINEL_WORKSPACE_NAME. Configúralos en Secrets/Variables."
+          }
+
           ./scripts/sentinel-analytics-rule-templates.ps1 `
+            -SubscriptionId $subId `
+            -ResourceGroup $rg `
+            -WorkspaceName $ws `
             -Action "${{ inputs.action }}" `
             -TemplateId "${{ inputs.templateId }}" `
             -TemplateDisplayName "${{ inputs.templateDisplayName }}" `
