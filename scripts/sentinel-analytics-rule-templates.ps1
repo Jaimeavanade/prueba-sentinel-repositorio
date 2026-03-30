@@ -2,93 +2,51 @@
 .SYNOPSIS
   Microsoft Sentinel - Analytics Rule Templates helper:
    - List templates
-   - Create an Active Scheduled rule from a template
+   - Create an Active rule from a template
 
-.DESCRIPTION
-  This script calls Azure Management API for Microsoft Sentinel:
-   - GET templates
-   - GET specific template
-   - PUT active rule derived from template
-  It includes a FIX for entityMappings.fieldMappings to always be an ARRAY, preventing:
-   "Cannot deserialize ... List<FieldMapping> ... requires a JSON array ... Path properties.entityMappings[0].fieldMappings.identifier"
-  (error seen in GitHub Actions run). 
-
-.PARAMETER SubscriptionId
-  Azure subscription ID
-
-.PARAMETER ResourceGroup
-  Resource group of the Log Analytics workspace
-
-.PARAMETER WorkspaceName
-  Log Analytics workspace name (Sentinel is enabled on it)
-
-.PARAMETER Action
-  'list' or 'create'
-
-.PARAMETER TemplateId
-  Template GUID to use (required for create)
-
-.PARAMETER TemplateDisplayName
-  Alternative filter by displayName (for list / for create selection). Optional.
-
-.PARAMETER MatchMode
-  For TemplateDisplayName filter: 'contains' (default) or 'equals' or 'startswith'
-
-.PARAMETER NewRuleDisplayName
-  If empty, uses template displayName
-
-.PARAMETER Enabled
-  true/false for created rule
-
-.PARAMETER Location
-  Optional. If not provided, set to 'global' (works for SecurityInsights resources)
-
-.EXAMPLE
-  pwsh ./scripts/sentinel-analytics-rule-templates.ps1 `
-    -SubscriptionId "xxxx" -ResourceGroup "rg" -WorkspaceName "law" `
-    -Action list
-
-.EXAMPLE
-  pwsh ./scripts/sentinel-analytics-rule-templates.ps1 `
-    -SubscriptionId "xxxx" -ResourceGroup "rg" -WorkspaceName "law" `
-    -Action create -TemplateId "106813db-679e-4382-a51b-1bfc463befc3" -Enabled $true
+.NOTES
+  Fixes included:
+   1) PowerShell variable parsing bug in URL: use ${TemplateId}?api-version=...
+      Avoids: The variable '$TemplateId?api' cannot be retrieved because it has not been set.
+   2) Sentinel API expects entityMappings[].fieldMappings as ARRAY always.
+      Avoids: Cannot deserialize... requires a JSON array... Path properties.entityMappings[0].fieldMappings.identifier
 #>
 
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory = $true)]
   [string]$SubscriptionId,
 
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory = $true)]
   [string]$ResourceGroup,
 
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory = $true)]
   [string]$WorkspaceName,
 
-  [Parameter(Mandatory=$true)]
-  [ValidateSet('list','create')]
+  [Parameter(Mandatory = $true)]
+  [ValidateSet('list', 'create')]
   [string]$Action,
 
-  [Parameter(Mandatory=$false)]
+  [Parameter(Mandatory = $false)]
   [string]$TemplateId,
 
-  [Parameter(Mandatory=$false)]
+  [Parameter(Mandatory = $false)]
   [string]$TemplateDisplayName,
 
-  [Parameter(Mandatory=$false)]
-  [ValidateSet('contains','equals','startswith')]
+  [Parameter(Mandatory = $false)]
+  [ValidateSet('contains', 'equals', 'startswith')]
   [string]$MatchMode = 'contains',
 
-  [Parameter(Mandatory=$false)]
+  [Parameter(Mandatory = $false)]
   [string]$NewRuleDisplayName,
 
-  [Parameter(Mandatory=$false)]
+  [Parameter(Mandatory = $false)]
   [bool]$Enabled = $true,
 
-  [Parameter(Mandatory=$false)]
+  [Parameter(Mandatory = $false)]
   [string]$Location = 'global',
 
-  [Parameter(Mandatory=$false)]
+  [Parameter(Mandatory = $false)]
   [string]$ApiVersion = '2025-09-01'
 )
 
@@ -104,33 +62,36 @@ function Write-DebugLine {
 }
 
 function Get-AzAccessToken {
-  # Uses az cli (works great inside GitHub actions after azure/login@v2)
   $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv 2>$null
   if ([string]::IsNullOrWhiteSpace($t)) {
-    throw "No se pudo obtener access token. Asegúrate de haber hecho 'azure/login' o 'az login'."
+    throw "No se pudo obtener access token. Asegúrate de haber hecho azure/login@v2 o az login."
   }
   return $t
 }
 
 function Invoke-AzRest {
   param(
-    [Parameter(Mandatory=$true)][ValidateSet('GET','PUT','POST','DELETE','PATCH')]
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('GET', 'PUT', 'POST', 'DELETE', 'PATCH')]
     [string]$Method,
-    [Parameter(Mandatory=$true)]
+
+    [Parameter(Mandatory = $true)]
     [string]$Uri,
-    [Parameter(Mandatory=$false)]
+
+    [Parameter(Mandatory = $false)]
     $Body
   )
 
   $token = Get-AzAccessToken
   $headers = @{
-    Authorization = "Bearer $token"
+    Authorization  = "Bearer $token"
     'Content-Type' = 'application/json'
   }
 
   if ($null -eq $Body) {
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
-  } else {
+  }
+  else {
     $json = if ($Body -is [string]) { $Body } else { ($Body | ConvertTo-Json -Depth 100) }
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
   }
@@ -141,13 +102,13 @@ function New-Guid {
 }
 
 function ConvertTo-ArrayIfNeeded {
-  param([Parameter(ValueFromPipeline=$true)] $Value)
+  param([Parameter(ValueFromPipeline = $true)] $Value)
 
   if ($null -eq $Value) { return @() }
 
   # If it's already a list/array (but not string), return as array
   if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string]) -and
-      ($Value.GetType().IsArray -or $Value -is [System.Collections.IList])) {
+    ($Value.GetType().IsArray -or $Value -is [System.Collections.IList])) {
     return @($Value)
   }
 
@@ -157,7 +118,7 @@ function ConvertTo-ArrayIfNeeded {
 
 function Normalize-EntityMappings {
   param(
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     $EntityMappings
   )
 
@@ -200,12 +161,10 @@ function Normalize-EntityMappings {
 
 function Normalize-TemplatePropertiesForRule {
   param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     $TemplateProps
   )
 
-  # We build a "Scheduled" rule properties object from template.properties
-  # Keep only fields that are relevant/accepted; ignore unknowns safely.
   $p = [ordered]@{}
 
   # Required/typical fields
@@ -214,7 +173,7 @@ function Normalize-TemplatePropertiesForRule {
   if ($TemplateProps.severity) { $p.severity = $TemplateProps.severity }
   if ($TemplateProps.query) { $p.query = $TemplateProps.query }
 
-  # Scheduling fields (may differ depending on template)
+  # Scheduling fields
   if ($TemplateProps.queryFrequency) { $p.queryFrequency = $TemplateProps.queryFrequency }
   if ($TemplateProps.queryPeriod) { $p.queryPeriod = $TemplateProps.queryPeriod }
   if ($TemplateProps.triggerOperator) { $p.triggerOperator = $TemplateProps.triggerOperator }
@@ -224,25 +183,19 @@ function Normalize-TemplatePropertiesForRule {
   if ($TemplateProps.tactics) { $p.tactics = $TemplateProps.tactics }
   if ($TemplateProps.techniques) { $p.techniques = $TemplateProps.techniques }
 
-  # Entity mappings (FIX HERE)
+  # Entity mappings (FIX)
   if ($TemplateProps.entityMappings) {
     $p.entityMappings = Normalize-EntityMappings $TemplateProps.entityMappings
   }
 
-  # Required data connectors (optional)
+  # Optional fields
   if ($TemplateProps.requiredDataConnectors) { $p.requiredDataConnectors = $TemplateProps.requiredDataConnectors }
-
-  # Event grouping/suppression (optional)
   if ($TemplateProps.eventGroupingSettings) { $p.eventGroupingSettings = $TemplateProps.eventGroupingSettings }
   if ($TemplateProps.suppressionEnabled -ne $null) { $p.suppressionEnabled = [bool]$TemplateProps.suppressionEnabled }
   if ($TemplateProps.suppressionDuration) { $p.suppressionDuration = $TemplateProps.suppressionDuration }
-
-  # Incident configuration (optional)
   if ($TemplateProps.incidentConfiguration) { $p.incidentConfiguration = $TemplateProps.incidentConfiguration }
   if ($TemplateProps.alertDetailsOverride) { $p.alertDetailsOverride = $TemplateProps.alertDetailsOverride }
   if ($TemplateProps.customDetails) { $p.customDetails = $TemplateProps.customDetails }
-
-  # Other optional fields often present
   if ($TemplateProps.templateVersion) { $p.templateVersion = $TemplateProps.templateVersion }
 
   return $p
@@ -250,37 +203,41 @@ function Normalize-TemplatePropertiesForRule {
 
 function Get-BaseSentinelProviderPath {
   param(
-    [Parameter(Mandatory=$true)][string]$SubId,
-    [Parameter(Mandatory=$true)][string]$Rg,
-    [Parameter(Mandatory=$true)][string]$Ws
+    [Parameter(Mandatory = $true)][string]$SubId,
+    [Parameter(Mandatory = $true)][string]$Rg,
+    [Parameter(Mandatory = $true)][string]$Ws
   )
 
-  # Microsoft Sentinel resources are nested:
-  # /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.OperationalInsights/workspaces/{ws}/providers/Microsoft.SecurityInsights/...
   return "/subscriptions/$SubId/resourceGroups/$Rg/providers/Microsoft.OperationalInsights/workspaces/$Ws/providers/Microsoft.SecurityInsights"
 }
 
 function Get-TemplateUri {
   param([string]$TemplateId)
+
   $base = Get-BaseSentinelProviderPath -SubId $SubscriptionId -Rg $ResourceGroup -Ws $WorkspaceName
+
+  # ✅ IMPORTANT FIX: use ${TemplateId} so PowerShell doesn't parse "$TemplateId?api" as a variable name
   if ([string]::IsNullOrWhiteSpace($TemplateId)) {
     return "https://management.azure.com$base/alertRuleTemplates?api-version=$ApiVersion"
   }
-  return "https://management.azure.com$base/alertRuleTemplates/$TemplateId?api-version=$ApiVersion"
+
+  return "https://management.azure.com$base/alertRuleTemplates/${TemplateId}?api-version=$ApiVersion"
 }
 
 function Get-RuleUri {
   param([string]$RuleId)
+
   $base = Get-BaseSentinelProviderPath -SubId $SubscriptionId -Rg $ResourceGroup -Ws $WorkspaceName
   return "https://management.azure.com$base/alertRules/$RuleId?api-version=$ApiVersion"
 }
 
 function Match-ByDisplayName {
   param(
-    [Parameter(Mandatory=$true)][string]$Name,
-    [Parameter(Mandatory=$true)][string]$Filter,
-    [Parameter(Mandatory=$true)][string]$Mode
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$Filter,
+    [Parameter(Mandatory = $true)][string]$Mode
   )
+
   switch ($Mode) {
     'equals'     { return ($Name -eq $Filter) }
     'startswith' { return ($Name -like "$Filter*") }
@@ -315,15 +272,14 @@ if ($Action -eq 'list') {
     }
   }
 
-  # Output minimal list as JSON for easy consumption in pipelines
   $out = $items | ForEach-Object {
     [PSCustomObject]@{
-      templateId   = $_.name
-      displayName  = $_.properties.displayName
-      kind         = $_.kind
-      severity     = $_.properties.severity
-      tactics      = $_.properties.tactics
-      techniques   = $_.properties.techniques
+      templateId  = $_.name
+      displayName = $_.properties.displayName
+      kind        = $_.kind
+      severity    = $_.properties.severity
+      tactics     = $_.properties.tactics
+      techniques  = $_.properties.techniques
     }
   }
 
@@ -337,7 +293,6 @@ if ([string]::IsNullOrWhiteSpace($TemplateId)) {
     throw "Para Action=create necesitas -TemplateId o -TemplateDisplayName."
   }
 
-  # If templateId not provided, try resolve by displayName
   $uriList = Get-TemplateUri -TemplateId $null
   $respList = Invoke-AzRest -Method GET -Uri $uriList
   $items = @()
@@ -373,12 +328,11 @@ $props = Normalize-TemplatePropertiesForRule -TemplateProps $template.properties
 $props.displayName = $finalName
 $props.enabled = [bool]$Enabled
 
-# Final FIX guard: ensure entityMappings.fieldMappings array just before sending
+# Final guard: ensure entityMappings.fieldMappings array just before sending
 if ($props.entityMappings) {
   $props.entityMappings = Normalize-EntityMappings $props.entityMappings
 }
 
-# Kind: most templates are Scheduled. If template.kind exists, keep it; otherwise default Scheduled.
 $kind = if ($template.kind) { $template.kind } else { "Scheduled" }
 
 $payload = [ordered]@{
@@ -391,16 +345,14 @@ Write-Host "New rule: $finalName (ruleId: $ruleId)"
 $ruleUri = Get-RuleUri -RuleId $ruleId
 Write-Host "PUT: $ruleUri"
 
-# OPTIONAL: debug snippet about the problematic path
+# Debug: show entityMappings shape (useful when templates have mappings)
 if ($payload.properties.entityMappings) {
   Write-DebugLine "payload.properties.entityMappings (sanity check):"
   Write-Host ($payload.properties.entityMappings | ConvertTo-Json -Depth 20)
 }
 
-# Send
 $result = Invoke-AzRest -Method PUT -Uri $ruleUri -Body $payload
 
-# Output created rule id and name
 [PSCustomObject]@{
   ruleId      = $ruleId
   displayName = $finalName
