@@ -4,14 +4,12 @@
    - list: Lists templates (optionally filter by displayName)
    - create: Creates an active analytics rule from a template
 
-.FIXES INCLUDED
-  - Prevent "$TemplateId?api" parsing: use ${TemplateId}
-  - Prevent "$RuleId?api" parsing: use ${RuleId}
-  - StrictMode-safe property access (Has-Prop + parentheses with -and)
+.NOTES (fixes)
+  - StrictMode-safe list output (avoid missing properties like techniques/tactics) [1]()
+  - Prevent "$TemplateId?api" / "$RuleId?api" parsing: use ${TemplateId} / ${RuleId}
   - Normalize entityMappings.fieldMappings to ARRAY
-  - Ensure required suppression fields exist:
-      suppressionEnabled (bool) + suppressionDuration (ISO8601) ALWAYS
-      Fixes: "Required property 'suppressionDuration' not found in JSON" [1]()
+  - Ensure required suppression fields exist in create:
+      suppressionEnabled + suppressionDuration
 #>
 
 [CmdletBinding()]
@@ -55,6 +53,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# -----------------------------
+# Helpers
+# -----------------------------
 function Write-DebugLine {
   param([string]$Message)
   Write-Host "DEBUG $Message"
@@ -97,13 +98,16 @@ function Invoke-AzRest {
 
   if ($null -eq $Body) {
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
-  } else {
+  }
+  else {
     $json = if ($Body -is [string]) { $Body } else { ($Body | ConvertTo-Json -Depth 100) }
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
   }
 }
 
-function New-Guid { return ([guid]::NewGuid().ToString()) }
+function New-Guid {
+  return ([guid]::NewGuid().ToString())
+}
 
 function ConvertTo-ArrayIfNeeded {
   param([Parameter(ValueFromPipeline = $true)] $Value)
@@ -133,6 +137,7 @@ function Normalize-EntityMappings {
       $emObj | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
     }
 
+    # fieldMappings must ALWAYS be array
     $fmArray = @()
     foreach ($m in (ConvertTo-ArrayIfNeeded $emObj.fieldMappings)) {
       if ($null -eq $m) { continue }
@@ -140,11 +145,11 @@ function Normalize-EntityMappings {
       $identifier = $null
       $columnName = $null
 
-      # Soporta PSCustomObject y Hashtable/Dictionary
       if ($m -is [System.Collections.IDictionary]) {
         if ($m.Contains('identifier')) { $identifier = $m['identifier'] }
         if ($m.Contains('columnName')) { $columnName = $m['columnName'] }
-      } else {
+      }
+      else {
         if ((Has-Prop $m 'identifier')) { $identifier = $m.identifier }
         if ((Has-Prop $m 'columnName')) { $columnName = $m.columnName }
       }
@@ -167,7 +172,7 @@ function Normalize-TemplatePropertiesForRule {
 
   $p = [ordered]@{}
 
-  # Campos típicos
+  # Typical fields
   if ((Has-Prop $TemplateProps 'displayName') -and $TemplateProps.displayName) { $p.displayName = $TemplateProps.displayName }
   if ((Has-Prop $TemplateProps 'description') -and $TemplateProps.description) { $p.description = $TemplateProps.description }
   if ((Has-Prop $TemplateProps 'severity') -and $TemplateProps.severity) { $p.severity = $TemplateProps.severity }
@@ -183,23 +188,16 @@ function Normalize-TemplatePropertiesForRule {
   if ((Has-Prop $TemplateProps 'tactics') -and $TemplateProps.tactics) { $p.tactics = $TemplateProps.tactics }
   if ((Has-Prop $TemplateProps 'techniques') -and $TemplateProps.techniques) { $p.techniques = $TemplateProps.techniques }
 
-  # Entity mappings (FIX array)
+  # Entity mappings
   if ((Has-Prop $TemplateProps 'entityMappings') -and $TemplateProps.entityMappings) {
     $p.entityMappings = Normalize-EntityMappings $TemplateProps.entityMappings
   }
 
-  # Required data connectors (opcional)
-  if ((Has-Prop $TemplateProps 'requiredDataConnectors') -and $TemplateProps.requiredDataConnectors) {
-    $p.requiredDataConnectors = $TemplateProps.requiredDataConnectors
-  }
+  # Optional fields
+  if ((Has-Prop $TemplateProps 'requiredDataConnectors') -and $TemplateProps.requiredDataConnectors) { $p.requiredDataConnectors = $TemplateProps.requiredDataConnectors }
+  if ((Has-Prop $TemplateProps 'eventGroupingSettings') -and $TemplateProps.eventGroupingSettings) { $p.eventGroupingSettings = $TemplateProps.eventGroupingSettings }
 
-  # Event grouping (opcional)
-  if ((Has-Prop $TemplateProps 'eventGroupingSettings') -and $TemplateProps.eventGroupingSettings) {
-    $p.eventGroupingSettings = $TemplateProps.eventGroupingSettings
-  }
-
-  # ✅ SUPPRESSION (OBLIGATORIO en tu API / payload)
-  # Si viene de plantilla, lo respetamos. Si NO viene, ponemos defaults seguros.
+  # REQUIRED suppression fields for create (defaults if not in template)
   if ((Has-Prop $TemplateProps 'suppressionEnabled') -and ($TemplateProps.suppressionEnabled -ne $null)) {
     $p.suppressionEnabled = [bool]$TemplateProps.suppressionEnabled
   } else {
@@ -209,15 +207,12 @@ function Normalize-TemplatePropertiesForRule {
   if ((Has-Prop $TemplateProps 'suppressionDuration') -and $TemplateProps.suppressionDuration) {
     $p.suppressionDuration = $TemplateProps.suppressionDuration
   } else {
-    # Default ISO8601 1h (válido)
     $p.suppressionDuration = "PT1H"
   }
 
-  # Incident config / overrides (opcionales)
   if ((Has-Prop $TemplateProps 'incidentConfiguration') -and $TemplateProps.incidentConfiguration) { $p.incidentConfiguration = $TemplateProps.incidentConfiguration }
   if ((Has-Prop $TemplateProps 'alertDetailsOverride') -and $TemplateProps.alertDetailsOverride) { $p.alertDetailsOverride = $TemplateProps.alertDetailsOverride }
   if ((Has-Prop $TemplateProps 'customDetails') -and $TemplateProps.customDetails) { $p.customDetails = $TemplateProps.customDetails }
-
   if ((Has-Prop $TemplateProps 'templateVersion') -and $TemplateProps.templateVersion) { $p.templateVersion = $TemplateProps.templateVersion }
 
   return $p
@@ -241,6 +236,7 @@ function Get-TemplateUri {
     return "https://management.azure.com$base/alertRuleTemplates?api-version=$ApiVersion"
   }
 
+  # Use ${TemplateId} to avoid "$TemplateId?api" parsing
   return "https://management.azure.com$base/alertRuleTemplates/${TemplateId}?api-version=$ApiVersion"
 }
 
@@ -248,6 +244,8 @@ function Get-RuleUri {
   param([string]$RuleId)
 
   $base = Get-BaseSentinelProviderPath -SubId $SubscriptionId -Rg $ResourceGroup -Ws $WorkspaceName
+
+  # Use ${RuleId} to avoid "$RuleId?api" parsing
   return "https://management.azure.com$base/alertRules/${RuleId}?api-version=$ApiVersion"
 }
 
@@ -279,28 +277,41 @@ Write-DebugLine "MatchMode = '$MatchMode'"
 Write-DebugLine "NewRuleDisplayName = '$NewRuleDisplayName'"
 Write-DebugLine "Enabled = '$Enabled'"
 
+# -----------------------------
+# LIST
+# -----------------------------
 if ($Action -eq 'list') {
   $uri = Get-TemplateUri -TemplateId $null
   $resp = Invoke-AzRest -Method GET -Uri $uri
 
   $items = @()
-  if ((Has-Prop $resp 'value') -and $resp.value) { $items = $resp.value } else { $items = @($resp) }
+  if ((Has-Prop $resp 'value') -and $resp.value) {
+    $items = $resp.value
+  } else {
+    $items = @($resp)
+  }
 
   if (-not [string]::IsNullOrWhiteSpace($TemplateDisplayName)) {
     $items = $items | Where-Object {
-      $_.properties -and (Has-Prop $_.properties 'displayName') -and $_.properties.displayName -and
+      $_.properties -and
+      (Has-Prop $_.properties 'displayName') -and
+      $_.properties.displayName -and
       (Match-ByDisplayName -Name $_.properties.displayName -Filter $TemplateDisplayName -Mode $MatchMode)
     }
   }
 
+  # StrictMode-safe output (some templates don't include tactics/techniques) [1]()
   $out = $items | ForEach-Object {
+    $p = $_.properties
+
     [PSCustomObject]@{
       templateId  = $_.name
-      displayName = $_.properties.displayName
+      displayName = if ((Has-Prop $p 'displayName')) { $p.displayName } else { $null }
       kind        = $_.kind
-      severity    = $_.properties.severity
-      tactics     = $_.properties.tactics
-      techniques  = $_.properties.techniques
+      severity    = if ((Has-Prop $p 'severity')) { $p.severity } else { $null }
+      tactics     = if ((Has-Prop $p 'tactics')) { $p.tactics } else { @() }
+      techniques  = if ((Has-Prop $p 'techniques')) { $p.techniques } else { @() }
+      enabled     = if ((Has-Prop $p 'enabled')) { $p.enabled } else { $null }
     }
   }
 
@@ -308,7 +319,9 @@ if ($Action -eq 'list') {
   exit 0
 }
 
+# -----------------------------
 # CREATE
+# -----------------------------
 if ([string]::IsNullOrWhiteSpace($TemplateId)) {
   if ([string]::IsNullOrWhiteSpace($TemplateDisplayName)) {
     throw "Para Action=create necesitas -TemplateId o -TemplateDisplayName."
@@ -320,7 +333,9 @@ if ([string]::IsNullOrWhiteSpace($TemplateId)) {
   if ((Has-Prop $respList 'value') -and $respList.value) { $items = $respList.value } else { $items = @($respList) }
 
   $match = $items | Where-Object {
-    $_.properties -and (Has-Prop $_.properties 'displayName') -and $_.properties.displayName -and
+    $_.properties -and
+    (Has-Prop $_.properties 'displayName') -and
+    $_.properties.displayName -and
     (Match-ByDisplayName -Name $_.properties.displayName -Filter $TemplateDisplayName -Mode $MatchMode)
   } | Select-Object -First 1
 
@@ -349,7 +364,7 @@ $props = Normalize-TemplatePropertiesForRule -TemplateProps $template.properties
 $props.displayName = $finalName
 $props.enabled = [bool]$Enabled
 
-# Refuerzo final: entityMappings -> array
+# Ensure entityMappings.fieldMappings is array (final guard)
 if ((Has-Prop $props 'entityMappings') -and $props.entityMappings) {
   $props.entityMappings = Normalize-EntityMappings $props.entityMappings
 }
