@@ -13,10 +13,10 @@
   SENTINEL_WORKSPACE_NAME
 
 FIXES INCLUDED
-  - entityMappings must be JSON array (some templates return object)
-  - tactics/techniques must be JSON arrays (some templates return a single string)
-  - suppressionDuration may be REQUIRED by API: always send default if missing
-  - suppressionEnabled may be missing on template: never access property directly (StrictMode safe)
+  - tactics/techniques ALWAYS as JSON arrays (fixes "Execution"/"Persistence" as string)
+  - entityMappings ALWAYS as JSON array
+  - suppressionDuration ALWAYS present (some APIs require it)
+  - suppressionEnabled may be missing in template -> StrictMode-safe access
   - avoids PowerShell parsing bug with '?' by using $() in URLs
 #>
 
@@ -107,13 +107,15 @@ function Get-PropValue($obj, [string]$name, $default = $null) {
     return $default
 }
 
-# Force array of objects (object -> [obj], array -> array, null -> null)
+# ✅ Force array of objects (object -> [obj], array -> array, null -> null)
 function Ensure-ArrayGeneric($value) {
     if ($null -eq $value) { return $null }
     return [object[]]@($value)
 }
 
-# Force array of strings (string -> ["x"], array -> ["a","b"], null -> null)
+# ✅ Force array of strings:
+# - "Execution" -> ["Execution"]
+# - ["Execution","Persistence"] -> ["Execution","Persistence"]
 function Ensure-StringArray($value) {
     if ($null -eq $value) { return $null }
 
@@ -128,7 +130,7 @@ function Ensure-StringArray($value) {
     return [object[]]@($value.ToString())
 }
 
-# Remove nulls without breaking arrays
+# ✅ Remove nulls without breaking arrays
 function Remove-NullProperties {
     param([Parameter(Mandatory = $true)]$obj)
 
@@ -204,16 +206,16 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
     $triggerOperator  = Get-PropValue $tp "triggerOperator" $DefaultTriggerOperator
     $triggerThreshold = Get-PropValue $tp "triggerThreshold" $DefaultTriggerThreshold
 
-    # Normalize arrays
+    # ✅ normalize array-typed fields
     $entityMappings = Ensure-ArrayGeneric (Get-PropValue $tp "entityMappings")
-    $tactics        = Ensure-StringArray  (Get-PropValue $tp "tactics")
+    $tactics        = Ensure-StringArray  (Get-PropValue $tp "tactics")       # <-- FIX for "Execution" as string [1]()
     $techniques     = Ensure-StringArray  (Get-PropValue $tp "techniques")
     $reqConnectors  = Ensure-ArrayGeneric (Get-PropValue $tp "requiredDataConnectors")
 
-    # ✅ StrictMode-safe: NEVER read $tp.suppressionEnabled directly
-    $suppressionEnabledRaw  = Get-PropValue $tp "suppressionEnabled" $DefaultSuppressionEnabled
-    $suppressionEnabled     = [bool]$suppressionEnabledRaw
-    $suppressionDuration    = Get-PropValue $tp "suppressionDuration" $DefaultSuppressionDuration
+    # ✅ StrictMode-safe suppression values (and ALWAYS send)
+    $suppressionEnabledRaw = Get-PropValue $tp "suppressionEnabled" $DefaultSuppressionEnabled
+    $suppressionEnabled    = [bool]$suppressionEnabledRaw
+    $suppressionDuration   = Get-PropValue $tp "suppressionDuration" $DefaultSuppressionDuration
 
     $properties = [ordered]@{
         displayName              = $displayName
@@ -236,7 +238,7 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
         alertDetailsOverride     = Get-PropValue $tp "alertDetailsOverride"
         customDetails            = Get-PropValue $tp "customDetails"
 
-        # ✅ ALWAYS present (API sometimes requires suppressionDuration)
+        # Always present (API sometimes requires suppressionDuration)
         suppressionEnabled       = $suppressionEnabled
         suppressionDuration      = $suppressionDuration
 
