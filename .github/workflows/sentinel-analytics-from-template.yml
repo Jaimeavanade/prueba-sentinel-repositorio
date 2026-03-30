@@ -10,11 +10,11 @@ on:
         type: choice
         options: [list, create]
       templateId:
-        description: "(create) ID exacto del Rule Template"
+        description: "(create) TemplateId exacto"
         required: false
         type: string
       templateDisplayName:
-        description: "(create) DisplayName del template (alternativa)"
+        description: "(create) DisplayName (alternativa)"
         required: false
         type: string
       matchMode:
@@ -24,11 +24,11 @@ on:
         type: choice
         options: [exact, contains]
       newRuleDisplayName:
-        description: "(create) Nombre opcional de la regla activa"
+        description: "(create) Override del nombre de la regla"
         required: false
         type: string
       enabled:
-        description: "(create) habilitar regla"
+        description: "(create) true/false"
         required: false
         default: "true"
         type: choice
@@ -50,7 +50,8 @@ jobs:
       SENTINEL_WORKSPACE_NAME: ${{ secrets.SENTINEL_WORKSPACE_NAME }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -59,7 +60,6 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # -------- LIST --------
       - name: List templates
         if: ${{ inputs.action == 'list' }}
         shell: pwsh
@@ -75,7 +75,6 @@ jobs:
           name: sentinel-rule-templates
           path: templates.csv
 
-      # -------- CREATE --------
       - name: Create rule from template
         if: ${{ inputs.action == 'create' }}
         shell: pwsh
