@@ -7,26 +7,30 @@ on:
         description: "Acción a ejecutar"
         required: true
         type: choice
-        options:
-          - list
-          - create
+        options: [list, create]
+
       templateId:
-        description: "TemplateId (solo create)"
+        description: "TemplateId (GUID) - obligatorio en create"
         required: false
         default: ""
+
       templateDisplayName:
-        description: "DisplayName (opcional)"
+        description: "Filtro displayName (solo list)"
         required: false
         default: ""
+
       matchMode:
-        description: "Modo de matching"
+        description: "Modo de filtrado por displayName"
         required: true
         default: "contains"
         type: choice
-        options:
-          - contains
-          - equals
-          - startswith
+        options: [contains, equals, startswith]
+
+      newRuleDisplayName:
+        description: "Nombre de la nueva regla (solo create, opcional)"
+        required: false
+        default: ""
+
       enabled:
         description: "Habilitar la regla (solo create)"
         required: true
@@ -55,7 +59,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
           $enabled = [System.Convert]::ToBoolean("${{ inputs.enabled }}")
 
           if ("${{ inputs.action }}" -eq "list") {
@@ -66,8 +69,7 @@ jobs:
               -WorkspaceName "${{ vars.SENTINEL_WORKSPACE_NAME }}" `
               -Action list `
               -TemplateDisplayName "${{ inputs.templateDisplayName }}" `
-              -MatchMode "${{ inputs.matchMode }}" |
-            Out-File -Encoding utf8 sentinel-templates.json
+              -MatchMode "${{ inputs.matchMode }}"
 
           } else {
 
@@ -77,13 +79,13 @@ jobs:
               -WorkspaceName "${{ vars.SENTINEL_WORKSPACE_NAME }}" `
               -Action create `
               -TemplateId "${{ inputs.templateId }}" `
+              -NewRuleDisplayName "${{ inputs.newRuleDisplayName }}" `
               -Enabled $enabled
           }
 
-      # ✅ SOLO en modo LIST se sube artifact
-      - name: Upload templates artifact
+      - name: Upload CSV artifact (solo list)
         if: inputs.action == 'list'
         uses: actions/upload-artifact@v4
         with:
-          name: sentinel-analytics-rule-templates
-          path: sentinel-templates.json
+          name: sentinel-templates-csv
+          path: sentinel-templates.csv
