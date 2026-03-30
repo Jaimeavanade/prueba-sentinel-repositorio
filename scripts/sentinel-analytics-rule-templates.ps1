@@ -1,15 +1,35 @@
 <#
 .SYNOPSIS
-  Microsoft Sentinel - Analytics Rule Templates helper:
-   - list: Lists templates (optionally filter by displayName)
-   - create: Creates an active analytics rule from a template
+  Microsoft Sentinel - Analytics Rule Templates:
+    - list   : Exporta CSV con templateId y displayName
+    - create : Crea una regla activa (Scheduled) a partir de un templateId
 
-.NOTES (fixes)
-  - StrictMode-safe list output (avoid missing properties like techniques/tactics) [1]()
-  - Prevent "$TemplateId?api" / "$RuleId?api" parsing: use ${TemplateId} / ${RuleId}
-  - Normalize entityMappings.fieldMappings to ARRAY
-  - Ensure required suppression fields exist in create:
-      suppressionEnabled + suppressionDuration
+.DESCRIPTION
+  Script pensado para ejecutarse en GitHub Actions (OIDC) tras azure/login@v2.
+  Usa Azure Management REST API (Microsoft.SecurityInsights) con api-version configurable.
+
+  Incluye fixes acumulados:
+   - StrictMode-safe (no rompe si faltan propiedades en templates)
+   - Evita bug PowerShell "$Var?api" usando ${Var} en URLs
+   - Normaliza entityMappings[].fieldMappings a ARRAY (Sentinel lo exige)
+   - Añade defaults requeridos suppressionEnabled + suppressionDuration si faltan
+
+.PARAMETERS
+  -SubscriptionId   : Sub ID
+  -ResourceGroup    : RG del workspace
+  -WorkspaceName    : Nombre del Log Analytics workspace con Sentinel
+  -Action           : list | create
+  -TemplateId       : GUID template (para create)
+  -TemplateDisplayName : Filtro por displayName (para list, opcional)
+  -MatchMode        : contains | equals | startswith (para TemplateDisplayName)
+  -NewRuleDisplayName : Nombre de la nueva regla (create, opcional)
+  -Enabled          : true/false (create)
+  -Location         : Por defecto 'global'
+  -ApiVersion       : Por defecto 2025-09-01
+
+.OUTPUT
+  - list   : genera sentinel-templates.csv y además escribe el CSV por stdout (útil en logs)
+  - create : devuelve JSON con ruleId/displayName
 #>
 
 [CmdletBinding()]
@@ -24,7 +44,7 @@ param(
   [string]$WorkspaceName,
 
   [Parameter(Mandatory = $true)]
-  [ValidateSet('list', 'create')]
+  [ValidateSet('list','create')]
   [string]$Action,
 
   [Parameter(Mandatory = $false)]
@@ -34,7 +54,7 @@ param(
   [string]$TemplateDisplayName,
 
   [Parameter(Mandatory = $false)]
-  [ValidateSet('contains', 'equals', 'startswith')]
+  [ValidateSet('contains','equals','startswith')]
   [string]$MatchMode = 'contains',
 
   [Parameter(Mandatory = $false)]
@@ -70,9 +90,10 @@ function Has-Prop {
 }
 
 function Get-AzAccessToken {
+  # Requiere az cli y login previo (azure/login@v2)
   $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv 2>$null
   if ([string]::IsNullOrWhiteSpace($t)) {
-    throw "No se pudo obtener access token. Asegúrate de haber hecho azure/login@v2 o az login."
+    throw "No se pudo obtener access token. Asegúrate de ejecutar azure/login@v2 o az login."
   }
   return $t
 }
@@ -80,7 +101,7 @@ function Get-AzAccessToken {
 function Invoke-AzRest {
   param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('GET', 'PUT', 'POST', 'DELETE', 'PATCH')]
+    [ValidateSet('GET','PUT','POST','DELETE','PATCH')]
     [string]$Method,
 
     [Parameter(Mandatory = $true)]
@@ -98,14 +119,13 @@ function Invoke-AzRest {
 
   if ($null -eq $Body) {
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
-  }
-  else {
+  } else {
     $json = if ($Body -is [string]) { $Body } else { ($Body | ConvertTo-Json -Depth 100) }
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
   }
 }
 
-function New-Guid {
+function New-GuidString {
   return ([guid]::NewGuid().ToString())
 }
 
@@ -123,6 +143,10 @@ function ConvertTo-ArrayIfNeeded {
 }
 
 function Normalize-EntityMappings {
+  <#
+    Sentinel requiere: entityMappings[] y fieldMappings[] (ARRAY).
+    Muchos templates traen fieldMappings como objeto si hay 1 elemento.
+  #>
   param([Parameter(Mandatory = $false)] $EntityMappings)
 
   if ($null -eq $EntityMappings) { return $null }
@@ -132,12 +156,19 @@ function Normalize-EntityMappings {
   foreach ($em in (ConvertTo-ArrayIfNeeded $EntityMappings)) {
     if ($null -eq $em) { continue }
 
+    # Clon a PSCustomObject (por si em es Hashtable)
     $emObj = [PSCustomObject]@{}
-    foreach ($p in $em.PSObject.Properties) {
-      $emObj | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+    if ($em -is [System.Collections.IDictionary]) {
+      foreach ($k in $em.Keys) {
+        $emObj | Add-Member -NotePropertyName $k -NotePropertyValue $em[$k] -Force
+      }
+    } else {
+      foreach ($p in $em.PSObject.Properties) {
+        $emObj | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+      }
     }
 
-    # fieldMappings must ALWAYS be array
+    # fieldMappings -> array SIEMPRE
     $fmArray = @()
     foreach ($m in (ConvertTo-ArrayIfNeeded $emObj.fieldMappings)) {
       if ($null -eq $m) { continue }
@@ -148,8 +179,7 @@ function Normalize-EntityMappings {
       if ($m -is [System.Collections.IDictionary]) {
         if ($m.Contains('identifier')) { $identifier = $m['identifier'] }
         if ($m.Contains('columnName')) { $columnName = $m['columnName'] }
-      }
-      else {
+      } else {
         if ((Has-Prop $m 'identifier')) { $identifier = $m.identifier }
         if ((Has-Prop $m 'columnName')) { $columnName = $m.columnName }
       }
@@ -168,11 +198,16 @@ function Normalize-EntityMappings {
 }
 
 function Normalize-TemplatePropertiesForRule {
+  <#
+    Construye properties de una Scheduled rule a partir de template.properties.
+    StrictMode-safe: solo accede a propiedades si existen.
+    Añade defaults obligatorios: suppressionEnabled + suppressionDuration.
+  #>
   param([Parameter(Mandatory = $true)] $TemplateProps)
 
   $p = [ordered]@{}
 
-  # Typical fields
+  # Campos comunes
   if ((Has-Prop $TemplateProps 'displayName') -and $TemplateProps.displayName) { $p.displayName = $TemplateProps.displayName }
   if ((Has-Prop $TemplateProps 'description') -and $TemplateProps.description) { $p.description = $TemplateProps.description }
   if ((Has-Prop $TemplateProps 'severity') -and $TemplateProps.severity) { $p.severity = $TemplateProps.severity }
@@ -188,16 +223,22 @@ function Normalize-TemplatePropertiesForRule {
   if ((Has-Prop $TemplateProps 'tactics') -and $TemplateProps.tactics) { $p.tactics = $TemplateProps.tactics }
   if ((Has-Prop $TemplateProps 'techniques') -and $TemplateProps.techniques) { $p.techniques = $TemplateProps.techniques }
 
-  # Entity mappings
+  # Entity mappings (normalización arrays)
   if ((Has-Prop $TemplateProps 'entityMappings') -and $TemplateProps.entityMappings) {
     $p.entityMappings = Normalize-EntityMappings $TemplateProps.entityMappings
   }
 
-  # Optional fields
-  if ((Has-Prop $TemplateProps 'requiredDataConnectors') -and $TemplateProps.requiredDataConnectors) { $p.requiredDataConnectors = $TemplateProps.requiredDataConnectors }
-  if ((Has-Prop $TemplateProps 'eventGroupingSettings') -and $TemplateProps.eventGroupingSettings) { $p.eventGroupingSettings = $TemplateProps.eventGroupingSettings }
+  # Required data connectors (opcional)
+  if ((Has-Prop $TemplateProps 'requiredDataConnectors') -and $TemplateProps.requiredDataConnectors) {
+    $p.requiredDataConnectors = $TemplateProps.requiredDataConnectors
+  }
 
-  # REQUIRED suppression fields for create (defaults if not in template)
+  # Event grouping (opcional)
+  if ((Has-Prop $TemplateProps 'eventGroupingSettings') -and $TemplateProps.eventGroupingSettings) {
+    $p.eventGroupingSettings = $TemplateProps.eventGroupingSettings
+  }
+
+  # ✅ SUPPRESSION (requerido en tu caso)
   if ((Has-Prop $TemplateProps 'suppressionEnabled') -and ($TemplateProps.suppressionEnabled -ne $null)) {
     $p.suppressionEnabled = [bool]$TemplateProps.suppressionEnabled
   } else {
@@ -210,6 +251,7 @@ function Normalize-TemplatePropertiesForRule {
     $p.suppressionDuration = "PT1H"
   }
 
+  # Opcionales varios
   if ((Has-Prop $TemplateProps 'incidentConfiguration') -and $TemplateProps.incidentConfiguration) { $p.incidentConfiguration = $TemplateProps.incidentConfiguration }
   if ((Has-Prop $TemplateProps 'alertDetailsOverride') -and $TemplateProps.alertDetailsOverride) { $p.alertDetailsOverride = $TemplateProps.alertDetailsOverride }
   if ((Has-Prop $TemplateProps 'customDetails') -and $TemplateProps.customDetails) { $p.customDetails = $TemplateProps.customDetails }
@@ -236,7 +278,7 @@ function Get-TemplateUri {
     return "https://management.azure.com$base/alertRuleTemplates?api-version=$ApiVersion"
   }
 
-  # Use ${TemplateId} to avoid "$TemplateId?api" parsing
+  # ✅ ${TemplateId} evita el bug "$TemplateId?api"
   return "https://management.azure.com$base/alertRuleTemplates/${TemplateId}?api-version=$ApiVersion"
 }
 
@@ -245,7 +287,7 @@ function Get-RuleUri {
 
   $base = Get-BaseSentinelProviderPath -SubId $SubscriptionId -Rg $ResourceGroup -Ws $WorkspaceName
 
-  # Use ${RuleId} to avoid "$RuleId?api" parsing
+  # ✅ ${RuleId} evita el bug "$RuleId?api"
   return "https://management.azure.com$base/alertRules/${RuleId}?api-version=$ApiVersion"
 }
 
@@ -259,7 +301,7 @@ function Match-ByDisplayName {
   switch ($Mode) {
     'equals'     { return ($Name -eq $Filter) }
     'startswith' { return ($Name -like "$Filter*") }
-    default      { return ($Name -like "*$Filter*") }
+    default      { return ($Name -like "*$Filter*") } # contains
   }
 }
 
@@ -278,7 +320,7 @@ Write-DebugLine "NewRuleDisplayName = '$NewRuleDisplayName'"
 Write-DebugLine "Enabled = '$Enabled'"
 
 # -----------------------------
-# LIST
+# LIST -> CSV
 # -----------------------------
 if ($Action -eq 'list') {
   $uri = Get-TemplateUri -TemplateId $null
@@ -300,22 +342,22 @@ if ($Action -eq 'list') {
     }
   }
 
-  # StrictMode-safe output (some templates don't include tactics/techniques) [1]()
   $out = $items | ForEach-Object {
     $p = $_.properties
-
     [PSCustomObject]@{
       templateId  = $_.name
-      displayName = if ((Has-Prop $p 'displayName')) { $p.displayName } else { $null }
-      kind        = $_.kind
-      severity    = if ((Has-Prop $p 'severity')) { $p.severity } else { $null }
-      tactics     = if ((Has-Prop $p 'tactics')) { $p.tactics } else { @() }
-      techniques  = if ((Has-Prop $p 'techniques')) { $p.techniques } else { @() }
-      enabled     = if ((Has-Prop $p 'enabled')) { $p.enabled } else { $null }
+      displayName = if ($p -and (Has-Prop $p 'displayName')) { $p.displayName } else { $null }
     }
   }
 
-  $out | ConvertTo-Json -Depth 10
+  # Guardar CSV
+  $csvPath = Join-Path (Get-Location) "sentinel-templates.csv"
+  $out | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+
+  Write-Host "CSV generado: $csvPath"
+  # Además lo imprimimos para que se vea en el log si quieres
+  $out | ConvertTo-Csv -NoTypeInformation | ForEach-Object { Write-Host $_ }
+
   exit 0
 }
 
@@ -323,29 +365,10 @@ if ($Action -eq 'list') {
 # CREATE
 # -----------------------------
 if ([string]::IsNullOrWhiteSpace($TemplateId)) {
-  if ([string]::IsNullOrWhiteSpace($TemplateDisplayName)) {
-    throw "Para Action=create necesitas -TemplateId o -TemplateDisplayName."
-  }
-
-  $uriList = Get-TemplateUri -TemplateId $null
-  $respList = Invoke-AzRest -Method GET -Uri $uriList
-  $items = @()
-  if ((Has-Prop $respList 'value') -and $respList.value) { $items = $respList.value } else { $items = @($respList) }
-
-  $match = $items | Where-Object {
-    $_.properties -and
-    (Has-Prop $_.properties 'displayName') -and
-    $_.properties.displayName -and
-    (Match-ByDisplayName -Name $_.properties.displayName -Filter $TemplateDisplayName -Mode $MatchMode)
-  } | Select-Object -First 1
-
-  if (-not $match) {
-    throw "No se encontró ninguna plantilla con displayName '$TemplateDisplayName' (modo: $MatchMode)."
-  }
-
-  $TemplateId = $match.name
+  throw "Para Action=create necesitas -TemplateId (GUID)."
 }
 
+# Obtener template completo
 $tmplUri = Get-TemplateUri -TemplateId $TemplateId
 $template = Invoke-AzRest -Method GET -Uri $tmplUri
 
@@ -357,14 +380,15 @@ $templateName = $template.properties.displayName
 Write-Host "Creating Active rule from template:"
 Write-Host "Template: $templateName (templateId: $TemplateId)"
 
-$ruleId = New-Guid
+# Construir rule payload
+$ruleId = New-GuidString
 $finalName = if ([string]::IsNullOrWhiteSpace($NewRuleDisplayName)) { $templateName } else { $NewRuleDisplayName }
 
 $props = Normalize-TemplatePropertiesForRule -TemplateProps $template.properties
 $props.displayName = $finalName
 $props.enabled = [bool]$Enabled
 
-# Ensure entityMappings.fieldMappings is array (final guard)
+# Guardia final entityMappings
 if ((Has-Prop $props 'entityMappings') -and $props.entityMappings) {
   $props.entityMappings = Normalize-EntityMappings $props.entityMappings
 }
@@ -383,6 +407,7 @@ Write-Host "PUT: $ruleUri"
 
 $result = Invoke-AzRest -Method PUT -Uri $ruleUri -Body $payload
 
+# Salida JSON
 [PSCustomObject]@{
   ruleId      = $ruleId
   displayName = $finalName
