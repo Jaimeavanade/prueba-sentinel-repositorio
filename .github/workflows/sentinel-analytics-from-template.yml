@@ -4,87 +4,63 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "list | create"
         required: true
-        default: "list"
+        default: list
         type: choice
         options: [list, create]
       templateId:
-        description: "(create) TemplateId exacto"
         required: false
         type: string
       templateDisplayName:
-        description: "(create) DisplayName (alternativa)"
         required: false
         type: string
       matchMode:
-        description: "(create) exact | contains"
         required: false
-        default: "contains"
+        default: contains
         type: choice
         options: [exact, contains]
       newRuleDisplayName:
-        description: "(create) Override del nombre de la regla"
         required: false
         type: string
       enabled:
-        description: "(create) true/false"
         required: false
         default: "true"
         type: choice
-        options: ["true", "false"]
+        options: ["true","false"]
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  manage:
+  sentinel:
     runs-on: ubuntu-latest
 
     env:
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      SENTINEL_RESOURCE_GROUP: ${{ secrets.SENTINEL_RESOURCE_GROUP }}
-      SENTINEL_WORKSPACE_NAME: ${{ secrets.SENTINEL_WORKSPACE_NAME }}
+      AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+      SENTINEL_RESOURCE_GROUP:  ${{ secrets.SENTINEL_RESOURCE_GROUP }}
+      SENTINEL_WORKSPACE_NAME:  ${{ secrets.SENTINEL_WORKSPACE_NAME }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
+      - uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: List templates
-        if: ${{ inputs.action == 'list' }}
+      - name: Run Sentinel Script
         shell: pwsh
         run: |
-          ./scripts/sentinel-analytics-rule-templates.ps1 `
-            -Action list `
-            -OutFile templates.csv
-
-      - name: Upload templates.csv
-        if: ${{ inputs.action == 'list' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: sentinel-rule-templates
-          path: templates.csv
-
-      - name: Create rule from template
-        if: ${{ inputs.action == 'create' }}
-        shell: pwsh
-        run: |
-          $enabledBool = [System.Convert]::ToBoolean("${{ inputs.enabled }}")
+          $enabled = [System.Convert]::ToBoolean("${{ inputs.enabled }}")
 
           ./scripts/sentinel-analytics-rule-templates.ps1 `
-            -Action create `
+            -Action "${{ inputs.action }}" `
             -TemplateId "${{ inputs.templateId }}" `
             -TemplateDisplayName "${{ inputs.templateDisplayName }}" `
             -MatchMode "${{ inputs.matchMode }}" `
             -NewRuleDisplayName "${{ inputs.newRuleDisplayName }}" `
-            -Enabled $enabledBool
+            -Enabled $enabled
