@@ -1,38 +1,25 @@
-name: "Sentinel - Analytics Rule Templates (List/Create)"
+name: Sentinel - Analytics Rule Templates (List/Create)
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "Acción a ejecutar: list o create"
+        description: "Acción a ejecutar"
         required: true
-        default: "create"
         type: choice
         options:
           - list
           - create
-
-      enabled:
-        description: "Habilitar la regla creada (solo create)"
-        required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
-
       templateId:
-        description: "TemplateId (GUID) de la plantilla (recomendado para create)"
+        description: "TemplateId (solo create)"
         required: false
         default: ""
-
       templateDisplayName:
-        description: "Nombre (displayName) de la plantilla (alternativa a TemplateId)"
+        description: "DisplayName (opcional)"
         required: false
         default: ""
-
       matchMode:
-        description: "Modo de búsqueda por displayName"
+        description: "Modo de matching"
         required: true
         default: "contains"
         type: choice
@@ -40,11 +27,10 @@ on:
           - contains
           - equals
           - startswith
-
-      newRuleDisplayName:
-        description: "Nombre de la nueva regla (si vacío usa el displayName de la plantilla)"
-        required: false
-        default: ""
+      enabled:
+        description: "Habilitar la regla (solo create)"
+        required: true
+        default: "true"
 
 permissions:
   id-token: write
@@ -58,7 +44,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Login OIDC a Azure (tu log ya muestra que esto funciona)
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
@@ -71,33 +56,34 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Convierte input enabled a boolean real
           $enabled = [System.Convert]::ToBoolean("${{ inputs.enabled }}")
 
-          # Toma SubscriptionId desde Secret (recomendado) o desde 'az account show' si quisieras
-          $subId = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-          if ([string]::IsNullOrWhiteSpace($subId)) {
-            $subId = az account show --query id -o tsv
+          if ("${{ inputs.action }}" -eq "list") {
+
+            ./scripts/sentinel-analytics-rule-templates.ps1 `
+              -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
+              -ResourceGroup "${{ vars.SENTINEL_RESOURCE_GROUP }}" `
+              -WorkspaceName "${{ vars.SENTINEL_WORKSPACE_NAME }}" `
+              -Action list `
+              -TemplateDisplayName "${{ inputs.templateDisplayName }}" `
+              -MatchMode "${{ inputs.matchMode }}" |
+            Out-File -Encoding utf8 sentinel-templates.json
+
+          } else {
+
+            ./scripts/sentinel-analytics-rule-templates.ps1 `
+              -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
+              -ResourceGroup "${{ vars.SENTINEL_RESOURCE_GROUP }}" `
+              -WorkspaceName "${{ vars.SENTINEL_WORKSPACE_NAME }}" `
+              -Action create `
+              -TemplateId "${{ inputs.templateId }}" `
+              -Enabled $enabled
           }
 
-          # ResourceGroup y Workspace desde variables/secrets
-          $rg = "${{ vars.SENTINEL_RESOURCE_GROUP }}"
-          if ([string]::IsNullOrWhiteSpace($rg)) { $rg = "${{ secrets.SENTINEL_RESOURCE_GROUP }}" }
-
-          $ws = "${{ vars.SENTINEL_WORKSPACE_NAME }}"
-          if ([string]::IsNullOrWhiteSpace($ws)) { $ws = "${{ secrets.SENTINEL_WORKSPACE_NAME }}" }
-
-          if ([string]::IsNullOrWhiteSpace($subId) -or [string]::IsNullOrWhiteSpace($rg) -or [string]::IsNullOrWhiteSpace($ws)) {
-            throw "Faltan valores obligatorios: AZURE_SUBSCRIPTION_ID y/o SENTINEL_RESOURCE_GROUP y/o SENTINEL_WORKSPACE_NAME. Configúralos en Secrets/Variables."
-          }
-
-          ./scripts/sentinel-analytics-rule-templates.ps1 `
-            -SubscriptionId $subId `
-            -ResourceGroup $rg `
-            -WorkspaceName $ws `
-            -Action "${{ inputs.action }}" `
-            -TemplateId "${{ inputs.templateId }}" `
-            -TemplateDisplayName "${{ inputs.templateDisplayName }}" `
-            -MatchMode "${{ inputs.matchMode }}" `
-            -NewRuleDisplayName "${{ inputs.newRuleDisplayName }}" `
-            -Enabled $enabled
+      # ✅ SOLO en modo LIST se sube artifact
+      - name: Upload templates artifact
+        if: inputs.action == 'list'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-analytics-rule-templates
+          path: sentinel-templates.json
