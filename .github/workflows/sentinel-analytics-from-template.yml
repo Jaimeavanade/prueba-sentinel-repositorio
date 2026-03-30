@@ -66,6 +66,9 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # -----------------------------
+      # LIST
+      # -----------------------------
       - name: List templates (and export CSV)
         if: ${{ inputs.action == 'list' }}
         shell: pwsh
@@ -82,28 +85,30 @@ jobs:
           name: sentinel-rule-templates
           path: templates.csv
 
+      # -----------------------------
+      # CREATE
+      # -----------------------------
       - name: Create rule from template
         if: ${{ inputs.action == 'create' }}
         shell: pwsh
         run: |
           $enabledBool = [System.Convert]::ToBoolean("${{ inputs.enabled }}")
 
-          $args = @(
-            "-Action", "create",
-            "-MatchMode", "${{ inputs.matchMode }}",
-            "-Enabled", $enabledBool
-          )
-
+          # Construcción segura de argumentos opcionales
+          $optional = @()
           if ("${{ inputs.templateId }}") {
-            $args += @("-TemplateId", "${{ inputs.templateId }}")
+            $optional += @("-TemplateId", "${{ inputs.templateId }}")
           }
-
           if ("${{ inputs.templateDisplayName }}") {
-            $args += @("-TemplateDisplayName", "${{ inputs.templateDisplayName }}")
+            $optional += @("-TemplateDisplayName", "${{ inputs.templateDisplayName }}")
           }
-
           if ("${{ inputs.newRuleDisplayName }}") {
-            $args += @("-NewRuleDisplayName", "${{ inputs.newRuleDisplayName }}")
+            $optional += @("-NewRuleDisplayName", "${{ inputs.newRuleDisplayName }}")
           }
 
-          ./scripts/sentinel-analytics-rule-templates.ps1 @args
+          # Llamada explícita y limpia: evita el bug de "-Action -Action" que disparaba el ValidateSet [1](https://teams.microsoft.com/l/meeting/details?eventId=AAMkAGE4ODZlODM3LTA4MzQtNDY4YS05OTEyLTdiMTY3ZTA0MTUzMAFRAAgI3pET8vkAAEYAAAAA-inrnGSHhES9IRwtrfBJDwcA9u7cx1atf06HiZjL0Om-aQAAAAABDQAA9u7cx1atf06HiZjL0Om-aQAFtxnC0gAAEA%3d%3d)
+          ./scripts/sentinel-analytics-rule-templates.ps1 `
+            -Action create `
+            -MatchMode "${{ inputs.matchMode }}" `
+            -Enabled $enabledBool `
+            @optional
