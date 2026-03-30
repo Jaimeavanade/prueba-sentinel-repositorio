@@ -1,67 +1,117 @@
 <#
 .SYNOPSIS
-  List and create Microsoft Sentinel Analytics Rules from Rule Templates.
+  List and create Microsoft Sentinel Analytics Rules from Rule Templates (alertRuleTemplates -> alertRules)
 
 .REQUIRED ENV VARS
   AZURE_SUBSCRIPTION_ID
   SENTINEL_RESOURCE_GROUP
   SENTINEL_WORKSPACE_NAME
+
+.DESCRIPTION
+  -Action list   : lista Rule Templates y opcionalmente exporta a CSV/JSON
+  -Action create : crea una regla activa desde un template (equivalente a "Create rule" del portal)
+
+Robust fixes:
+  - tactics ALWAYS array
+  - techniques ALWAYS array
+  - entityMappings ALWAYS array
+  - requiredDataConnectors ALWAYS array
+  - suppressionDuration ALWAYS present (default PT1H)
+  - suppressionEnabled ALWAYS present (default false)
+  - StrictMode safe (no props inexistentes)
+  - Evita bug PowerShell con '?api-version' usando $() en URLs
 #>
 
 [CmdletBinding()]
 param(
+  [Parameter(Mandatory = $false)]
   [ValidateSet("list","create")]
   [string]$Action = "list",
 
+  [Parameter(Mandatory = $false)]
   [string]$TemplateId,
+
+  [Parameter(Mandatory = $false)]
   [string]$TemplateDisplayName,
 
+  [Parameter(Mandatory = $false)]
   [ValidateSet("exact","contains")]
   [string]$MatchMode = "contains",
 
+  [Parameter(Mandatory = $false)]
   [string]$NewRuleDisplayName,
+
+  # list: export
+  [Parameter(Mandatory = $false)]
   [string]$OutFile,
 
+  # API
+  [Parameter(Mandatory = $false)]
   [string]$ApiVersion = "2025-09-01",
+
+  # create: enable
+  [Parameter(Mandatory = $false)]
   [bool]$Enabled = $true,
 
+  # create: defaults (por si el template no los trae)
+  [Parameter(Mandatory = $false)]
   [string]$DefaultQueryFrequency = "PT1H",
-  [string]$DefaultQueryPeriod    = "PT1H",
 
+  [Parameter(Mandatory = $false)]
+  [string]$DefaultQueryPeriod = "PT1H",
+
+  [Parameter(Mandatory = $false)]
   [ValidateSet("GreaterThan","GreaterThanOrEqual","LessThan","LessThanOrEqual","Equal","NotEqual")]
   [string]$DefaultTriggerOperator = "GreaterThan",
 
+  [Parameter(Mandatory = $false)]
   [int]$DefaultTriggerThreshold = 0,
 
+  # suppression defaults
+  [Parameter(Mandatory = $false)]
   [string]$DefaultSuppressionDuration = "PT1H",
+
+  [Parameter(Mandatory = $false)]
   [bool]$DefaultSuppressionEnabled = $false
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# -------------------------
+# Helpers
+# -------------------------
 function Get-EnvOrThrow([string]$name) {
   $v = [Environment]::GetEnvironmentVariable($name)
   if ([string]::IsNullOrWhiteSpace($v)) { throw "Missing required env var: $name" }
-  $v
+  return $v
 }
 
-function Ensure-AzCli { $null = & az version | Out-String }
+function Ensure-AzCli {
+  try { $null = & az version | Out-String } catch { throw "Azure CLI (az) not found." }
+}
 
 function Get-ArmToken {
   $t = & az account get-access-token --resource "https://management.azure.com/" --query accessToken -o tsv
   if ([string]::IsNullOrWhiteSpace($t)) { throw "Failed to obtain ARM token via az." }
-  $t
+  return $t
 }
 
 function Invoke-ArmRest {
   param(
-    [ValidateSet("GET","PUT","POST","PATCH","DELETE")]
+    [Parameter(Mandatory = $true)][ValidateSet("GET","PUT","POST","PATCH","DELETE")]
     [string]$Method,
+    [Parameter(Mandatory = $true)]
     [string]$Uri,
+    [Parameter(Mandatory = $false)]
     $Body
   )
-  $headers = @{ Authorization="Bearer $(Get-ArmToken)"; "Content-Type"="application/json" }
+
+  $headers = @{
+    Authorization  = "Bearer $(Get-ArmToken)"
+    "Content-Type" = "application/json"
+  }
+
   if ($null -ne $Body) {
     $json = $Body | ConvertTo-Json -Depth 120
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
@@ -73,21 +123,22 @@ function Invoke-ArmRest {
 function Has-Prop($obj, [string]$name) {
   return ($null -ne $obj -and $null -ne $obj.PSObject.Properties[$name])
 }
+
 function Get-PropValue($obj, [string]$name, $default = $null) {
   if (Has-Prop $obj $name) { return $obj.$name }
   return $default
 }
 
-# ---- Normalizadores robustos (clave) ----
+# Normalizadores robustos
 function Ensure-ArrayGeneric($value) {
   if ($null -eq $value) { return $null }
-  return [object[]]@($value)      # objeto -> [obj], array -> array
+  return [object[]]@($value)
 }
 
 function Ensure-StringArray($value) {
   if ($null -eq $value) { return $null }
 
-  if ($value -is [string]) {      # "Exfiltration" -> ["Exfiltration"]
+  if ($value -is [string]) {
     return [object[]]@($value)
   }
 
@@ -98,22 +149,24 @@ function Ensure-StringArray($value) {
   return [object[]]@($value.ToString())
 }
 
-# Blindaje FINAL justo antes del PUT
+# Blindaje final antes del PUT
 function Normalize-RuleProperties([hashtable]$p) {
-  if ($p.ContainsKey("tactics"))                { $p["tactics"] = Ensure-StringArray $p["tactics"] }
+  if ($p.ContainsKey("tactics"))                { $p["tactics"] = Ensure-StringArray  $p["tactics"] }
   if ($p.ContainsKey("techniques"))             { $p["techniques"] = Ensure-StringArray $p["techniques"] }
   if ($p.ContainsKey("entityMappings"))         { $p["entityMappings"] = Ensure-ArrayGeneric $p["entityMappings"] }
   if ($p.ContainsKey("requiredDataConnectors")) { $p["requiredDataConnectors"] = Ensure-ArrayGeneric $p["requiredDataConnectors"] }
   return $p
 }
 
+# Quita nulos sin romper arrays
 function Remove-NullProperties($obj) {
   if ($null -eq $obj) { return $null }
 
   if ($obj -is [System.Collections.IDictionary]) {
     foreach ($k in @($obj.Keys)) {
-      if ($null -eq $obj[$k]) { $obj.Remove($k) | Out-Null }
-      else {
+      if ($null -eq $obj[$k]) {
+        $obj.Remove($k) | Out-Null
+      } else {
         $obj[$k] = Remove-NullProperties $obj[$k]
         if ($null -eq $obj[$k]) { $obj.Remove($k) | Out-Null }
       }
@@ -141,8 +194,11 @@ function Remove-NullProperties($obj) {
   return $obj
 }
 
-# ---------------- Context ----------------
+# -------------------------
+# Context
+# -------------------------
 Ensure-AzCli
+
 $subId = Get-EnvOrThrow "AZURE_SUBSCRIPTION_ID"
 $rg    = Get-EnvOrThrow "SENTINEL_RESOURCE_GROUP"
 $ws    = Get-EnvOrThrow "SENTINEL_WORKSPACE_NAME"
@@ -152,13 +208,18 @@ $base = "https://management.azure.com/subscriptions/$subId/resourceGroups/$rg/pr
 function Get-RuleTemplates {
   (Invoke-ArmRest -Method GET -Uri "$base/alertRuleTemplates?api-version=$ApiVersion").value
 }
+
 function Get-RuleTemplateById([string]$id) {
+  # IMPORTANT: $() antes de '?'
   Invoke-ArmRest -Method GET -Uri "$base/alertRuleTemplates/$($id)?api-version=$ApiVersion"
 }
 
-# ---------------- LIST ----------------
+# -------------------------
+# LIST
+# -------------------------
 if ($Action -eq "list") {
   $templates = Get-RuleTemplates
+
   $view = $templates | ForEach-Object {
     $p = $_.properties
     [pscustomobject]@{
@@ -175,8 +236,11 @@ if ($Action -eq "list") {
 
   if ($OutFile) {
     $ext = [IO.Path]::GetExtension($OutFile).ToLowerInvariant()
-    if ($ext -eq ".csv") { $view | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $OutFile }
-    else { $view | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8 $OutFile }
+    if ($ext -eq ".csv") {
+      $view | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $OutFile
+    } else {
+      $view | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8 $OutFile
+    }
     Write-Host "Saved templates list to: $OutFile"
   }
 
@@ -184,9 +248,10 @@ if ($Action -eq "list") {
   exit 0
 }
 
-# ---------------- CREATE ----------------
+# -------------------------
+# CREATE
+# -------------------------
 if ($Action -eq "create") {
-
   Write-Host "DEBUG inputs:"
   Write-Host "  TemplateId          = '$TemplateId'"
   Write-Host "  TemplateDisplayName = '$TemplateDisplayName'"
@@ -198,6 +263,7 @@ if ($Action -eq "create") {
     throw "For Action=create you must provide either -TemplateId or -TemplateDisplayName"
   }
 
+  # Resolver template
   $tpl = $null
   if (-not [string]::IsNullOrWhiteSpace($TemplateId)) {
     $tpl = Get-RuleTemplateById $TemplateId
@@ -208,7 +274,9 @@ if ($Action -eq "create") {
     } else {
       @($all | Where-Object { $_.properties.displayName -like "*$TemplateDisplayName*" })
     }
-    if ($matches.Count -ne 1) { throw "TemplateDisplayName matched $($matches.Count) templates. Use TemplateId." }
+    if ($matches.Count -ne 1) {
+      throw "TemplateDisplayName matched $($matches.Count) templates. Use TemplateId."
+    }
     $tpl = Get-RuleTemplateById $matches[0].name
   }
 
@@ -216,16 +284,21 @@ if ($Action -eq "create") {
   $newId = (New-Guid).Guid
   $ruleUri = "$base/alertRules/$($newId)?api-version=$ApiVersion"
 
-  $queryFrequency   = Get-PropValue $tp "queryFrequency" $DefaultQueryFrequency
-  $queryPeriod      = Get-PropValue $tp "queryPeriod"    $DefaultQueryPeriod
-  $triggerOperator  = Get-PropValue $tp "triggerOperator" $DefaultTriggerOperator
+  # defaults si faltan
+  $queryFrequency   = Get-PropValue $tp "queryFrequency"   $DefaultQueryFrequency
+  $queryPeriod      = Get-PropValue $tp "queryPeriod"      $DefaultQueryPeriod
+  $triggerOperator  = Get-PropValue $tp "triggerOperator"  $DefaultTriggerOperator
   $triggerThreshold = Get-PropValue $tp "triggerThreshold" $DefaultTriggerThreshold
 
-  $suppEnabled = [bool](Get-PropValue $tp "suppressionEnabled" $DefaultSuppressionEnabled)
+  # suppression (siempre presentes)
+  $suppEnabled = Get-PropValue $tp "suppressionEnabled"  $DefaultSuppressionEnabled
   $suppDur     = Get-PropValue $tp "suppressionDuration" $DefaultSuppressionDuration
 
+  $displayName = if ([string]::IsNullOrWhiteSpace($NewRuleDisplayName)) { $tp.displayName } else { $NewRuleDisplayName }
+
+  # Construir propiedades
   $properties = [ordered]@{
-    displayName            = $(if ([string]::IsNullOrWhiteSpace($NewRuleDisplayName)) { $tp.displayName } else { $NewRuleDisplayName })
+    displayName            = $displayName
     description            = Get-PropValue $tp "description"
     severity               = Get-PropValue $tp "severity"
     enabled                = $Enabled
@@ -241,22 +314,37 @@ if ($Action -eq "create") {
     entityMappings         = Get-PropValue $tp "entityMappings"
     requiredDataConnectors = Get-PropValue $tp "requiredDataConnectors"
 
-    suppressionEnabled     = $suppEnabled
+    suppressionEnabled     = [bool]$suppEnabled
     suppressionDuration    = $suppDur
 
     alertRuleTemplateName  = $tpl.name
     templateVersion        = Get-PropValue $tp "version"
   }
 
-  # ✅ NORMALIZACIÓN FINAL (esto evita tu error actual de Exfiltration/CredentialAccess)
+  # ✅ Normalización final
   $properties = Normalize-RuleProperties -p ([hashtable]$properties)
 
-  $body = [ordered]@{ kind="Scheduled"; properties=$properties }
+  # Kind: por defecto Scheduled
+  $ruleKind = "Scheduled"
+
+  $body = [ordered]@{
+    kind       = $ruleKind
+    properties = $properties
+  }
+
   $bodyClean = Remove-NullProperties $body
+
+  # Debug de tipos antes del PUT (para que el log sea autoexplicativo)
+  Write-Host "DEBUG payload types:"
+  Write-Host ("  tactics type: " + ($(if($bodyClean.properties.tactics){$bodyClean.properties.tactics.GetType().FullName}else{"<null>"})))
+  Write-Host ("  techniques type: " + ($(if($bodyClean.properties.techniques){$bodyClean.properties.techniques.GetType().FullName}else{"<null>"})))
+  Write-Host ("  entityMappings type: " + ($(if($bodyClean.properties.entityMappings){$bodyClean.properties.entityMappings.GetType().FullName}else{"<null>"})))
+  Write-Host ("  suppressionEnabled: " + $bodyClean.properties.suppressionEnabled)
+  Write-Host ("  suppressionDuration: " + $bodyClean.properties.suppressionDuration)
 
   Write-Host "Creating Active rule from template:"
   Write-Host "  Template: $($tp.displayName) (templateId: $($tpl.name))"
-  Write-Host "  New rule:  $($properties.displayName) (ruleId: $newId)"
+  Write-Host "  New rule:  $displayName (ruleId: $newId)"
   Write-Host "  PUT: $ruleUri"
 
   Invoke-ArmRest -Method PUT -Uri $ruleUri -Body $bodyClean | Out-Null
