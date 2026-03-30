@@ -15,7 +15,7 @@
 .NOTES
   - Uses ARM endpoint: https://management.azure.com/
   - Handles optional properties safely (tactics/createdBy/etc.)
-  - Avoids PowerShell interpolation bug with '?' by using $() in URLs.
+  - Fix: entityMappings MUST be a JSON array for alertRules; some templates return it as an object.
 #>
 
 [CmdletBinding()]
@@ -134,6 +134,13 @@ function Join-IfArray($value) {
     return [string]$value
 }
 
+# ✅ Normaliza a array JSON: si viene objeto -> [obj], si viene array -> array, si null -> null
+function Ensure-Array($value) {
+    if ($null -eq $value) { return $null }
+    if ($value -is [string]) { return $value } # por seguridad (no aplicar a strings)
+    return @($value)  # @() convierte objeto único en array de 1 y mantiene arrays/listas
+}
+
 function Remove-NullProperties {
     param([Parameter(Mandatory = $true)]$obj)
 
@@ -191,13 +198,13 @@ function Get-RuleTemplates {
 }
 
 function Get-RuleTemplateById([string]$id) {
-    # IMPORTANT: use $() before '?' to avoid '$id?api' parsing bug
+    # IMPORTANT: use $() before '?' to avoid PowerShell parsing bug
     $uri = "$base/alertRuleTemplates/$($id)?api-version=$ApiVersion"
     return Invoke-ArmRest -Method "GET" -Uri $uri
 }
 
 function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
-    $newId = ([guid]::NewGuid()).Guid
+    $newId = (New-Guid).Guid
     $ruleUri = "$base/alertRules/$($newId)?api-version=$ApiVersion"
 
     $tp = $template.properties
@@ -213,7 +220,14 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
     $triggerOperator  = if (Has-Prop $tp "triggerOperator" -and $tp.triggerOperator) { $tp.triggerOperator } else { $DefaultTriggerOperator }
     $triggerThreshold = if (Has-Prop $tp "triggerThreshold" -and $tp.triggerThreshold -ne $null) { [int]$tp.triggerThreshold } else { $DefaultTriggerThreshold }
 
-    # Build properties (only include what exists / remove nulls)
+    # ✅ Key fix: entityMappings must be an ARRAY for alertRules.
+    $entityMappingsNormalized = Ensure-Array (Get-PropValue $tp "entityMappings")
+
+    # (Opcional) Normaliza también campos que suelen ser arrays
+    $tacticsNormalized        = Ensure-Array (Get-PropValue $tp "tactics")
+    $techniquesNormalized     = Ensure-Array (Get-PropValue $tp "techniques")
+    $reqConnectorsNormalized  = Ensure-Array (Get-PropValue $tp "requiredDataConnectors")
+
     $properties = [ordered]@{
         displayName              = $displayName
         description              = Get-PropValue $tp "description"
@@ -226,9 +240,9 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
         triggerOperator          = $triggerOperator
         triggerThreshold         = $triggerThreshold
 
-        tactics                  = Get-PropValue $tp "tactics"
-        techniques               = Get-PropValue $tp "techniques"
-        entityMappings           = Get-PropValue $tp "entityMappings"
+        tactics                  = $tacticsNormalized
+        techniques               = $techniquesNormalized
+        entityMappings           = $entityMappingsNormalized   # ✅ FIX HERE
         eventGroupingSettings    = Get-PropValue $tp "eventGroupingSettings"
         incidentConfiguration    = Get-PropValue $tp "incidentConfiguration"
         alertDetailsOverride     = Get-PropValue $tp "alertDetailsOverride"
@@ -239,7 +253,7 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
         # Link to template (this is what Sentinel validates)
         alertRuleTemplateName    = $template.name
         templateVersion          = Get-PropValue $tp "version"
-        requiredDataConnectors   = Get-PropValue $tp "requiredDataConnectors"
+        requiredDataConnectors   = $reqConnectorsNormalized
     }
 
     $body = [ordered]@{
@@ -299,7 +313,7 @@ if ($Action -eq "list") {
 # -------------------------
 if ($Action -eq "create") {
 
-    # DEBUG to confirm what workflow actually passed (useful when diagnosing 400s)
+    # DEBUG to confirm what workflow actually passed
     Write-Host "DEBUG inputs:"
     Write-Host "  TemplateId          = '$TemplateId'"
     Write-Host "  TemplateDisplayName = '$TemplateDisplayName'"
