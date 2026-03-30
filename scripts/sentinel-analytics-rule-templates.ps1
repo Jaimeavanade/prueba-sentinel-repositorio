@@ -1,15 +1,20 @@
 <#
 .SYNOPSIS
   Microsoft Sentinel - Analytics Rule Templates helper:
-   - List templates
-   - Create an Active rule from a template
+   - list: Lists templates (optionally filter by displayName)
+   - create: Creates an active analytics rule from a template
 
-.NOTES
-  Fixes included:
-   1) PowerShell variable parsing bug in URL: use ${TemplateId}?api-version=...
-      Avoids: The variable '$TemplateId?api' cannot be retrieved because it has not been set.
-   2) Sentinel API expects entityMappings[].fieldMappings as ARRAY always.
-      Avoids: Cannot deserialize... requires a JSON array... Path properties.entityMappings[0].fieldMappings.identifier
+.FIXES INCLUDED
+  (A) PowerShell URL variable parsing:
+      Avoids: The variable '$TemplateId?api' cannot be retrieved...
+      by using ${TemplateId} in string interpolation.  (Seen in GitHub Actions) [1](https://video2.skills-academy.com/es-es/azure/sentinel/ci-cd-custom-content)
+
+  (B) Sentinel API expects entityMappings[].fieldMappings as ARRAY:
+      Avoids BadRequest deserialize error:
+      "requires a JSON array... Path properties.entityMappings[0].fieldMappings.identifier" [2]()
+
+  (C) StrictMode-safe access to optional properties:
+      Avoids: "The property 'eventGroupingSettings' cannot be found on this object." [3]()
 #>
 
 [CmdletBinding()]
@@ -61,7 +66,16 @@ function Write-DebugLine {
   Write-Host "DEBUG $Message"
 }
 
+function Has-Prop {
+  param(
+    [Parameter(Mandatory = $true)] $Obj,
+    [Parameter(Mandatory = $true)] [string]$Name
+  )
+  return ($null -ne $Obj -and $null -ne $Obj.PSObject -and $Obj.PSObject.Properties.Match($Name).Count -gt 0)
+}
+
 function Get-AzAccessToken {
+  # Works inside GitHub Actions after azure/login@v2 (OIDC)
   $t = az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv 2>$null
   if ([string]::IsNullOrWhiteSpace($t)) {
     throw "No se pudo obtener access token. Asegúrate de haber hecho azure/login@v2 o az login."
@@ -98,7 +112,7 @@ function Invoke-AzRest {
 }
 
 function New-Guid {
-  return ([guid]::NewGuid().ToString())
+  return ([Guid]::NewGuid().ToString())
 }
 
 function ConvertTo-ArrayIfNeeded {
@@ -108,7 +122,7 @@ function ConvertTo-ArrayIfNeeded {
 
   # If it's already a list/array (but not string), return as array
   if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string]) -and
-    ($Value.GetType().IsArray -or $Value -is [System.Collections.IList])) {
+      ($Value.GetType().IsArray -or $Value -is [System.Collections.IList])) {
     return @($Value)
   }
 
@@ -129,7 +143,7 @@ function Normalize-EntityMappings {
   foreach ($em in (ConvertTo-ArrayIfNeeded $EntityMappings)) {
     if ($null -eq $em) { continue }
 
-    # Clone to PSCustomObject for safe property writes
+    # Clone to PSCustomObject for safe writes
     $emObj = [PSCustomObject]@{}
     foreach ($p in $em.PSObject.Properties) {
       $emObj | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
@@ -143,8 +157,8 @@ function Normalize-EntityMappings {
       $identifier = $null
       $columnName = $null
 
-      if ($m.PSObject.Properties.Name -contains 'identifier') { $identifier = $m.identifier }
-      if ($m.PSObject.Properties.Name -contains 'columnName') { $columnName = $m.columnName }
+      if (Has-Prop $m 'identifier') { $identifier = $m.identifier }
+      if (Has-Prop $m 'columnName') { $columnName = $m.columnName }
 
       $fmArray += [PSCustomObject]@{
         identifier = $identifier
@@ -165,38 +179,62 @@ function Normalize-TemplatePropertiesForRule {
     $TemplateProps
   )
 
+  # Construye "properties" de una regla a partir de template.properties
+  # IMPORTANTE: con StrictMode, solo accedemos a propiedades si existen.
   $p = [ordered]@{}
 
   # Required/typical fields
-  if ($TemplateProps.displayName) { $p.displayName = $TemplateProps.displayName }
-  if ($TemplateProps.description) { $p.description = $TemplateProps.description }
-  if ($TemplateProps.severity) { $p.severity = $TemplateProps.severity }
-  if ($TemplateProps.query) { $p.query = $TemplateProps.query }
+  if (Has-Prop $TemplateProps 'displayName' -and $TemplateProps.displayName) { $p.displayName = $TemplateProps.displayName }
+  if (Has-Prop $TemplateProps 'description' -and $TemplateProps.description) { $p.description = $TemplateProps.description }
+  if (Has-Prop $TemplateProps 'severity' -and $TemplateProps.severity) { $p.severity = $TemplateProps.severity }
+  if (Has-Prop $TemplateProps 'query' -and $TemplateProps.query) { $p.query = $TemplateProps.query }
 
   # Scheduling fields
-  if ($TemplateProps.queryFrequency) { $p.queryFrequency = $TemplateProps.queryFrequency }
-  if ($TemplateProps.queryPeriod) { $p.queryPeriod = $TemplateProps.queryPeriod }
-  if ($TemplateProps.triggerOperator) { $p.triggerOperator = $TemplateProps.triggerOperator }
-  if ($TemplateProps.triggerThreshold) { $p.triggerThreshold = $TemplateProps.triggerThreshold }
+  if (Has-Prop $TemplateProps 'queryFrequency' -and $TemplateProps.queryFrequency) { $p.queryFrequency = $TemplateProps.queryFrequency }
+  if (Has-Prop $TemplateProps 'queryPeriod' -and $TemplateProps.queryPeriod) { $p.queryPeriod = $TemplateProps.queryPeriod }
+  if (Has-Prop $TemplateProps 'triggerOperator' -and $TemplateProps.triggerOperator) { $p.triggerOperator = $TemplateProps.triggerOperator }
+  if (Has-Prop $TemplateProps 'triggerThreshold' -and $TemplateProps.triggerThreshold -ne $null) { $p.triggerThreshold = $TemplateProps.triggerThreshold }
 
   # Tactics/Techniques
-  if ($TemplateProps.tactics) { $p.tactics = $TemplateProps.tactics }
-  if ($TemplateProps.techniques) { $p.techniques = $TemplateProps.techniques }
+  if (Has-Prop $TemplateProps 'tactics' -and $TemplateProps.tactics) { $p.tactics = $TemplateProps.tactics }
+  if (Has-Prop $TemplateProps 'techniques' -and $TemplateProps.techniques) { $p.techniques = $TemplateProps.techniques }
 
-  # Entity mappings (FIX)
-  if ($TemplateProps.entityMappings) {
+  # Entity mappings (FIX array)
+  if (Has-Prop $TemplateProps 'entityMappings' -and $TemplateProps.entityMappings) {
     $p.entityMappings = Normalize-EntityMappings $TemplateProps.entityMappings
   }
 
-  # Optional fields
-  if ($TemplateProps.requiredDataConnectors) { $p.requiredDataConnectors = $TemplateProps.requiredDataConnectors }
-  if ($TemplateProps.eventGroupingSettings) { $p.eventGroupingSettings = $TemplateProps.eventGroupingSettings }
-  if ($TemplateProps.suppressionEnabled -ne $null) { $p.suppressionEnabled = [bool]$TemplateProps.suppressionEnabled }
-  if ($TemplateProps.suppressionDuration) { $p.suppressionDuration = $TemplateProps.suppressionDuration }
-  if ($TemplateProps.incidentConfiguration) { $p.incidentConfiguration = $TemplateProps.incidentConfiguration }
-  if ($TemplateProps.alertDetailsOverride) { $p.alertDetailsOverride = $TemplateProps.alertDetailsOverride }
-  if ($TemplateProps.customDetails) { $p.customDetails = $TemplateProps.customDetails }
-  if ($TemplateProps.templateVersion) { $p.templateVersion = $TemplateProps.templateVersion }
+  # Required data connectors (optional)
+  if (Has-Prop $TemplateProps 'requiredDataConnectors' -and $TemplateProps.requiredDataConnectors) {
+    $p.requiredDataConnectors = $TemplateProps.requiredDataConnectors
+  }
+
+  # Event grouping / suppression (optional) - StrictMode-safe
+  if (Has-Prop $TemplateProps 'eventGroupingSettings' -and $TemplateProps.eventGroupingSettings) {
+    $p.eventGroupingSettings = $TemplateProps.eventGroupingSettings
+  }
+  if (Has-Prop $TemplateProps 'suppressionEnabled' -and $TemplateProps.suppressionEnabled -ne $null) {
+    $p.suppressionEnabled = [bool]$TemplateProps.suppressionEnabled
+  }
+  if (Has-Prop $TemplateProps 'suppressionDuration' -and $TemplateProps.suppressionDuration) {
+    $p.suppressionDuration = $TemplateProps.suppressionDuration
+  }
+
+  # Incident configuration (optional)
+  if (Has-Prop $TemplateProps 'incidentConfiguration' -and $TemplateProps.incidentConfiguration) {
+    $p.incidentConfiguration = $TemplateProps.incidentConfiguration
+  }
+  if (Has-Prop $TemplateProps 'alertDetailsOverride' -and $TemplateProps.alertDetailsOverride) {
+    $p.alertDetailsOverride = $TemplateProps.alertDetailsOverride
+  }
+  if (Has-Prop $TemplateProps 'customDetails' -and $TemplateProps.customDetails) {
+    $p.customDetails = $TemplateProps.customDetails
+  }
+
+  # Other optional fields
+  if (Has-Prop $TemplateProps 'templateVersion' -and $TemplateProps.templateVersion) {
+    $p.templateVersion = $TemplateProps.templateVersion
+  }
 
   return $p
 }
@@ -208,6 +246,7 @@ function Get-BaseSentinelProviderPath {
     [Parameter(Mandatory = $true)][string]$Ws
   )
 
+  # /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.OperationalInsights/workspaces/{ws}/providers/Microsoft.SecurityInsights
   return "/subscriptions/$SubId/resourceGroups/$Rg/providers/Microsoft.OperationalInsights/workspaces/$Ws/providers/Microsoft.SecurityInsights"
 }
 
@@ -216,11 +255,11 @@ function Get-TemplateUri {
 
   $base = Get-BaseSentinelProviderPath -SubId $SubscriptionId -Rg $ResourceGroup -Ws $WorkspaceName
 
-  # ✅ IMPORTANT FIX: use ${TemplateId} so PowerShell doesn't parse "$TemplateId?api" as a variable name
   if ([string]::IsNullOrWhiteSpace($TemplateId)) {
     return "https://management.azure.com$base/alertRuleTemplates?api-version=$ApiVersion"
   }
 
+  # ✅ FIX: ${TemplateId} para que PowerShell NO intente leer "$TemplateId?api" como variable
   return "https://management.azure.com$base/alertRuleTemplates/${TemplateId}?api-version=$ApiVersion"
 }
 
@@ -264,11 +303,12 @@ if ($Action -eq 'list') {
   $resp = Invoke-AzRest -Method GET -Uri $uri
 
   $items = @()
-  if ($resp.value) { $items = $resp.value } else { $items = @($resp) }
+  if (Has-Prop $resp 'value' -and $resp.value) { $items = $resp.value } else { $items = @($resp) }
 
   if (-not [string]::IsNullOrWhiteSpace($TemplateDisplayName)) {
     $items = $items | Where-Object {
-      $_.properties -and $_.properties.displayName -and (Match-ByDisplayName -Name $_.properties.displayName -Filter $TemplateDisplayName -Mode $MatchMode)
+      $_.properties -and (Has-Prop $_.properties 'displayName') -and $_.properties.displayName -and
+      (Match-ByDisplayName -Name $_.properties.displayName -Filter $TemplateDisplayName -Mode $MatchMode)
     }
   }
 
@@ -296,10 +336,11 @@ if ([string]::IsNullOrWhiteSpace($TemplateId)) {
   $uriList = Get-TemplateUri -TemplateId $null
   $respList = Invoke-AzRest -Method GET -Uri $uriList
   $items = @()
-  if ($respList.value) { $items = $respList.value } else { $items = @($respList) }
+  if (Has-Prop $respList 'value' -and $respList.value) { $items = $respList.value } else { $items = @($respList) }
 
   $match = $items | Where-Object {
-    $_.properties -and $_.properties.displayName -and (Match-ByDisplayName -Name $_.properties.displayName -Filter $TemplateDisplayName -Mode $MatchMode)
+    $_.properties -and (Has-Prop $_.properties 'displayName') -and $_.properties.displayName -and
+    (Match-ByDisplayName -Name $_.properties.displayName -Filter $TemplateDisplayName -Mode $MatchMode)
   } | Select-Object -First 1
 
   if (-not $match) {
@@ -312,7 +353,8 @@ if ([string]::IsNullOrWhiteSpace($TemplateId)) {
 # Get template details
 $tmplUri = Get-TemplateUri -TemplateId $TemplateId
 $template = Invoke-AzRest -Method GET -Uri $tmplUri
-if (-not $template.properties) {
+
+if (-not $template -or -not (Has-Prop $template 'properties') -or -not $template.properties) {
   throw "La plantilla '$TemplateId' no tiene properties. No se puede crear regla."
 }
 
@@ -328,12 +370,12 @@ $props = Normalize-TemplatePropertiesForRule -TemplateProps $template.properties
 $props.displayName = $finalName
 $props.enabled = [bool]$Enabled
 
-# Final guard: ensure entityMappings.fieldMappings array just before sending
-if ($props.entityMappings) {
+# Final guard: entityMappings.fieldMappings array just before sending
+if (Has-Prop $props 'entityMappings' -and $props.entityMappings) {
   $props.entityMappings = Normalize-EntityMappings $props.entityMappings
 }
 
-$kind = if ($template.kind) { $template.kind } else { "Scheduled" }
+$kind = if (Has-Prop $template 'kind' -and $template.kind) { $template.kind } else { "Scheduled" }
 
 $payload = [ordered]@{
   location   = $Location
@@ -345,8 +387,8 @@ Write-Host "New rule: $finalName (ruleId: $ruleId)"
 $ruleUri = Get-RuleUri -RuleId $ruleId
 Write-Host "PUT: $ruleUri"
 
-# Debug: show entityMappings shape (useful when templates have mappings)
-if ($payload.properties.entityMappings) {
+# Debug: show entityMappings shape (useful for troubleshooting)
+if (Has-Prop $payload.properties 'entityMappings' -and $payload.properties.entityMappings) {
   Write-DebugLine "payload.properties.entityMappings (sanity check):"
   Write-Host ($payload.properties.entityMappings | ConvertTo-Json -Depth 20)
 }
