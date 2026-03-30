@@ -6,72 +6,34 @@
   AZURE_SUBSCRIPTION_ID
   SENTINEL_RESOURCE_GROUP
   SENTINEL_WORKSPACE_NAME
-
-.DESCRIPTION
-  -Action list   : lista Rule Templates y opcionalmente exporta a CSV/JSON
-  -Action create : crea una regla activa desde un template (equivalente a "Create rule" del portal)
-
-Robust fixes:
-  - tactics ALWAYS array
-  - techniques ALWAYS array
-  - entityMappings ALWAYS array
-  - requiredDataConnectors ALWAYS array
-  - suppressionDuration ALWAYS present (default PT1H)
-  - suppressionEnabled ALWAYS present (default false)
-  - StrictMode safe (no props inexistentes)
-  - Evita bug PowerShell con '?api-version' usando $() en URLs
 #>
 
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory = $false)]
   [ValidateSet("list","create")]
   [string]$Action = "list",
 
-  [Parameter(Mandatory = $false)]
   [string]$TemplateId,
-
-  [Parameter(Mandatory = $false)]
   [string]$TemplateDisplayName,
 
-  [Parameter(Mandatory = $false)]
   [ValidateSet("exact","contains")]
   [string]$MatchMode = "contains",
 
-  [Parameter(Mandatory = $false)]
   [string]$NewRuleDisplayName,
-
-  # list: export
-  [Parameter(Mandatory = $false)]
   [string]$OutFile,
 
-  # API
-  [Parameter(Mandatory = $false)]
   [string]$ApiVersion = "2025-09-01",
-
-  # create: enable
-  [Parameter(Mandatory = $false)]
   [bool]$Enabled = $true,
 
-  # create: defaults (por si el template no los trae)
-  [Parameter(Mandatory = $false)]
   [string]$DefaultQueryFrequency = "PT1H",
+  [string]$DefaultQueryPeriod    = "PT1H",
 
-  [Parameter(Mandatory = $false)]
-  [string]$DefaultQueryPeriod = "PT1H",
-
-  [Parameter(Mandatory = $false)]
   [ValidateSet("GreaterThan","GreaterThanOrEqual","LessThan","LessThanOrEqual","Equal","NotEqual")]
   [string]$DefaultTriggerOperator = "GreaterThan",
 
-  [Parameter(Mandatory = $false)]
   [int]$DefaultTriggerThreshold = 0,
 
-  # suppression defaults
-  [Parameter(Mandatory = $false)]
   [string]$DefaultSuppressionDuration = "PT1H",
-
-  [Parameter(Mandatory = $false)]
   [bool]$DefaultSuppressionEnabled = $false
 )
 
@@ -84,7 +46,7 @@ $ErrorActionPreference = "Stop"
 function Get-EnvOrThrow([string]$name) {
   $v = [Environment]::GetEnvironmentVariable($name)
   if ([string]::IsNullOrWhiteSpace($v)) { throw "Missing required env var: $name" }
-  return $v
+  $v
 }
 
 function Ensure-AzCli {
@@ -94,16 +56,14 @@ function Ensure-AzCli {
 function Get-ArmToken {
   $t = & az account get-access-token --resource "https://management.azure.com/" --query accessToken -o tsv
   if ([string]::IsNullOrWhiteSpace($t)) { throw "Failed to obtain ARM token via az." }
-  return $t
+  $t
 }
 
 function Invoke-ArmRest {
   param(
-    [Parameter(Mandatory = $true)][ValidateSet("GET","PUT","POST","PATCH","DELETE")]
+    [ValidateSet("GET","PUT","POST","PATCH","DELETE")]
     [string]$Method,
-    [Parameter(Mandatory = $true)]
     [string]$Uri,
-    [Parameter(Mandatory = $false)]
     $Body
   )
 
@@ -113,7 +73,8 @@ function Invoke-ArmRest {
   }
 
   if ($null -ne $Body) {
-    $json = $Body | ConvertTo-Json -Depth 120
+    # ✅ FIX DEFINITIVO: PowerShell no permite Depth > 100 [1](https://teams.microsoft.com/l/meeting/details?eventId=AAMkAGE4ODZlODM3LTA4MzQtNDY4YS05OTEyLTdiMTY3ZTA0MTUzMAFRAAgI3pET8vkAAEYAAAAA-inrnGSHhES9IRwtrfBJDwcA9u7cx1atf06HiZjL0Om-aQAAAAABDQAA9u7cx1atf06HiZjL0Om-aQAFtxnC0gAAEA%3d%3d)
+    $json = $Body | ConvertTo-Json -Depth 100
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
   } else {
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
@@ -121,25 +82,27 @@ function Invoke-ArmRest {
 }
 
 function Has-Prop($obj, [string]$name) {
-  return ($null -ne $obj -and $null -ne $obj.PSObject.Properties[$name])
+  $null -ne $obj -and $null -ne $obj.PSObject.Properties[$name]
 }
 
 function Get-PropValue($obj, [string]$name, $default = $null) {
   if (Has-Prop $obj $name) { return $obj.$name }
-  return $default
+  $default
 }
 
-# Normalizadores robustos
+# -------------------------
+# Normalizers (robustos)
+# -------------------------
 function Ensure-ArrayGeneric($value) {
   if ($null -eq $value) { return $null }
-  return [object[]]@($value)
+  [object[]]@($value)   # objeto -> [obj], array -> array
 }
 
 function Ensure-StringArray($value) {
   if ($null -eq $value) { return $null }
 
   if ($value -is [string]) {
-    return [object[]]@($value)
+    return [object[]]@($value) # "Exfiltration" -> ["Exfiltration"]
   }
 
   if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
@@ -149,7 +112,6 @@ function Ensure-StringArray($value) {
   return [object[]]@($value.ToString())
 }
 
-# Blindaje final antes del PUT
 function Normalize-RuleProperties([hashtable]$p) {
   if ($p.ContainsKey("tactics"))                { $p["tactics"] = Ensure-StringArray  $p["tactics"] }
   if ($p.ContainsKey("techniques"))             { $p["techniques"] = Ensure-StringArray $p["techniques"] }
@@ -158,15 +120,13 @@ function Normalize-RuleProperties([hashtable]$p) {
   return $p
 }
 
-# Quita nulos sin romper arrays
 function Remove-NullProperties($obj) {
   if ($null -eq $obj) { return $null }
 
   if ($obj -is [System.Collections.IDictionary]) {
     foreach ($k in @($obj.Keys)) {
-      if ($null -eq $obj[$k]) {
-        $obj.Remove($k) | Out-Null
-      } else {
+      if ($null -eq $obj[$k]) { $obj.Remove($k) | Out-Null }
+      else {
         $obj[$k] = Remove-NullProperties $obj[$k]
         if ($null -eq $obj[$k]) { $obj.Remove($k) | Out-Null }
       }
@@ -236,11 +196,8 @@ if ($Action -eq "list") {
 
   if ($OutFile) {
     $ext = [IO.Path]::GetExtension($OutFile).ToLowerInvariant()
-    if ($ext -eq ".csv") {
-      $view | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $OutFile
-    } else {
-      $view | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8 $OutFile
-    }
+    if ($ext -eq ".csv") { $view | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $OutFile }
+    else { $view | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8 $OutFile }
     Write-Host "Saved templates list to: $OutFile"
   }
 
@@ -274,9 +231,7 @@ if ($Action -eq "create") {
     } else {
       @($all | Where-Object { $_.properties.displayName -like "*$TemplateDisplayName*" })
     }
-    if ($matches.Count -ne 1) {
-      throw "TemplateDisplayName matched $($matches.Count) templates. Use TemplateId."
-    }
+    if ($matches.Count -ne 1) { throw "TemplateDisplayName matched $($matches.Count) templates. Use TemplateId." }
     $tpl = Get-RuleTemplateById $matches[0].name
   }
 
@@ -296,7 +251,6 @@ if ($Action -eq "create") {
 
   $displayName = if ([string]::IsNullOrWhiteSpace($NewRuleDisplayName)) { $tp.displayName } else { $NewRuleDisplayName }
 
-  # Construir propiedades
   $properties = [ordered]@{
     displayName            = $displayName
     description            = Get-PropValue $tp "description"
@@ -321,20 +275,17 @@ if ($Action -eq "create") {
     templateVersion        = Get-PropValue $tp "version"
   }
 
-  # ✅ Normalización final
+  # ✅ Normalización final (evita string vs array)
   $properties = Normalize-RuleProperties -p ([hashtable]$properties)
 
-  # Kind: por defecto Scheduled
-  $ruleKind = "Scheduled"
-
   $body = [ordered]@{
-    kind       = $ruleKind
+    kind       = "Scheduled"
     properties = $properties
   }
 
   $bodyClean = Remove-NullProperties $body
 
-  # Debug de tipos antes del PUT (para que el log sea autoexplicativo)
+  # Debug tipos antes del PUT (clave para troubleshooting)
   Write-Host "DEBUG payload types:"
   Write-Host ("  tactics type: " + ($(if($bodyClean.properties.tactics){$bodyClean.properties.tactics.GetType().FullName}else{"<null>"})))
   Write-Host ("  techniques type: " + ($(if($bodyClean.properties.techniques){$bodyClean.properties.techniques.GetType().FullName}else{"<null>"})))
