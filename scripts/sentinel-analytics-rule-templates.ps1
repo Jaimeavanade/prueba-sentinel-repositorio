@@ -1,17 +1,22 @@
 # scripts/sentinel-analytics-rule-templates.ps1
 # Requires: Azure CLI (az) logged-in (azure/login en GitHub Actions o az login local)
+#
 # Purpose:
 #   - List Sentinel Analytics Rule Templates (alertRuleTemplates)
 #   - Create an Active Analytics Rule from a selected template (alertRules)
 #
-# Environment variables required (provided via GitHub secrets):
+# Environment variables required:
 #   AZURE_SUBSCRIPTION_ID
 #   SENTINEL_RESOURCE_GROUP
 #   SENTINEL_WORKSPACE_NAME
 #
+# Fixes implemented:
+# - Some templates do NOT include properties.tactics -> safe access to avoid crash [1]()
+# - Some templates do NOT include properties.createdBy -> safe access (previous failure)
+#
 # Notes:
 # - Uses Azure CLI token for ARM (https://management.azure.com/)
-# - Fix: some templates do NOT include properties.createdBy -> access safely (prevents crash in GH Actions) [1](https://teams.microsoft.com/l/meeting/details?eventId=AAMkAGE4ODZlODM3LTA4MzQtNDY4YS05OTEyLTdiMTY3ZTA0MTUzMAFRAAgI3pET8vkAAEYAAAAA-inrnGSHhES9IRwtrfBJDwcA9u7cx1atf06HiZjL0Om-aQAAAAABDQAA9u7cx1atf06HiZjL0Om-aQAFtxnC0gAAEA%3d%3d)
+# - Uses SecurityInsights API version 2025-09-01 by default
 
 [CmdletBinding()]
 param(
@@ -81,7 +86,6 @@ function Ensure-AzCli {
 }
 
 function Get-ArmToken {
-    # Uses current az login context
     $t = & az account get-access-token --resource "https://management.azure.com/" --query accessToken -o tsv
     if ([string]::IsNullOrWhiteSpace($t)) { throw "Failed to obtain ARM token via az account get-access-token" }
     return $t
@@ -151,6 +155,23 @@ function Remove-NullProperties {
     return $obj
 }
 
+function Has-Prop($obj, [string]$name) {
+    return ($null -ne $obj -and $null -ne $obj.PSObject.Properties[$name])
+}
+
+function Get-PropValue($obj, [string]$name, $default = $null) {
+    if (Has-Prop $obj $name) { return $obj.$name }
+    return $default
+}
+
+function Join-IfArray($value) {
+    if ($null -eq $value) { return $null }
+    if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+        return (@($value) -join ",")
+    }
+    return [string]$value
+}
+
 # -------------------------
 # MAIN
 # -------------------------
@@ -179,41 +200,40 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
 
     $tp = $template.properties
 
-    # Most analytics templates are "Scheduled" rules.
     $ruleKind = "Scheduled"
 
     $displayName = if ([string]::IsNullOrWhiteSpace($displayNameOverride)) { $tp.displayName } else { $displayNameOverride }
 
-    $queryFrequency   = if ($tp.queryFrequency)   { $tp.queryFrequency }   else { $DefaultQueryFrequency }
-    $queryPeriod      = if ($tp.queryPeriod)      { $tp.queryPeriod }      else { $DefaultQueryPeriod }
-    $triggerOperator  = if ($tp.triggerOperator)  { $tp.triggerOperator }  else { $DefaultTriggerOperator }
-    $triggerThreshold = if ($tp.triggerThreshold -ne $null) { [int]$tp.triggerThreshold } else { $DefaultTriggerThreshold }
+    $queryFrequency   = if (Has-Prop $tp "queryFrequency" -and $tp.queryFrequency) { $tp.queryFrequency } else { $DefaultQueryFrequency }
+    $queryPeriod      = if (Has-Prop $tp "queryPeriod" -and $tp.queryPeriod) { $tp.queryPeriod } else { $DefaultQueryPeriod }
+    $triggerOperator  = if (Has-Prop $tp "triggerOperator" -and $tp.triggerOperator) { $tp.triggerOperator } else { $DefaultTriggerOperator }
+    $triggerThreshold = if (Has-Prop $tp "triggerThreshold" -and $tp.triggerThreshold -ne $null) { [int]$tp.triggerThreshold } else { $DefaultTriggerThreshold }
 
     $properties = [ordered]@{
         displayName              = $displayName
-        description              = $tp.description
-        severity                 = $tp.severity
+        description              = Get-PropValue $tp "description"
+        severity                 = Get-PropValue $tp "severity"
         enabled                  = $Enabled
-        query                    = $tp.query
+        query                    = Get-PropValue $tp "query"
         queryFrequency           = $queryFrequency
         queryPeriod              = $queryPeriod
         triggerOperator          = $triggerOperator
         triggerThreshold         = $triggerThreshold
 
-        tactics                  = $tp.tactics
-        techniques               = $tp.techniques
-        entityMappings           = $tp.entityMappings
-        eventGroupingSettings    = $tp.eventGroupingSettings
-        incidentConfiguration    = $tp.incidentConfiguration
-        alertDetailsOverride     = $tp.alertDetailsOverride
-        customDetails            = $tp.customDetails
-        suppressionDuration      = $tp.suppressionDuration
-        suppressionEnabled       = $tp.suppressionEnabled
+        tactics                  = Get-PropValue $tp "tactics"
+        techniques               = Get-PropValue $tp "techniques"
+        entityMappings           = Get-PropValue $tp "entityMappings"
+        eventGroupingSettings    = Get-PropValue $tp "eventGroupingSettings"
+        incidentConfiguration    = Get-PropValue $tp "incidentConfiguration"
+        alertDetailsOverride     = Get-PropValue $tp "alertDetailsOverride"
+        customDetails            = Get-PropValue $tp "customDetails"
+        suppressionDuration      = Get-PropValue $tp "suppressionDuration"
+        suppressionEnabled       = Get-PropValue $tp "suppressionEnabled"
 
         # link back to template (when supported)
         alertRuleTemplateName    = $template.name
-        templateVersion          = $tp.version
-        requiredDataConnectors   = $tp.requiredDataConnectors
+        templateVersion          = Get-PropValue $tp "version"
+        requiredDataConnectors   = Get-PropValue $tp "requiredDataConnectors"
     }
 
     $body = [ordered]@{
@@ -235,20 +255,21 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
 if ($Action -eq "list") {
     $templates = Get-RuleTemplates
 
-    # FIX: properties.createdBy may not exist -> safe access to avoid crash in workflow [1](https://teams.microsoft.com/l/meeting/details?eventId=AAMkAGE4ODZlODM3LTA4MzQtNDY4YS05OTEyLTdiMTY3ZTA0MTUzMAFRAAgI3pET8vkAAEYAAAAA-inrnGSHhES9IRwtrfBJDwcA9u7cx1atf06HiZjL0Om-aQAAAAABDQAA9u7cx1atf06HiZjL0Om-aQAFtxnC0gAAEA%3d%3d)
+    # IMPORTANT: Some templates don't have tactics/createdBy/etc. -> safe access
     $view = $templates | ForEach-Object {
         $p = $_.properties
 
         [pscustomobject]@{
             templateId   = $_.name
-            displayName  = $p.displayName
-            severity     = $p.severity
-            tactics      = ($p.tactics -join ",")
-            version      = $p.version
-            createdBy    = if ($p.PSObject.Properties['createdBy']) { $p.createdBy } else { $null }
-            status       = $p.status
+            displayName  = Get-PropValue $p "displayName"
+            severity     = Get-PropValue $p "severity"
+            tactics      = Join-IfArray (Get-PropValue $p "tactics")          # FIX for missing tactics [1]()
+            techniques   = Join-IfArray (Get-PropValue $p "techniques")
+            version      = Get-PropValue $p "version"
+            createdBy    = Get-PropValue $p "createdBy"
+            status       = Get-PropValue $p "status"
             kind         = $_.kind
-            contentId    = if ($p.PSObject.Properties['contentId']) { $p.contentId } else { $null }
+            contentId    = Get-PropValue $p "contentId"
         }
     }
 
@@ -279,9 +300,9 @@ if ($Action -eq "create") {
         $all = Get-RuleTemplates
 
         if ($MatchMode -eq "exact") {
-            $matches = @($all | Where-Object { $_.properties.displayName -eq $TemplateDisplayName })
+            $matches = @($all | Where-Object { (Get-PropValue $_.properties "displayName") -eq $TemplateDisplayName })
         } else {
-            $matches = @($all | Where-Object { $_.properties.displayName -like "*$TemplateDisplayName*" })
+            $matches = @($all | Where-Object { (Get-PropValue $_.properties "displayName") -like "*$TemplateDisplayName*" })
         }
 
         if ($matches.Count -eq 0) {
@@ -290,7 +311,7 @@ if ($Action -eq "create") {
         if ($matches.Count -gt 1) {
             Write-Host "Multiple templates matched. Showing candidates:"
             $matches | ForEach-Object {
-                Write-Host ("- {0}  |  {1}" -f $_.name, $_.properties.displayName)
+                Write-Host ("- {0}  |  {1}" -f $_.name, (Get-PropValue $_.properties "displayName"))
             }
             throw "Multiple templates matched. Use -TemplateId to disambiguate."
         }
