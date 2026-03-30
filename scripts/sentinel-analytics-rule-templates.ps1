@@ -3,6 +3,15 @@
 # Purpose:
 #   - List Sentinel Analytics Rule Templates (alertRuleTemplates)
 #   - Create an Active Analytics Rule from a selected template (alertRules)
+#
+# Environment variables required (provided via GitHub secrets):
+#   AZURE_SUBSCRIPTION_ID
+#   SENTINEL_RESOURCE_GROUP
+#   SENTINEL_WORKSPACE_NAME
+#
+# Notes:
+# - Uses Azure CLI token for ARM (https://management.azure.com/)
+# - Fix: some templates do NOT include properties.createdBy -> access safely (prevents crash in GH Actions) [1](https://teams.microsoft.com/l/meeting/details?eventId=AAMkAGE4ODZlODM3LTA4MzQtNDY4YS05OTEyLTdiMTY3ZTA0MTUzMAFRAAgI3pET8vkAAEYAAAAA-inrnGSHhES9IRwtrfBJDwcA9u7cx1atf06HiZjL0Om-aQAAAAABDQAA9u7cx1atf06HiZjL0Om-aQAFtxnC0gAAEA%3d%3d)
 
 [CmdletBinding()]
 param(
@@ -129,7 +138,6 @@ function Remove-NullProperties {
         return ,$list
     }
 
-    # PSCustomObject
     if ($obj -is [pscustomobject]) {
         $hash = @{}
         foreach ($p in $obj.PSObject.Properties) {
@@ -148,9 +156,9 @@ function Remove-NullProperties {
 # -------------------------
 Ensure-AzCli
 
-$subId   = Get-EnvOrThrow "AZURE_SUBSCRIPTION_ID"
-$rg      = Get-EnvOrThrow "SENTINEL_RESOURCE_GROUP"
-$ws      = Get-EnvOrThrow "SENTINEL_WORKSPACE_NAME"
+$subId = Get-EnvOrThrow "AZURE_SUBSCRIPTION_ID"
+$rg    = Get-EnvOrThrow "SENTINEL_RESOURCE_GROUP"
+$ws    = Get-EnvOrThrow "SENTINEL_WORKSPACE_NAME"
 
 $base = "https://management.azure.com/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.OperationalInsights/workspaces/$ws/providers/Microsoft.SecurityInsights"
 
@@ -166,24 +174,21 @@ function Get-RuleTemplateById([string]$id) {
 }
 
 function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
-    # New Active Rule Id
-    $newId = ([guid]::NewGuid()).ToString()
+    $newId = ([guid]::NewGuid()).Guid
     $ruleUri = "$base/alertRules/$newId?api-version=$ApiVersion"
 
     $tp = $template.properties
 
-    # Build a Scheduled rule body (most templates are Scheduled; if template kind differs, you can adapt)
+    # Most analytics templates are "Scheduled" rules.
     $ruleKind = "Scheduled"
 
     $displayName = if ([string]::IsNullOrWhiteSpace($displayNameOverride)) { $tp.displayName } else { $displayNameOverride }
 
-    # Some template fields may be missing; we provide safe defaults
     $queryFrequency   = if ($tp.queryFrequency)   { $tp.queryFrequency }   else { $DefaultQueryFrequency }
     $queryPeriod      = if ($tp.queryPeriod)      { $tp.queryPeriod }      else { $DefaultQueryPeriod }
     $triggerOperator  = if ($tp.triggerOperator)  { $tp.triggerOperator }  else { $DefaultTriggerOperator }
     $triggerThreshold = if ($tp.triggerThreshold -ne $null) { [int]$tp.triggerThreshold } else { $DefaultTriggerThreshold }
 
-    # Compose properties reusing template-defined parts when present
     $properties = [ordered]@{
         displayName              = $displayName
         description              = $tp.description
@@ -205,7 +210,7 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
         suppressionDuration      = $tp.suppressionDuration
         suppressionEnabled       = $tp.suppressionEnabled
 
-        # Link back to template when supported
+        # link back to template (when supported)
         alertRuleTemplateName    = $template.name
         templateVersion          = $tp.version
         requiredDataConnectors   = $tp.requiredDataConnectors
@@ -230,15 +235,20 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
 if ($Action -eq "list") {
     $templates = Get-RuleTemplates
 
+    # FIX: properties.createdBy may not exist -> safe access to avoid crash in workflow [1](https://teams.microsoft.com/l/meeting/details?eventId=AAMkAGE4ODZlODM3LTA4MzQtNDY4YS05OTEyLTdiMTY3ZTA0MTUzMAFRAAgI3pET8vkAAEYAAAAA-inrnGSHhES9IRwtrfBJDwcA9u7cx1atf06HiZjL0Om-aQAAAAABDQAA9u7cx1atf06HiZjL0Om-aQAFtxnC0gAAEA%3d%3d)
     $view = $templates | ForEach-Object {
+        $p = $_.properties
+
         [pscustomobject]@{
             templateId   = $_.name
-            displayName  = $_.properties.displayName
-            severity     = $_.properties.severity
-            tactics      = ($_.properties.tactics -join ",")
-            version      = $_.properties.version
-            createdBy    = $_.properties.createdBy
-            status       = $_.properties.status
+            displayName  = $p.displayName
+            severity     = $p.severity
+            tactics      = ($p.tactics -join ",")
+            version      = $p.version
+            createdBy    = if ($p.PSObject.Properties['createdBy']) { $p.createdBy } else { $null }
+            status       = $p.status
+            kind         = $_.kind
+            contentId    = if ($p.PSObject.Properties['contentId']) { $p.contentId } else { $null }
         }
     }
 
