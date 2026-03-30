@@ -24,7 +24,7 @@ on:
           - exact
           - contains
       templateId:
-        description: "(create) ID exacto del template (si lo conoces, evita ambigüedades)"
+        description: "(create) ID exacto del template (recomendado)"
         required: false
         type: string
       newRuleDisplayName:
