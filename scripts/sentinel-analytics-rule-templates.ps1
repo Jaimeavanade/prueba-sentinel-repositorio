@@ -1,19 +1,11 @@
 <#
-List & Create Microsoft Sentinel Analytics Rules from Rule Templates
-Auth: Azure CLI token (azure/login OIDC in GitHub Actions)
+.SYNOPSIS
+  List and create Microsoft Sentinel Analytics Rules from Rule Templates.
 
-REQUIRED ENV VARS:
+.REQUIRED ENV VARS
   AZURE_SUBSCRIPTION_ID
   SENTINEL_RESOURCE_GROUP
   SENTINEL_WORKSPACE_NAME
-
-Robust fixes:
-  - tactics/techniques always arrays
-  - entityMappings always array
-  - requiredDataConnectors always array
-  - suppressionDuration always present (default PT1H)
-  - suppressionEnabled always present (default false)
-  - StrictMode-safe (never access missing properties directly)
 #>
 
 [CmdletBinding()]
@@ -71,25 +63,33 @@ function Invoke-ArmRest {
   )
   $headers = @{ Authorization="Bearer $(Get-ArmToken)"; "Content-Type"="application/json" }
   if ($null -ne $Body) {
-    $json = $Body | ConvertTo-Json -Depth 100
+    $json = $Body | ConvertTo-Json -Depth 120
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
   } else {
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
   }
 }
 
-function Has-Prop($obj, [string]$name) { $null -ne $obj -and $null -ne $obj.PSObject.Properties[$name] }
-function Get-PropValue($obj, [string]$name, $default = $null) { if (Has-Prop $obj $name) { $obj.$name } else { $default } }
+function Has-Prop($obj, [string]$name) {
+  return ($null -ne $obj -and $null -ne $obj.PSObject.Properties[$name])
+}
+function Get-PropValue($obj, [string]$name, $default = $null) {
+  if (Has-Prop $obj $name) { return $obj.$name }
+  return $default
+}
 
+# ---- Normalizadores robustos (clave) ----
 function Ensure-ArrayGeneric($value) {
   if ($null -eq $value) { return $null }
-  return [object[]]@($value)
+  return [object[]]@($value)      # objeto -> [obj], array -> array
 }
 
 function Ensure-StringArray($value) {
   if ($null -eq $value) { return $null }
 
-  if ($value -is [string]) { return [object[]]@($value) }
+  if ($value -is [string]) {      # "Exfiltration" -> ["Exfiltration"]
+    return [object[]]@($value)
+  }
 
   if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
     return [object[]]@(@($value) | ForEach-Object { $_.ToString() })
@@ -98,13 +98,13 @@ function Ensure-StringArray($value) {
   return [object[]]@($value.ToString())
 }
 
-# ✅ Blindaje FINAL (evita que tactics/techniques “se escapen” como string)
-function Normalize-RuleProperties([hashtable]$props) {
-  if ($props.ContainsKey("tactics"))                { $props["tactics"] = Ensure-StringArray $props["tactics"] }
-  if ($props.ContainsKey("techniques"))             { $props["techniques"] = Ensure-StringArray $props["techniques"] }
-  if ($props.ContainsKey("entityMappings"))         { $props["entityMappings"] = Ensure-ArrayGeneric $props["entityMappings"] }
-  if ($props.ContainsKey("requiredDataConnectors")) { $props["requiredDataConnectors"] = Ensure-ArrayGeneric $props["requiredDataConnectors"] }
-  return $props
+# Blindaje FINAL justo antes del PUT
+function Normalize-RuleProperties([hashtable]$p) {
+  if ($p.ContainsKey("tactics"))                { $p["tactics"] = Ensure-StringArray $p["tactics"] }
+  if ($p.ContainsKey("techniques"))             { $p["techniques"] = Ensure-StringArray $p["techniques"] }
+  if ($p.ContainsKey("entityMappings"))         { $p["entityMappings"] = Ensure-ArrayGeneric $p["entityMappings"] }
+  if ($p.ContainsKey("requiredDataConnectors")) { $p["requiredDataConnectors"] = Ensure-ArrayGeneric $p["requiredDataConnectors"] }
+  return $p
 }
 
 function Remove-NullProperties($obj) {
@@ -131,11 +131,11 @@ function Remove-NullProperties($obj) {
   }
 
   if ($obj -is [pscustomobject]) {
-    $hash = @{}
+    $h = @{}
     foreach ($p in $obj.PSObject.Properties) {
-      if ($null -ne $p.Value) { $hash[$p.Name] = Remove-NullProperties $p.Value }
+      if ($null -ne $p.Value) { $h[$p.Name] = Remove-NullProperties $p.Value }
     }
-    return $hash
+    return $h
   }
 
   return $obj
@@ -143,7 +143,6 @@ function Remove-NullProperties($obj) {
 
 # ---------------- Context ----------------
 Ensure-AzCli
-
 $subId = Get-EnvOrThrow "AZURE_SUBSCRIPTION_ID"
 $rg    = Get-EnvOrThrow "SENTINEL_RESOURCE_GROUP"
 $ws    = Get-EnvOrThrow "SENTINEL_WORKSPACE_NAME"
@@ -153,9 +152,7 @@ $base = "https://management.azure.com/subscriptions/$subId/resourceGroups/$rg/pr
 function Get-RuleTemplates {
   (Invoke-ArmRest -Method GET -Uri "$base/alertRuleTemplates?api-version=$ApiVersion").value
 }
-
 function Get-RuleTemplateById([string]$id) {
-  # IMPORTANT: $() before '?'
   Invoke-ArmRest -Method GET -Uri "$base/alertRuleTemplates/$($id)?api-version=$ApiVersion"
 }
 
@@ -189,6 +186,7 @@ if ($Action -eq "list") {
 
 # ---------------- CREATE ----------------
 if ($Action -eq "create") {
+
   Write-Host "DEBUG inputs:"
   Write-Host "  TemplateId          = '$TemplateId'"
   Write-Host "  TemplateDisplayName = '$TemplateDisplayName'"
@@ -223,8 +221,8 @@ if ($Action -eq "create") {
   $triggerOperator  = Get-PropValue $tp "triggerOperator" $DefaultTriggerOperator
   $triggerThreshold = Get-PropValue $tp "triggerThreshold" $DefaultTriggerThreshold
 
-  $suppressionEnabledRaw = Get-PropValue $tp "suppressionEnabled" $DefaultSuppressionEnabled
-  $suppressionDuration   = Get-PropValue $tp "suppressionDuration" $DefaultSuppressionDuration
+  $suppEnabled = [bool](Get-PropValue $tp "suppressionEnabled" $DefaultSuppressionEnabled)
+  $suppDur     = Get-PropValue $tp "suppressionDuration" $DefaultSuppressionDuration
 
   $properties = [ordered]@{
     displayName            = $(if ([string]::IsNullOrWhiteSpace($NewRuleDisplayName)) { $tp.displayName } else { $NewRuleDisplayName })
@@ -243,21 +241,17 @@ if ($Action -eq "create") {
     entityMappings         = Get-PropValue $tp "entityMappings"
     requiredDataConnectors = Get-PropValue $tp "requiredDataConnectors"
 
-    suppressionEnabled     = [bool]$suppressionEnabledRaw
-    suppressionDuration    = $suppressionDuration
+    suppressionEnabled     = $suppEnabled
+    suppressionDuration    = $suppDur
 
     alertRuleTemplateName  = $tpl.name
     templateVersion        = Get-PropValue $tp "version"
   }
 
-  # ✅ Normalización FINAL
-  $properties = Normalize-RuleProperties -props ([hashtable]$properties)
+  # ✅ NORMALIZACIÓN FINAL (esto evita tu error actual de Exfiltration/CredentialAccess)
+  $properties = Normalize-RuleProperties -p ([hashtable]$properties)
 
-  $body = [ordered]@{
-    kind       = "Scheduled"
-    properties = $properties
-  }
-
+  $body = [ordered]@{ kind="Scheduled"; properties=$properties }
   $bodyClean = Remove-NullProperties $body
 
   Write-Host "Creating Active rule from template:"
