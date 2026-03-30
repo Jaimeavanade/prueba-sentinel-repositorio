@@ -4,15 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "list = listar Rule templates | create = crear Active rule desde template"
+        description: "list | create"
         required: true
         default: "list"
         type: choice
-        options:
-          - list
-          - create
+        options: [list, create]
+      templateId:
+        description: "(create) ID exacto del Rule Template"
+        required: false
+        type: string
       templateDisplayName:
-        description: "(create) displayName de la plantilla (exacto o contiene)"
+        description: "(create) DisplayName del template (alternativa)"
         required: false
         type: string
       matchMode:
@@ -20,25 +22,17 @@ on:
         required: false
         default: "contains"
         type: choice
-        options:
-          - exact
-          - contains
-      templateId:
-        description: "(create) ID exacto del template (recomendado)"
-        required: false
-        type: string
+        options: [exact, contains]
       newRuleDisplayName:
-        description: "(create) Nombre opcional para la nueva regla activa"
+        description: "(create) Nombre opcional de la regla activa"
         required: false
         type: string
       enabled:
-        description: "(create) habilitar la regla (true/false)"
+        description: "(create) habilitar regla"
         required: false
         default: "true"
         type: choice
-        options:
-          - "true"
-          - "false"
+        options: ["true", "false"]
 
 permissions:
   id-token: write
@@ -56,8 +50,7 @@ jobs:
       SENTINEL_WORKSPACE_NAME: ${{ secrets.SENTINEL_WORKSPACE_NAME }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -66,17 +59,14 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # -----------------------------
-      # LIST
-      # -----------------------------
-      - name: List templates (and export CSV)
+      # -------- LIST --------
+      - name: List templates
         if: ${{ inputs.action == 'list' }}
         shell: pwsh
         run: |
           ./scripts/sentinel-analytics-rule-templates.ps1 `
             -Action list `
             -OutFile templates.csv
-          echo "Templates exported to templates.csv"
 
       - name: Upload templates.csv
         if: ${{ inputs.action == 'list' }}
@@ -85,30 +75,17 @@ jobs:
           name: sentinel-rule-templates
           path: templates.csv
 
-      # -----------------------------
-      # CREATE
-      # -----------------------------
+      # -------- CREATE --------
       - name: Create rule from template
         if: ${{ inputs.action == 'create' }}
         shell: pwsh
         run: |
           $enabledBool = [System.Convert]::ToBoolean("${{ inputs.enabled }}")
 
-          # Construcción segura de argumentos opcionales
-          $optional = @()
-          if ("${{ inputs.templateId }}") {
-            $optional += @("-TemplateId", "${{ inputs.templateId }}")
-          }
-          if ("${{ inputs.templateDisplayName }}") {
-            $optional += @("-TemplateDisplayName", "${{ inputs.templateDisplayName }}")
-          }
-          if ("${{ inputs.newRuleDisplayName }}") {
-            $optional += @("-NewRuleDisplayName", "${{ inputs.newRuleDisplayName }}")
-          }
-
-          # Llamada explícita y limpia: evita el bug de "-Action -Action" que disparaba el ValidateSet [1](https://teams.microsoft.com/l/meeting/details?eventId=AAMkAGE4ODZlODM3LTA4MzQtNDY4YS05OTEyLTdiMTY3ZTA0MTUzMAFRAAgI3pET8vkAAEYAAAAA-inrnGSHhES9IRwtrfBJDwcA9u7cx1atf06HiZjL0Om-aQAAAAABDQAA9u7cx1atf06HiZjL0Om-aQAFtxnC0gAAEA%3d%3d)
           ./scripts/sentinel-analytics-rule-templates.ps1 `
             -Action create `
+            -TemplateId "${{ inputs.templateId }}" `
+            -TemplateDisplayName "${{ inputs.templateDisplayName }}" `
             -MatchMode "${{ inputs.matchMode }}" `
-            -Enabled $enabledBool `
-            @optional
+            -NewRuleDisplayName "${{ inputs.newRuleDisplayName }}" `
+            -Enabled $enabledBool
