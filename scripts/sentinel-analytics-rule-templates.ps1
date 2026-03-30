@@ -5,19 +5,10 @@
    - create: Creates an active analytics rule from a template
 
 .FIXES INCLUDED
-  (A) PowerShell URL variable parsing:
-      Avoids: The variable '$TemplateId?api' cannot be retrieved...
-      by using ${TemplateId} in string interpolation. [2](https://video2.skills-academy.com/es-es/azure/sentinel/ci-cd-custom-content)
-
-  (B) Sentinel API expects entityMappings[].fieldMappings as ARRAY:
-      Avoids BadRequest deserialize error:
-      "requires a JSON array... Path properties.entityMappings[0].fieldMappings.identifier" [3]()
-
-  (C) StrictMode-safe access to optional properties:
-      Avoids: "The property 'eventGroupingSettings' cannot be found on this object." [4]()
-
-  (D) Correct use of Has-Prop with -and/-or:
-      Avoids: "A parameter cannot be found that matches parameter name 'and'." [1]()
+  - Prevent "$TemplateId?api" parsing: use ${TemplateId}
+  - Prevent "$RuleId?api" parsing: use ${RuleId}  (fix for your current failing run) [1]()
+  - StrictMode-safe property access (Has-Prop + parentheses with -and)
+  - Normalize entityMappings.fieldMappings to ARRAY
 #>
 
 [CmdletBinding()]
@@ -61,9 +52,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# -----------------------------
-# Helpers
-# -----------------------------
 function Write-DebugLine {
   param([string]$Message)
   Write-Host "DEBUG $Message"
@@ -106,16 +94,13 @@ function Invoke-AzRest {
 
   if ($null -eq $Body) {
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
-  }
-  else {
+  } else {
     $json = if ($Body -is [string]) { $Body } else { ($Body | ConvertTo-Json -Depth 100) }
     return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
   }
 }
 
-function New-Guid {
-  return ([guid]::NewGuid().ToString())
-}
+function New-Guid { return ([guid]::NewGuid().ToString()) }
 
 function ConvertTo-ArrayIfNeeded {
   param([Parameter(ValueFromPipeline = $true)] $Value)
@@ -131,10 +116,7 @@ function ConvertTo-ArrayIfNeeded {
 }
 
 function Normalize-EntityMappings {
-  param(
-    [Parameter(Mandatory = $false)]
-    $EntityMappings
-  )
+  param([Parameter(Mandatory = $false)] $EntityMappings)
 
   if ($null -eq $EntityMappings) { return $null }
 
@@ -154,7 +136,6 @@ function Normalize-EntityMappings {
 
       $identifier = $null
       $columnName = $null
-
       if ((Has-Prop $m 'identifier')) { $identifier = $m.identifier }
       if ((Has-Prop $m 'columnName')) { $columnName = $m.columnName }
 
@@ -172,14 +153,10 @@ function Normalize-EntityMappings {
 }
 
 function Normalize-TemplatePropertiesForRule {
-  param(
-    [Parameter(Mandatory = $true)]
-    $TemplateProps
-  )
+  param([Parameter(Mandatory = $true)] $TemplateProps)
 
   $p = [ordered]@{}
 
-  # Correct usage: (Has-Prop ...) must be in parentheses before -and
   if ((Has-Prop $TemplateProps 'displayName') -and $TemplateProps.displayName) { $p.displayName = $TemplateProps.displayName }
   if ((Has-Prop $TemplateProps 'description') -and $TemplateProps.description) { $p.description = $TemplateProps.description }
   if ((Has-Prop $TemplateProps 'severity') -and $TemplateProps.severity) { $p.severity = $TemplateProps.severity }
@@ -201,6 +178,7 @@ function Normalize-TemplatePropertiesForRule {
     $p.requiredDataConnectors = $TemplateProps.requiredDataConnectors
   }
 
+  # Optional props (StrictMode-safe)
   if ((Has-Prop $TemplateProps 'eventGroupingSettings') -and $TemplateProps.eventGroupingSettings) {
     $p.eventGroupingSettings = $TemplateProps.eventGroupingSettings
   }
@@ -216,15 +194,12 @@ function Normalize-TemplatePropertiesForRule {
   if ((Has-Prop $TemplateProps 'incidentConfiguration') -and $TemplateProps.incidentConfiguration) {
     $p.incidentConfiguration = $TemplateProps.incidentConfiguration
   }
-
   if ((Has-Prop $TemplateProps 'alertDetailsOverride') -and $TemplateProps.alertDetailsOverride) {
     $p.alertDetailsOverride = $TemplateProps.alertDetailsOverride
   }
-
   if ((Has-Prop $TemplateProps 'customDetails') -and $TemplateProps.customDetails) {
     $p.customDetails = $TemplateProps.customDetails
   }
-
   if ((Has-Prop $TemplateProps 'templateVersion') -and $TemplateProps.templateVersion) {
     $p.templateVersion = $TemplateProps.templateVersion
   }
@@ -250,14 +225,16 @@ function Get-TemplateUri {
     return "https://management.azure.com$base/alertRuleTemplates?api-version=$ApiVersion"
   }
 
-  # Fix for "$TemplateId?api" parsing:
   return "https://management.azure.com$base/alertRuleTemplates/${TemplateId}?api-version=$ApiVersion"
 }
 
 function Get-RuleUri {
   param([string]$RuleId)
+
   $base = Get-BaseSentinelProviderPath -SubId $SubscriptionId -Rg $ResourceGroup -Ws $WorkspaceName
-  return "https://management.azure.com$base/alertRules/$RuleId?api-version=$ApiVersion"
+
+  # ✅ FIX DEL RUN ACTUAL (#33): ${RuleId} evita "$RuleId?api" [1]()
+  return "https://management.azure.com$base/alertRules/${RuleId}?api-version=$ApiVersion"
 }
 
 function Match-ByDisplayName {
@@ -373,11 +350,6 @@ $payload = [ordered]@{
 Write-Host "New rule: $finalName (ruleId: $ruleId)"
 $ruleUri = Get-RuleUri -RuleId $ruleId
 Write-Host "PUT: $ruleUri"
-
-if ((Has-Prop $payload.properties 'entityMappings') -and $payload.properties.entityMappings) {
-  Write-DebugLine "payload.properties.entityMappings (sanity check):"
-  Write-Host ($payload.properties.entityMappings | ConvertTo-Json -Depth 20)
-}
 
 $result = Invoke-AzRest -Method PUT -Uri $ruleUri -Body $payload
 
