@@ -34,7 +34,8 @@ on:
       enabled:
         description: "Habilitar la regla (solo create)"
         required: true
-        default: "true"
+        type: choice
+        options: [true, false]
 
 permissions:
   id-token: write
