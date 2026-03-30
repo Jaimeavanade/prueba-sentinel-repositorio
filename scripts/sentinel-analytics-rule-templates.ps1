@@ -12,10 +12,10 @@
   SENTINEL_RESOURCE_GROUP
   SENTINEL_WORKSPACE_NAME
 
-.NOTES
-  - Uses ARM endpoint: https://management.azure.com/
-  - Handles optional properties safely (tactics/createdBy/etc.)
-  - Fix: entityMappings MUST be a JSON array for alertRules; some templates return it as an object.
+.FIXES
+  - entityMappings must be a JSON array (some templates return object)
+  - tactics/techniques must be JSON arrays; some templates return a single string -> wrap into ["..."].
+  - avoids PowerShell parsing bug with '?' by using $() in URLs
 #>
 
 [CmdletBinding()]
@@ -134,11 +134,21 @@ function Join-IfArray($value) {
     return [string]$value
 }
 
-# ✅ Normaliza a array JSON: si viene objeto -> [obj], si viene array -> array, si null -> null
-function Ensure-Array($value) {
+# ✅ Generic "wrap into array" (object -> [obj], array -> array)
+function Ensure-ArrayGeneric($value) {
     if ($null -eq $value) { return $null }
-    if ($value -is [string]) { return $value } # por seguridad (no aplicar a strings)
-    return @($value)  # @() convierte objeto único en array de 1 y mantiene arrays/listas
+    return @($value)
+}
+
+# ✅ Ensure array of strings (string -> ["x"], array -> ["a","b"], others -> ["ToString()"])
+function Ensure-StringArray($value) {
+    if ($null -eq $value) { return $null }
+
+    if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+        return @($value | ForEach-Object { $_.ToString() })
+    }
+
+    return @($value.ToString())
 }
 
 function Remove-NullProperties {
@@ -220,13 +230,11 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
     $triggerOperator  = if (Has-Prop $tp "triggerOperator" -and $tp.triggerOperator) { $tp.triggerOperator } else { $DefaultTriggerOperator }
     $triggerThreshold = if (Has-Prop $tp "triggerThreshold" -and $tp.triggerThreshold -ne $null) { [int]$tp.triggerThreshold } else { $DefaultTriggerThreshold }
 
-    # ✅ Key fix: entityMappings must be an ARRAY for alertRules.
-    $entityMappingsNormalized = Ensure-Array (Get-PropValue $tp "entityMappings")
-
-    # (Opcional) Normaliza también campos que suelen ser arrays
-    $tacticsNormalized        = Ensure-Array (Get-PropValue $tp "tactics")
-    $techniquesNormalized     = Ensure-Array (Get-PropValue $tp "techniques")
-    $reqConnectorsNormalized  = Ensure-Array (Get-PropValue $tp "requiredDataConnectors")
+    # ✅ FIXES: normalize array-typed fields
+    $entityMappingsNormalized = Ensure-ArrayGeneric (Get-PropValue $tp "entityMappings")
+    $tacticsNormalized        = Ensure-StringArray (Get-PropValue $tp "tactics")        # <-- fixes "PrivilegeEscalation" as string
+    $techniquesNormalized     = Ensure-StringArray (Get-PropValue $tp "techniques")
+    $reqConnectorsNormalized  = Ensure-ArrayGeneric (Get-PropValue $tp "requiredDataConnectors")
 
     $properties = [ordered]@{
         displayName              = $displayName
@@ -242,7 +250,7 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
 
         tactics                  = $tacticsNormalized
         techniques               = $techniquesNormalized
-        entityMappings           = $entityMappingsNormalized   # ✅ FIX HERE
+        entityMappings           = $entityMappingsNormalized
         eventGroupingSettings    = Get-PropValue $tp "eventGroupingSettings"
         incidentConfiguration    = Get-PropValue $tp "incidentConfiguration"
         alertDetailsOverride     = Get-PropValue $tp "alertDetailsOverride"
@@ -250,7 +258,6 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
         suppressionDuration      = Get-PropValue $tp "suppressionDuration"
         suppressionEnabled       = Get-PropValue $tp "suppressionEnabled"
 
-        # Link to template (this is what Sentinel validates)
         alertRuleTemplateName    = $template.name
         templateVersion          = Get-PropValue $tp "version"
         requiredDataConnectors   = $reqConnectorsNormalized
