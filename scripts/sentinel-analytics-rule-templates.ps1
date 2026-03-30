@@ -6,9 +6,12 @@
 
 .FIXES INCLUDED
   - Prevent "$TemplateId?api" parsing: use ${TemplateId}
-  - Prevent "$RuleId?api" parsing: use ${RuleId}  (fix for your current failing run) [1]()
+  - Prevent "$RuleId?api" parsing: use ${RuleId}
   - StrictMode-safe property access (Has-Prop + parentheses with -and)
   - Normalize entityMappings.fieldMappings to ARRAY
+  - Ensure required suppression fields exist:
+      suppressionEnabled (bool) + suppressionDuration (ISO8601) ALWAYS
+      Fixes: "Required property 'suppressionDuration' not found in JSON" [1]()
 #>
 
 [CmdletBinding()]
@@ -136,8 +139,15 @@ function Normalize-EntityMappings {
 
       $identifier = $null
       $columnName = $null
-      if ((Has-Prop $m 'identifier')) { $identifier = $m.identifier }
-      if ((Has-Prop $m 'columnName')) { $columnName = $m.columnName }
+
+      # Soporta PSCustomObject y Hashtable/Dictionary
+      if ($m -is [System.Collections.IDictionary]) {
+        if ($m.Contains('identifier')) { $identifier = $m['identifier'] }
+        if ($m.Contains('columnName')) { $columnName = $m['columnName'] }
+      } else {
+        if ((Has-Prop $m 'identifier')) { $identifier = $m.identifier }
+        if ((Has-Prop $m 'columnName')) { $columnName = $m.columnName }
+      }
 
       $fmArray += [PSCustomObject]@{
         identifier = $identifier
@@ -157,52 +167,58 @@ function Normalize-TemplatePropertiesForRule {
 
   $p = [ordered]@{}
 
+  # Campos típicos
   if ((Has-Prop $TemplateProps 'displayName') -and $TemplateProps.displayName) { $p.displayName = $TemplateProps.displayName }
   if ((Has-Prop $TemplateProps 'description') -and $TemplateProps.description) { $p.description = $TemplateProps.description }
   if ((Has-Prop $TemplateProps 'severity') -and $TemplateProps.severity) { $p.severity = $TemplateProps.severity }
   if ((Has-Prop $TemplateProps 'query') -and $TemplateProps.query) { $p.query = $TemplateProps.query }
 
+  # Scheduling
   if ((Has-Prop $TemplateProps 'queryFrequency') -and $TemplateProps.queryFrequency) { $p.queryFrequency = $TemplateProps.queryFrequency }
   if ((Has-Prop $TemplateProps 'queryPeriod') -and $TemplateProps.queryPeriod) { $p.queryPeriod = $TemplateProps.queryPeriod }
   if ((Has-Prop $TemplateProps 'triggerOperator') -and $TemplateProps.triggerOperator) { $p.triggerOperator = $TemplateProps.triggerOperator }
   if ((Has-Prop $TemplateProps 'triggerThreshold') -and ($TemplateProps.triggerThreshold -ne $null)) { $p.triggerThreshold = $TemplateProps.triggerThreshold }
 
+  # MITRE
   if ((Has-Prop $TemplateProps 'tactics') -and $TemplateProps.tactics) { $p.tactics = $TemplateProps.tactics }
   if ((Has-Prop $TemplateProps 'techniques') -and $TemplateProps.techniques) { $p.techniques = $TemplateProps.techniques }
 
+  # Entity mappings (FIX array)
   if ((Has-Prop $TemplateProps 'entityMappings') -and $TemplateProps.entityMappings) {
     $p.entityMappings = Normalize-EntityMappings $TemplateProps.entityMappings
   }
 
+  # Required data connectors (opcional)
   if ((Has-Prop $TemplateProps 'requiredDataConnectors') -and $TemplateProps.requiredDataConnectors) {
     $p.requiredDataConnectors = $TemplateProps.requiredDataConnectors
   }
 
-  # Optional props (StrictMode-safe)
+  # Event grouping (opcional)
   if ((Has-Prop $TemplateProps 'eventGroupingSettings') -and $TemplateProps.eventGroupingSettings) {
     $p.eventGroupingSettings = $TemplateProps.eventGroupingSettings
   }
 
+  # ✅ SUPPRESSION (OBLIGATORIO en tu API / payload)
+  # Si viene de plantilla, lo respetamos. Si NO viene, ponemos defaults seguros.
   if ((Has-Prop $TemplateProps 'suppressionEnabled') -and ($TemplateProps.suppressionEnabled -ne $null)) {
     $p.suppressionEnabled = [bool]$TemplateProps.suppressionEnabled
+  } else {
+    $p.suppressionEnabled = $false
   }
 
   if ((Has-Prop $TemplateProps 'suppressionDuration') -and $TemplateProps.suppressionDuration) {
     $p.suppressionDuration = $TemplateProps.suppressionDuration
+  } else {
+    # Default ISO8601 1h (válido)
+    $p.suppressionDuration = "PT1H"
   }
 
-  if ((Has-Prop $TemplateProps 'incidentConfiguration') -and $TemplateProps.incidentConfiguration) {
-    $p.incidentConfiguration = $TemplateProps.incidentConfiguration
-  }
-  if ((Has-Prop $TemplateProps 'alertDetailsOverride') -and $TemplateProps.alertDetailsOverride) {
-    $p.alertDetailsOverride = $TemplateProps.alertDetailsOverride
-  }
-  if ((Has-Prop $TemplateProps 'customDetails') -and $TemplateProps.customDetails) {
-    $p.customDetails = $TemplateProps.customDetails
-  }
-  if ((Has-Prop $TemplateProps 'templateVersion') -and $TemplateProps.templateVersion) {
-    $p.templateVersion = $TemplateProps.templateVersion
-  }
+  # Incident config / overrides (opcionales)
+  if ((Has-Prop $TemplateProps 'incidentConfiguration') -and $TemplateProps.incidentConfiguration) { $p.incidentConfiguration = $TemplateProps.incidentConfiguration }
+  if ((Has-Prop $TemplateProps 'alertDetailsOverride') -and $TemplateProps.alertDetailsOverride) { $p.alertDetailsOverride = $TemplateProps.alertDetailsOverride }
+  if ((Has-Prop $TemplateProps 'customDetails') -and $TemplateProps.customDetails) { $p.customDetails = $TemplateProps.customDetails }
+
+  if ((Has-Prop $TemplateProps 'templateVersion') -and $TemplateProps.templateVersion) { $p.templateVersion = $TemplateProps.templateVersion }
 
   return $p
 }
@@ -232,8 +248,6 @@ function Get-RuleUri {
   param([string]$RuleId)
 
   $base = Get-BaseSentinelProviderPath -SubId $SubscriptionId -Rg $ResourceGroup -Ws $WorkspaceName
-
-  # ✅ FIX DEL RUN ACTUAL (#33): ${RuleId} evita "$RuleId?api" [1]()
   return "https://management.azure.com$base/alertRules/${RuleId}?api-version=$ApiVersion"
 }
 
@@ -335,6 +349,7 @@ $props = Normalize-TemplatePropertiesForRule -TemplateProps $template.properties
 $props.displayName = $finalName
 $props.enabled = [bool]$Enabled
 
+# Refuerzo final: entityMappings -> array
 if ((Has-Prop $props 'entityMappings') -and $props.entityMappings) {
   $props.entityMappings = Normalize-EntityMappings $props.entityMappings
 }
