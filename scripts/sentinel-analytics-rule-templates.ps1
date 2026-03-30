@@ -12,57 +12,35 @@
   SENTINEL_RESOURCE_GROUP
   SENTINEL_WORKSPACE_NAME
 
-.FIXES
-  - entityMappings must be a JSON array (some templates return object)
-  - tactics/techniques must be JSON arrays; some templates return a single string -> wrap into ["..."].
+FIXES
+  - entityMappings must be JSON array
+  - tactics/techniques must be JSON arrays (even when source is a single string like "Persistence")
   - avoids PowerShell parsing bug with '?' by using $() in URLs
 #>
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $false)]
     [ValidateSet("list","create")]
     [string]$Action = "list",
 
-    # create: prefer TemplateId (exact)
-    [Parameter(Mandatory = $false)]
     [string]$TemplateId,
-
-    # create: alternative selection by displayName
-    [Parameter(Mandatory = $false)]
     [string]$TemplateDisplayName,
 
-    [Parameter(Mandatory = $false)]
     [ValidateSet("exact","contains")]
     [string]$MatchMode = "contains",
 
-    [Parameter(Mandatory = $false)]
     [string]$NewRuleDisplayName,
-
-    # list: optional export path (.csv or .json)
-    [Parameter(Mandatory = $false)]
     [string]$OutFile,
 
-    # API version (SecurityInsights)
-    [Parameter(Mandatory = $false)]
     [string]$ApiVersion = "2025-09-01",
-
-    # create: enabled
-    [Parameter(Mandatory = $false)]
     [bool]$Enabled = $true,
 
-    # create: default fallbacks if template doesn't provide them
-    [Parameter(Mandatory = $false)]
     [string]$DefaultQueryFrequency = "PT1H",
+    [string]$DefaultQueryPeriod    = "PT1H",
 
-    [Parameter(Mandatory = $false)]
-    [string]$DefaultQueryPeriod = "PT1H",
-
-    [Parameter(Mandatory = $false)]
     [ValidateSet("GreaterThan","GreaterThanOrEqual","LessThan","LessThanOrEqual","Equal","NotEqual")]
     [string]$DefaultTriggerOperator = "GreaterThan",
 
-    [Parameter(Mandatory = $false)]
     [int]$DefaultTriggerThreshold = 0
 )
 
@@ -82,7 +60,7 @@ function Get-EnvOrThrow([string]$name) {
 
 function Ensure-AzCli {
     try { $null = & az version | Out-String }
-    catch { throw "Azure CLI (az) not found. Ensure Azure CLI is available in runner/local environment." }
+    catch { throw "Azure CLI (az) not found. Ensure Azure CLI is available." }
 }
 
 function Get-ArmToken {
@@ -95,24 +73,21 @@ function Get-ArmToken {
 
 function Invoke-ArmRest {
     param(
-        [Parameter(Mandatory = $true)][ValidateSet("GET","PUT","POST","PATCH","DELETE")]
+        [ValidateSet("GET","PUT","POST","PATCH","DELETE")]
         [string]$Method,
-        [Parameter(Mandatory = $true)]
         [string]$Uri,
-        [Parameter(Mandatory = $false)]
         $Body
     )
 
     $headers = @{
-        "Authorization" = "Bearer $(Get-ArmToken)"
-        "Content-Type"  = "application/json"
+        Authorization = "Bearer $(Get-ArmToken)"
+        "Content-Type" = "application/json"
     }
 
     if ($null -ne $Body) {
         $json = $Body | ConvertTo-Json -Depth 80
         return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $json
-    }
-    else {
+    } else {
         return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
     }
 }
@@ -126,36 +101,37 @@ function Get-PropValue($obj, [string]$name, $default = $null) {
     return $default
 }
 
-function Join-IfArray($value) {
-    if ($null -eq $value) { return $null }
-    if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
-        return (@($value) -join ",")
-    }
-    return [string]$value
-}
-
-# ✅ Generic "wrap into array" (object -> [obj], array -> array)
+# ✅ Force array of objects (object -> [obj], array -> array, null -> null)
 function Ensure-ArrayGeneric($value) {
     if ($null -eq $value) { return $null }
-    return @($value)
+    return [object[]]@($value)
 }
 
-# ✅ Ensure array of strings (string -> ["x"], array -> ["a","b"], others -> ["ToString()"])
+# ✅ Force array of strings correctly:
+#    - if string -> ["string"]
+#    - if enumerable (array/list) -> ["a","b"]
+#    - else -> ["ToString()"]
 function Ensure-StringArray($value) {
     if ($null -eq $value) { return $null }
 
-    if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
-        return @($value | ForEach-Object { $_.ToString() })
+    if ($value -is [string]) {
+        return [object[]]@($value)
     }
 
-    return @($value.ToString())
+    if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+        return [object[]]@(@($value) | ForEach-Object { $_.ToString() })
+    }
+
+    return [object[]]@($value.ToString())
 }
 
+# ✅ Remove nulls without breaking arrays
 function Remove-NullProperties {
     param([Parameter(Mandatory = $true)]$obj)
 
     if ($null -eq $obj) { return $null }
 
+    # Dictionaries/hashtables
     if ($obj -is [System.Collections.IDictionary]) {
         foreach ($k in @($obj.Keys)) {
             if ($null -eq $obj[$k]) {
@@ -168,15 +144,18 @@ function Remove-NullProperties {
         return $obj
     }
 
+    # Arrays / Enumerables (but not strings)
     if ($obj -is [System.Collections.IEnumerable] -and -not ($obj -is [string])) {
-        $list = New-Object System.Collections.ArrayList
-        foreach ($item in $obj) {
-            $clean = Remove-NullProperties -obj $item
-            if ($null -ne $clean) { [void]$list.Add($clean) }
+        $clean = @()
+        foreach ($item in @($obj)) {
+            $ci = Remove-NullProperties -obj $item
+            if ($null -ne $ci) { $clean += $ci }
         }
-        return ,$list
+        # important: return as real PowerShell array
+        return [object[]]$clean
     }
 
+    # PSCustomObject
     if ($obj -is [pscustomobject]) {
         $hash = @{}
         foreach ($p in $obj.PSObject.Properties) {
@@ -203,38 +182,34 @@ $base = "https://management.azure.com/subscriptions/$subId/resourceGroups/$rg/pr
 
 function Get-RuleTemplates {
     $uri = "$base/alertRuleTemplates?api-version=$ApiVersion"
-    $res = Invoke-ArmRest -Method "GET" -Uri $uri
-    return @($res.value)
+    (Invoke-ArmRest -Method GET -Uri $uri).value
 }
 
 function Get-RuleTemplateById([string]$id) {
-    # IMPORTANT: use $() before '?' to avoid PowerShell parsing bug
+    # IMPORTANT: $() before '?'
     $uri = "$base/alertRuleTemplates/$($id)?api-version=$ApiVersion"
-    return Invoke-ArmRest -Method "GET" -Uri $uri
+    Invoke-ArmRest -Method GET -Uri $uri
 }
 
 function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
-    $newId = (New-Guid).Guid
+    $newId   = (New-Guid).Guid
     $ruleUri = "$base/alertRules/$($newId)?api-version=$ApiVersion"
 
     $tp = $template.properties
-
-    # Rule kind (most templates are Scheduled)
     $ruleKind = "Scheduled"
 
     $displayName = if ([string]::IsNullOrWhiteSpace($displayNameOverride)) { $tp.displayName } else { $displayNameOverride }
 
-    # Defaults if missing
     $queryFrequency   = if (Has-Prop $tp "queryFrequency" -and $tp.queryFrequency) { $tp.queryFrequency } else { $DefaultQueryFrequency }
     $queryPeriod      = if (Has-Prop $tp "queryPeriod" -and $tp.queryPeriod) { $tp.queryPeriod } else { $DefaultQueryPeriod }
     $triggerOperator  = if (Has-Prop $tp "triggerOperator" -and $tp.triggerOperator) { $tp.triggerOperator } else { $DefaultTriggerOperator }
     $triggerThreshold = if (Has-Prop $tp "triggerThreshold" -and $tp.triggerThreshold -ne $null) { [int]$tp.triggerThreshold } else { $DefaultTriggerThreshold }
 
-    # ✅ FIXES: normalize array-typed fields
-    $entityMappingsNormalized = Ensure-ArrayGeneric (Get-PropValue $tp "entityMappings")
-    $tacticsNormalized        = Ensure-StringArray (Get-PropValue $tp "tactics")        # <-- fixes "PrivilegeEscalation" as string
-    $techniquesNormalized     = Ensure-StringArray (Get-PropValue $tp "techniques")
-    $reqConnectorsNormalized  = Ensure-ArrayGeneric (Get-PropValue $tp "requiredDataConnectors")
+    # ✅ normalize array-typed fields
+    $entityMappings = Ensure-ArrayGeneric (Get-PropValue $tp "entityMappings")
+    $tactics        = Ensure-StringArray  (Get-PropValue $tp "tactics")       # <-- FIX for "Persistence" as string
+    $techniques     = Ensure-StringArray  (Get-PropValue $tp "techniques")
+    $reqConnectors  = Ensure-ArrayGeneric (Get-PropValue $tp "requiredDataConnectors")
 
     $properties = [ordered]@{
         displayName              = $displayName
@@ -248,9 +223,10 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
         triggerOperator          = $triggerOperator
         triggerThreshold         = $triggerThreshold
 
-        tactics                  = $tacticsNormalized
-        techniques               = $techniquesNormalized
-        entityMappings           = $entityMappingsNormalized
+        tactics                  = $tactics
+        techniques               = $techniques
+        entityMappings           = $entityMappings
+
         eventGroupingSettings    = Get-PropValue $tp "eventGroupingSettings"
         incidentConfiguration    = Get-PropValue $tp "incidentConfiguration"
         alertDetailsOverride     = Get-PropValue $tp "alertDetailsOverride"
@@ -260,7 +236,7 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
 
         alertRuleTemplateName    = $template.name
         templateVersion          = Get-PropValue $tp "version"
-        requiredDataConnectors   = $reqConnectorsNormalized
+        requiredDataConnectors   = $reqConnectors
     }
 
     $body = [ordered]@{
@@ -275,12 +251,11 @@ function Create-RuleFromTemplate($template, [string]$displayNameOverride) {
     Write-Host "  New rule:  $displayName (ruleId: $newId)"
     Write-Host "  PUT: $ruleUri"
 
-    $created = Invoke-ArmRest -Method "PUT" -Uri $ruleUri -Body $bodyClean
-    return $created
+    Invoke-ArmRest -Method PUT -Uri $ruleUri -Body $bodyClean
 }
 
 # -------------------------
-# ACTION: LIST
+# LIST
 # -------------------------
 if ($Action -eq "list") {
     $templates = Get-RuleTemplates
@@ -291,8 +266,8 @@ if ($Action -eq "list") {
             templateId   = $_.name
             displayName  = Get-PropValue $p "displayName"
             severity     = Get-PropValue $p "severity"
-            tactics      = Join-IfArray (Get-PropValue $p "tactics")
-            techniques   = Join-IfArray (Get-PropValue $p "techniques")
+            tactics      = (Get-PropValue $p "tactics") -join ","
+            techniques   = (Get-PropValue $p "techniques") -join ","
             version      = Get-PropValue $p "version"
             createdBy    = Get-PropValue $p "createdBy"
             status       = Get-PropValue $p "status"
@@ -316,11 +291,9 @@ if ($Action -eq "list") {
 }
 
 # -------------------------
-# ACTION: CREATE
+# CREATE
 # -------------------------
 if ($Action -eq "create") {
-
-    # DEBUG to confirm what workflow actually passed
     Write-Host "DEBUG inputs:"
     Write-Host "  TemplateId          = '$TemplateId'"
     Write-Host "  TemplateDisplayName = '$TemplateDisplayName'"
@@ -332,37 +305,22 @@ if ($Action -eq "create") {
         throw "For Action=create you must provide either -TemplateId or -TemplateDisplayName"
     }
 
-    $selected = $null
-
     if (-not [string]::IsNullOrWhiteSpace($TemplateId)) {
-        $selected = Get-RuleTemplateById -id $TemplateId
-    }
-    else {
+        $tpl = Get-RuleTemplateById -id $TemplateId
+    } else {
         $all = Get-RuleTemplates
-
         $matches = if ($MatchMode -eq "exact") {
-            @($all | Where-Object { (Get-PropValue $_.properties "displayName") -eq $TemplateDisplayName })
+            @($all | Where-Object { $_.properties.displayName -eq $TemplateDisplayName })
         } else {
-            @($all | Where-Object { (Get-PropValue $_.properties "displayName") -like "*$TemplateDisplayName*" })
+            @($all | Where-Object { $_.properties.displayName -like "*$TemplateDisplayName*" })
         }
-
-        if ($matches.Count -eq 0) {
-            throw "No templates matched displayName ($MatchMode): $TemplateDisplayName"
+        if ($matches.Count -ne 1) {
+            throw "TemplateDisplayName matched $($matches.Count) templates. Use TemplateId."
         }
-        if ($matches.Count -gt 1) {
-            Write-Host "Multiple templates matched. Candidates:"
-            $matches | ForEach-Object {
-                Write-Host ("- {0} | {1}" -f $_.name, (Get-PropValue $_.properties "displayName"))
-            }
-            throw "Multiple templates matched. Use -TemplateId to disambiguate."
-        }
-
-        $selected = Get-RuleTemplateById -id $matches[0].name
+        $tpl = Get-RuleTemplateById -id $matches[0].name
     }
 
-    $created = Create-RuleFromTemplate -template $selected -displayNameOverride $NewRuleDisplayName
-
-    Write-Host "Created rule resourceId: $($created.id)"
+    $null = Create-RuleFromTemplate -template $tpl -displayNameOverride $NewRuleDisplayName
     Write-Host "Done."
     exit 0
 }
