@@ -13,11 +13,12 @@
   SENTINEL_WORKSPACE_NAME
 
 FIXES INCLUDED
-  - tactics ALWAYS as JSON array (fixes "Execution"/"Exfiltration" as string)
-  - techniques ALWAYS as JSON array (fixes "T1078" as string) [1]()
+  - tactics ALWAYS as JSON array
+  - techniques ALWAYS as JSON array (fixes "T1059" being sent as string) [1]()
   - entityMappings ALWAYS as JSON array
-  - suppressionDuration ALWAYS present (some APIs require it)
-  - suppressionEnabled may be missing in template -> StrictMode-safe access
+  - requiredDataConnectors ALWAYS as JSON array
+  - suppressionDuration ALWAYS present (default PT1H)
+  - StrictMode-safe access to missing properties
   - avoids PowerShell parsing bug with '?' by using $() in URLs
 #>
 
@@ -102,6 +103,7 @@ function Get-PropValue($obj, [string]$name, $default = $null) {
     return $default
 }
 
+# --- Normalizadores robustos ---
 function Ensure-ArrayGeneric($value) {
     if ($null -eq $value) { return $null }
     return [object[]]@($value)
@@ -121,6 +123,7 @@ function Ensure-StringArray($value) {
     return [object[]]@($value.ToString())
 }
 
+# Normalización FINAL justo antes del PUT (blindaje definitivo)
 function Normalize-RuleProperties([hashtable]$props) {
     if ($props.ContainsKey("tactics"))                { $props["tactics"] = Ensure-StringArray $props["tactics"] }
     if ($props.ContainsKey("techniques"))             { $props["techniques"] = Ensure-StringArray $props["techniques"] } # ✅ FIX [1]()
@@ -129,6 +132,7 @@ function Normalize-RuleProperties([hashtable]$props) {
     return $props
 }
 
+# Remove nulls without breaking arrays
 function Remove-NullProperties($obj) {
     if ($null -eq $obj) { return $null }
 
@@ -271,7 +275,7 @@ if ($Action -eq "create") {
         triggerThreshold       = $triggerThreshold
 
         tactics                = Get-PropValue $tp "tactics"
-        techniques             = Get-PropValue $tp "techniques"      # <--- puede venir "T1078" como string [1]()
+        techniques             = Get-PropValue $tp "techniques"      # <--- puede venir "T1059" string [1]()
         entityMappings         = Get-PropValue $tp "entityMappings"
         requiredDataConnectors = Get-PropValue $tp "requiredDataConnectors"
 
@@ -282,7 +286,7 @@ if ($Action -eq "create") {
         templateVersion        = Get-PropValue $tp "version"
     }
 
-    # ✅ Blindaje final
+    # ✅ Blindaje final (aquí se arregla lo de "T1059" y cualquier technique string)
     $properties = Normalize-RuleProperties -props ([hashtable]$properties)
 
     $body = [ordered]@{
