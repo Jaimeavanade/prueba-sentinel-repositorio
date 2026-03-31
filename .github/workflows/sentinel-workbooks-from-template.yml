@@ -1,0 +1,110 @@
+# .github/workflows/sentinel-workbooks-from-template.yml
+name: "Sentinel - Workbooks Templates (List/Create)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Acción a ejecutar"
+        required: true
+        type: choice
+        default: list
+        options:
+          - list
+          - create
+      templateId:
+        description: "TemplateId (GUID) - obligatorio en create"
+        required: false
+        type: string
+      displayNameFilter:
+        description: "Filtro displayName (solo list)"
+        required: false
+        type: string
+      displayNameFilterMode:
+        description: "Modo de filtrado por displayName"
+        required: true
+        type: choice
+        default: contains
+        options:
+          - contains
+          - equals
+          - startswith
+      workbookDisplayName:
+        description: "Nombre del nuevo workbook (solo create, opcional)"
+        required: false
+        type: string
+      location:
+        description: "Location (opcional, por defecto vars.LOCATION si existe)"
+        required: false
+        type: string
+      verbose:
+        description: "Verbose output"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run Sentinel Workbooks Templates script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $action = "${{ github.event.inputs.action }}"
+          $templateId = "${{ github.event.inputs.templateId }}"
+          $displayNameFilter = "${{ github.event.inputs.displayNameFilter }}"
+          $displayNameFilterMode = "${{ github.event.inputs.displayNameFilterMode }}"
+          $workbookDisplayName = "${{ github.event.inputs.workbookDisplayName }}"
+          $inputLocation = "${{ github.event.inputs.location }}"
+
+          $rg = "${{ vars.RESOURCE_GROUP }}"
+          $ws = "${{ vars.WORKSPACE_NAME }}"
+          $sub = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+
+          if ([string]::IsNullOrWhiteSpace($rg) -or [string]::IsNullOrWhiteSpace($ws)) {
+            throw "Faltan vars.RESOURCE_GROUP o vars.WORKSPACE_NAME"
+          }
+
+          $loc = $inputLocation
+          if ([string]::IsNullOrWhiteSpace($loc)) { $loc = "${{ vars.LOCATION }}" }
+
+          $verboseFlag = "${{ github.event.inputs.verbose }}"
+          $verboseSwitch = $false
+          if ($verboseFlag -eq "true") { $verboseSwitch = $true }
+
+          $args = @(
+            "-Action", $action,
+            "-SubscriptionId", $sub,
+            "-ResourceGroupName", $rg,
+            "-WorkspaceName", $ws,
+            "-DisplayNameFilterMode", $displayNameFilterMode
+          )
+
+          if (-not [string]::IsNullOrWhiteSpace($displayNameFilter)) { $args += @("-DisplayNameFilter", $displayNameFilter) }
+          if (-not [string]::IsNullOrWhiteSpace($templateId)) { $args += @("-TemplateId", $templateId) }
+          if (-not [string]::IsNullOrWhiteSpace($workbookDisplayName)) { $args += @("-WorkbookDisplayName", $workbookDisplayName) }
+          if (-not [string]::IsNullOrWhiteSpace($loc)) { $args += @("-Location", $loc) }
+          if ($verboseSwitch) { $args += @("-VerboseOutput") }
+
+          Write-Host "➡️ Ejecutando scripts/sentinel-workbook-templates.ps1 $($args -join ' ')"
+          pwsh -File "./scripts/sentinel-workbook-templates.ps1" @args
