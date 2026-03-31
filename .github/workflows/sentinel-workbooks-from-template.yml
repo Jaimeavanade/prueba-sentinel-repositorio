@@ -76,7 +76,7 @@ jobs:
           $workbookDisplayName = "${{ github.event.inputs.workbookDisplayName }}"
           $inputLocation = "${{ github.event.inputs.location }}"
 
-          # ✅ Variables del repo
+          # Variables del repo
           $rg = "${{ vars.SENTINEL_RESOURCE_GROUP }}"
           $ws = "${{ vars.SENTINEL_WORKSPACE_NAME }}"
           $sub = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
@@ -106,7 +106,7 @@ jobs:
           if (-not [string]::IsNullOrWhiteSpace($loc))               { $args += @("-Location", $loc) }
           if ($verboseSwitch) { $args += @("-VerboseOutput") }
 
-          # ✅ Solo en LIST generamos CSV para artifact
+          # Solo en LIST generamos CSV para artifact
           if ($action -eq "list") {
             $args += @("-CsvOutputPath", "artifacts/workbook-templates.csv")
           }
