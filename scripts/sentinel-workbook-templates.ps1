@@ -5,7 +5,7 @@
   - list:
       Lista templates instalados (Microsoft.SecurityInsights/contentTemplates) filtrando por contentKind
       Workbook o WorkbookTemplate y opcionalmente por displayName.
-      Además puede exportar el resultado a CSV para descargar como artifact.
+      Además exporta CSV (para artifact) si se indica -CsvOutputPath o si estamos en GitHub Actions.
   - create:
       A partir de un TemplateId (contentTemplate), obtiene properties.mainTemplate (ARM template)
       y ejecuta un deployment ARM en el Resource Group del workspace para materializar el workbook.
@@ -15,7 +15,8 @@
    - El template debe estar INSTALADO en el workspace (Workbooks > Templates proviene de Content Hub).
 
 .NOTES
-  - Evita fallos por propiedades ausentes (p.ej. packageName) con acceso defensivo.
+  - Acceso defensivo a propiedades opcionales (p.ej. packageName).
+  - FIX create: evitar bug PowerShell con "$Id?api-version" usando concatenación segura. [1]()
 #>
 
 [CmdletBinding()]
@@ -154,7 +155,12 @@ function Get-ContentTemplatesList {
 
 function Get-ContentTemplateById {
   param([Parameter(Mandatory=$true)][string]$Id)
-  $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates/$Id?api-version=$ApiVersionSecurityInsights&`$expand=properties/mainTemplate"
+
+  # ✅ FIX: evitar "$Id?api-version" que PowerShell interpreta como variable "$Id?api" (no existe) [1]()
+  $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates/$($Id)"
+  $query   = "?api-version=$ApiVersionSecurityInsights&`$expand=properties/mainTemplate"
+  $uri     = $baseUri + $query
+
   return Invoke-ArmRest -Method GET -Uri $uri
 }
 
@@ -191,12 +197,10 @@ function Resolve-DefaultCsvPath {
     return $Provided
   }
 
-  # Si estamos en GitHub Actions, usamos una ruta fija dentro del workspace
   if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
     return (Join-Path $env:GITHUB_WORKSPACE "artifacts/workbook-templates.csv")
   }
 
-  # Local fallback
   return (Join-Path (Get-Location).Path "workbook-templates.csv")
 }
 
@@ -214,8 +218,6 @@ function Export-CsvUtf8NoBom {
   )
 
   Ensure-Directory -Path $Path
-
-  # Export-Csv no controla BOM consistentemente según PS version; hacemos un write explícito
   $csv = $Data | ConvertTo-Csv -NoTypeInformation
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllLines($Path, $csv, $utf8NoBom)
@@ -245,15 +247,18 @@ function Build-DeploymentParametersFromTemplate {
   $workbookGuid = ([Guid]::NewGuid()).Guid
   $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
 
+  # ids/names comunes
   Set-IfExists -paramName 'workbookId' -value $workbookGuid
   Set-IfExists -paramName 'workbookName' -value $workbookGuid
   Set-IfExists -paramName 'resourceName' -value $workbookGuid
 
+  # workspace
   Set-IfExists -paramName 'workspace' -value $WorkspaceName
   Set-IfExists -paramName 'workspaceName' -value $WorkspaceName
   Set-IfExists -paramName 'workspaceResourceId' -value $WorkspaceResourceId
   Set-IfExists -paramName 'workspaceId' -value $WorkspaceResourceId
 
+  # sourceId típico
   Set-IfExists -paramName 'workbookSourceId' -value $WorkspaceResourceId
   Set-IfExists -paramName 'sourceId' -value $WorkspaceResourceId
   Set-IfExists -paramName 'resourceGroupId' -value $rgId
@@ -382,12 +387,10 @@ if ($Action -eq 'list') {
 
   $filtered = @($filtered | Sort-Object displayName)
 
-  # Mostrar en consola
   $filtered | Format-Table -AutoSize
   Write-Host ""
   Write-Info "Total templates (Workbook/WorkbookTemplate) encontrados: $($filtered.Count)"
 
-  # Exportar CSV
   $csvPath = Resolve-DefaultCsvPath -Provided $CsvOutputPath
   Export-CsvUtf8NoBom -Data $filtered -Path $csvPath
   Write-Host ""
@@ -403,9 +406,11 @@ if ($Action -eq 'create') {
   Write-Info "Cargando templateId: $TemplateId"
   $tpl = Get-ContentTemplateById -Id $TemplateId
 
-  $props = Get-Prop $tpl 'properties' $null
-  if ($null -eq $props) { throw "El template no trae 'properties'. No se puede continuar." }
+  if (-not $tpl -or -not (Get-Prop $tpl 'properties' $null)) {
+    throw "No se pudo obtener el Content Template '$TemplateId'. Revisa que esté instalado en el workspace."
+  }
 
+  $props = Get-Prop $tpl 'properties' $null
   $kind = Get-Prop $props 'contentKind' ''
   if (-not (Is-WorkbookTemplateKind -contentKind $kind)) {
     throw "El TemplateId indicado no parece de Workbook. contentKind='$kind'"
@@ -418,7 +423,6 @@ if ($Action -eq 'create') {
 
   $defaultName = Get-Prop $props 'displayName' ''
   $targetName = if (-not [string]::IsNullOrWhiteSpace($WorkbookDisplayName)) { $WorkbookDisplayName } else { $defaultName }
-
   Write-Info "WorkbookDisplayName objetivo: $targetName"
 
   $params = Build-DeploymentParametersFromTemplate -TemplateObj $mainTemplate -WorkspaceResourceId $wsId -WorkbookNameOverride $targetName -LocationOverride $Location
