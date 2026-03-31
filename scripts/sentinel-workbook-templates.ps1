@@ -5,18 +5,15 @@
   - list:
       Lista templates instalados (Microsoft.SecurityInsights/contentTemplates) filtrando por contentKind
       Workbook o WorkbookTemplate y opcionalmente por displayName.
-      Además exporta CSV (para artifact) si se indica -CsvOutputPath o si estamos en GitHub Actions.
+      Exporta CSV (para artifact) si se indica -CsvOutputPath o si estamos en GitHub Actions.
   - create:
       A partir de un TemplateId (contentTemplate), obtiene properties.mainTemplate (ARM template)
       y ejecuta un deployment ARM en el Resource Group del workspace para materializar el workbook.
 
-  Requisitos:
-   - Autenticación ARM disponible (recomendado: GitHub Actions con azure/login OIDC + Azure CLI).
-   - El template debe estar INSTALADO en el workspace (Workbooks > Templates proviene de Content Hub).
-
 .NOTES
-  - Acceso defensivo a propiedades opcionales (p.ej. packageName).
-  - FIX create: evitar bug PowerShell con "$Id?api-version" usando concatenación segura. [1]()
+  - Acceso defensivo a propiedades opcionales.
+  - FIX create: evita bug "$Id?api-version" (PowerShell interpreta $Id?api).
+  - FIX create: normaliza mainTemplate.parameters a Hashtable (evita error 'Name' no existe). [1]()
 #>
 
 [CmdletBinding()]
@@ -34,11 +31,11 @@ param(
   [Parameter(Mandatory=$true)]
   [string]$WorkspaceName,
 
-  # create: obligatorio
+  # create
   [Parameter(Mandatory=$false)]
   [string]$TemplateId,
 
-  # list: opcional
+  # list
   [Parameter(Mandatory=$false)]
   [string]$DisplayNameFilter,
 
@@ -46,27 +43,24 @@ param(
   [ValidateSet('contains','equals','startswith')]
   [string]$DisplayNameFilterMode = 'contains',
 
-  # create: opcional
+  # create
   [Parameter(Mandatory=$false)]
   [string]$WorkbookDisplayName,
 
-  # create: opcional
+  # create
   [Parameter(Mandatory=$false)]
   [string]$Location,
 
-  # list: opcional -> ruta donde exportar CSV
+  # list
   [Parameter(Mandatory=$false)]
   [string]$CsvOutputPath,
 
-  # API version Sentinel contentTemplates
   [Parameter(Mandatory=$false)]
   [string]$ApiVersionSecurityInsights = '2025-09-01',
 
-  # API version deployments
   [Parameter(Mandatory=$false)]
   [string]$ApiVersionDeployments = '2021-04-01',
 
-  # Debug
   [Parameter(Mandatory=$false)]
   [switch]$VerboseOutput
 )
@@ -75,13 +69,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ----------------------------
-# Helpers (logging)
+# Logging
 # ----------------------------
 function Write-Info([string]$m) { Write-Host "ℹ️  $m" }
 function Write-Warn([string]$m) { Write-Warning $m }
 
 # ----------------------------
-# Helpers (safe property access)
+# Safe property access
 # ----------------------------
 function Has-Prop([object]$Obj, [string]$Name) {
   return ($null -ne $Obj -and $Obj.PSObject.Properties.Name -contains $Name)
@@ -156,7 +150,7 @@ function Get-ContentTemplatesList {
 function Get-ContentTemplateById {
   param([Parameter(Mandatory=$true)][string]$Id)
 
-  # ✅ FIX: evitar "$Id?api-version" que PowerShell interpreta como variable "$Id?api" (no existe) [1]()
+  # ✅ FIX: evitar "$Id?api-version" => PowerShell intenta $Id?api (variable inexistente)
   $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates/$($Id)"
   $query   = "?api-version=$ApiVersionSecurityInsights&`$expand=properties/mainTemplate"
   $uri     = $baseUri + $query
@@ -172,11 +166,7 @@ function Is-WorkbookTemplateKind {
 }
 
 function Match-DisplayName {
-  param(
-    [string]$Name,
-    [string]$Filter,
-    [string]$Mode
-  )
+  param([string]$Name, [string]$Filter, [string]$Mode)
   if ([string]::IsNullOrWhiteSpace($Filter)) { return $true }
   if ($null -eq $Name) { return $false }
 
@@ -192,15 +182,10 @@ function Match-DisplayName {
 # ----------------------------
 function Resolve-DefaultCsvPath {
   param([string]$Provided)
-
-  if (-not [string]::IsNullOrWhiteSpace($Provided)) {
-    return $Provided
-  }
-
+  if (-not [string]::IsNullOrWhiteSpace($Provided)) { return $Provided }
   if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
     return (Join-Path $env:GITHUB_WORKSPACE "artifacts/workbook-templates.csv")
   }
-
   return (Join-Path (Get-Location).Path "workbook-templates.csv")
 }
 
@@ -212,15 +197,51 @@ function Ensure-Directory([string]$Path) {
 }
 
 function Export-CsvUtf8NoBom {
-  param(
-    [Parameter(Mandatory=$true)][object[]]$Data,
-    [Parameter(Mandatory=$true)][string]$Path
-  )
-
+  param([Parameter(Mandatory=$true)][object[]]$Data, [Parameter(Mandatory=$true)][string]$Path)
   Ensure-Directory -Path $Path
   $csv = $Data | ConvertTo-Csv -NoTypeInformation
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllLines($Path, $csv, $utf8NoBom)
+}
+
+# ----------------------------
+# ✅ NEW: Normalizar template.parameters a Hashtable
+# (evita error "property 'Name' cannot be found" en templates que devuelven Dictionary) [1]()
+# ----------------------------
+function Get-TemplateParametersHashtable {
+  param([Parameter(Mandatory=$true)]$TemplateObj)
+
+  $raw = Get-Prop $TemplateObj 'parameters' $null
+  if ($null -eq $raw) { return $null }
+
+  # Si ya es IDictionary (Hashtable/Dictionary), lo usamos directo.
+  if ($raw -is [System.Collections.IDictionary]) {
+    return $raw
+  }
+
+  # Si es PSCustomObject, lo convertimos a Hashtable { name -> definition }
+  $ht = @{}
+  foreach ($prop in $raw.PSObject.Properties) {
+    $ht[$prop.Name] = $prop.Value
+  }
+  return $ht
+}
+
+function Param-HasDefaultValue {
+  param([object]$Definition)
+
+  if ($null -eq $Definition) { return $false }
+
+  # definition puede ser IDictionary o PSCustomObject
+  if ($Definition -is [System.Collections.IDictionary]) {
+    if (-not $Definition.Contains('defaultValue')) { return $false }
+    $dv = $Definition['defaultValue']
+    return ($null -ne $dv -and $dv.ToString().Length -gt 0)
+  } else {
+    if (-not (Has-Prop $Definition 'defaultValue')) { return $false }
+    $dv = $Definition.defaultValue
+    return ($null -ne $dv -and $dv.ToString().Length -gt 0)
+  }
 }
 
 # ----------------------------
@@ -235,11 +256,11 @@ function Build-DeploymentParametersFromTemplate {
   )
 
   $params = @{}
-  $tmplParams = Get-Prop $TemplateObj 'parameters' $null
+  $tmplParams = Get-TemplateParametersHashtable -TemplateObj $TemplateObj
   if ($null -eq $tmplParams) { return $params }
 
   function Set-IfExists([string]$paramName, [object]$value) {
-    if ($tmplParams.PSObject.Properties.Name -contains $paramName) {
+    if ($tmplParams.Contains($paramName)) {
       $params[$paramName] = @{ value = $value }
     }
   }
@@ -247,29 +268,26 @@ function Build-DeploymentParametersFromTemplate {
   $workbookGuid = ([Guid]::NewGuid()).Guid
   $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
 
-  # ids/names comunes
-  Set-IfExists -paramName 'workbookId' -value $workbookGuid
-  Set-IfExists -paramName 'workbookName' -value $workbookGuid
-  Set-IfExists -paramName 'resourceName' -value $workbookGuid
+  Set-IfExists 'workbookId' $workbookGuid
+  Set-IfExists 'workbookName' $workbookGuid
+  Set-IfExists 'resourceName' $workbookGuid
 
-  # workspace
-  Set-IfExists -paramName 'workspace' -value $WorkspaceName
-  Set-IfExists -paramName 'workspaceName' -value $WorkspaceName
-  Set-IfExists -paramName 'workspaceResourceId' -value $WorkspaceResourceId
-  Set-IfExists -paramName 'workspaceId' -value $WorkspaceResourceId
+  Set-IfExists 'workspace' $WorkspaceName
+  Set-IfExists 'workspaceName' $WorkspaceName
+  Set-IfExists 'workspaceResourceId' $WorkspaceResourceId
+  Set-IfExists 'workspaceId' $WorkspaceResourceId
 
-  # sourceId típico
-  Set-IfExists -paramName 'workbookSourceId' -value $WorkspaceResourceId
-  Set-IfExists -paramName 'sourceId' -value $WorkspaceResourceId
-  Set-IfExists -paramName 'resourceGroupId' -value $rgId
+  Set-IfExists 'workbookSourceId' $WorkspaceResourceId
+  Set-IfExists 'sourceId' $WorkspaceResourceId
+  Set-IfExists 'resourceGroupId' $rgId
 
   if (-not [string]::IsNullOrWhiteSpace($WorkbookNameOverride)) {
-    Set-IfExists -paramName 'workbookDisplayName' -value $WorkbookNameOverride
-    Set-IfExists -paramName 'displayName' -value $WorkbookNameOverride
+    Set-IfExists 'workbookDisplayName' $WorkbookNameOverride
+    Set-IfExists 'displayName' $WorkbookNameOverride
   }
 
   if (-not [string]::IsNullOrWhiteSpace($LocationOverride)) {
-    Set-IfExists -paramName 'location' -value $LocationOverride
+    Set-IfExists 'location' $LocationOverride
   }
 
   return $params
@@ -282,21 +300,16 @@ function Get-MissingRequiredParams {
   )
 
   $missing = @()
-  $tmplParams = Get-Prop $TemplateObj 'parameters' $null
+  $tmplParams = Get-TemplateParametersHashtable -TemplateObj $TemplateObj
   if ($null -eq $tmplParams) { return $missing }
 
-  foreach ($p in $tmplParams.PSObject.Properties) {
-    $name = $p.Name
-    $def  = $p.Value
+  foreach ($key in $tmplParams.Keys) {
+    $def = $tmplParams[$key]
+    $hasDefault = Param-HasDefaultValue -Definition $def
+    $provided = $ProvidedParams.ContainsKey($key)
 
-    $hasDefault = $false
-    if ($def -and ($def.PSObject.Properties.Name -contains 'defaultValue')) {
-      $hasDefault = ($null -ne $def.defaultValue -and $def.defaultValue.ToString().Length -gt 0)
-    }
-
-    $provided = $ProvidedParams.ContainsKey($name)
     if (-not $provided -and -not $hasDefault) {
-      $missing += $name
+      $missing += $key
     }
   }
 
@@ -311,7 +324,6 @@ function Start-ArmDeployment {
   )
 
   $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$DeploymentName?api-version=$ApiVersionDeployments"
-
   $body = @{
     properties = @{
       mode       = 'Incremental'
@@ -319,15 +331,11 @@ function Start-ArmDeployment {
       parameters = $ParametersObj
     }
   }
-
   Invoke-ArmRest -Method PUT -Uri $uri -Body $body | Out-Null
 }
 
 function Wait-ArmDeployment {
-  param(
-    [Parameter(Mandatory=$true)][string]$DeploymentName,
-    [int]$MaxWaitSeconds = 900
-  )
+  param([Parameter(Mandatory=$true)][string]$DeploymentName, [int]$MaxWaitSeconds = 900)
 
   $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$DeploymentName?api-version=$ApiVersionDeployments"
   $deadline = (Get-Date).AddSeconds($MaxWaitSeconds)
@@ -335,14 +343,10 @@ function Wait-ArmDeployment {
   while ((Get-Date) -lt $deadline) {
     $d = Invoke-ArmRest -Method GET -Uri $uri
     $state = Get-Prop (Get-Prop $d 'properties' $null) 'provisioningState' $null
-
-    if ($state -in @('Succeeded','Failed','Canceled')) {
-      return $d
-    }
+    if ($state -in @('Succeeded','Failed','Canceled')) { return $d }
     Start-Sleep -Seconds 5
   }
-
-  throw "Timeout esperando el deployment '$DeploymentName'. Puede seguir ejecutándose en Azure."
+  throw "Timeout esperando el deployment '$DeploymentName'."
 }
 
 # ----------------------------
@@ -386,10 +390,9 @@ if ($Action -eq 'list') {
   }
 
   $filtered = @($filtered | Sort-Object displayName)
-
   $filtered | Format-Table -AutoSize
   Write-Host ""
-  Write-Info "Total templates (Workbook/WorkbookTemplate) encontrados: $($filtered.Count)"
+  Write-Info "Total templates encontrados: $($filtered.Count)"
 
   $csvPath = Resolve-DefaultCsvPath -Provided $CsvOutputPath
   Export-CsvUtf8NoBom -Data $filtered -Path $csvPath
@@ -405,33 +408,28 @@ if ($Action -eq 'create') {
 
   Write-Info "Cargando templateId: $TemplateId"
   $tpl = Get-ContentTemplateById -Id $TemplateId
-
-  if (-not $tpl -or -not (Get-Prop $tpl 'properties' $null)) {
-    throw "No se pudo obtener el Content Template '$TemplateId'. Revisa que esté instalado en el workspace."
-  }
-
   $props = Get-Prop $tpl 'properties' $null
+  if ($null -eq $props) { throw "No se pudo obtener el Content Template '$TemplateId'." }
+
   $kind = Get-Prop $props 'contentKind' ''
   if (-not (Is-WorkbookTemplateKind -contentKind $kind)) {
     throw "El TemplateId indicado no parece de Workbook. contentKind='$kind'"
   }
 
   $mainTemplate = Get-Prop $props 'mainTemplate' $null
-  if ($null -eq $mainTemplate) {
-    throw "El template no contiene properties.mainTemplate (expand). Revisa instalación o permisos."
-  }
+  if ($null -eq $mainTemplate) { throw "El template no contiene properties.mainTemplate." }
 
   $defaultName = Get-Prop $props 'displayName' ''
   $targetName = if (-not [string]::IsNullOrWhiteSpace($WorkbookDisplayName)) { $WorkbookDisplayName } else { $defaultName }
   Write-Info "WorkbookDisplayName objetivo: $targetName"
 
-  $params = Build-DeploymentParametersFromTemplate -TemplateObj $mainTemplate -WorkspaceResourceId $wsId -WorkbookNameOverride $targetName -LocationOverride $Location
+  $params  = Build-DeploymentParametersFromTemplate -TemplateObj $mainTemplate -WorkspaceResourceId $wsId -WorkbookNameOverride $targetName -LocationOverride $Location
   $missing = Get-MissingRequiredParams -TemplateObj $mainTemplate -ProvidedParams $params
 
   if ($missing.Count -gt 0) {
-    Write-Warn "La plantilla declara parámetros sin default y no hemos podido autocompletarlos:"
+    Write-Warn "La plantilla declara parámetros sin default que no pudimos autocompletar:"
     $missing | ForEach-Object { Write-Warn " - $_" }
-    throw "Faltan parámetros requeridos. Añade soporte de mapeo o expón inputs nuevos en el workflow."
+    throw "Faltan parámetros requeridos."
   }
 
   $deploymentName = ("sentinel-wbtemplate-" + $TemplateId.Replace('/','-') + "-" + (Get-Date -Format "yyyyMMddHHmmss"))
@@ -452,7 +450,6 @@ if ($Action -eq 'create') {
     throw "Deployment terminó en estado: $state"
   }
 
-  Write-Host ""
   Write-Info "✅ Workbook desplegado desde templateId=$TemplateId (deployment=$deploymentName)"
   exit 0
 }
