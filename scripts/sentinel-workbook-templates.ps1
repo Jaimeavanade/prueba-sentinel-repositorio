@@ -5,6 +5,7 @@
   - list:
       Lista templates instalados (Microsoft.SecurityInsights/contentTemplates) filtrando por contentKind
       Workbook o WorkbookTemplate y opcionalmente por displayName.
+      Además puede exportar el resultado a CSV para descargar como artifact.
   - create:
       A partir de un TemplateId (contentTemplate), obtiene properties.mainTemplate (ARM template)
       y ejecuta un deployment ARM en el Resource Group del workspace para materializar el workbook.
@@ -14,7 +15,7 @@
    - El template debe estar INSTALADO en el workspace (Workbooks > Templates proviene de Content Hub).
 
 .NOTES
-  - Evita fallos por propiedades ausentes (p.ej. packageName) con acceso defensivo. [1]()
+  - Evita fallos por propiedades ausentes (p.ej. packageName) con acceso defensivo.
 #>
 
 [CmdletBinding()]
@@ -44,13 +45,17 @@ param(
   [ValidateSet('contains','equals','startswith')]
   [string]$DisplayNameFilterMode = 'contains',
 
-  # create: opcional (si la plantilla soporta workbookDisplayName / displayName param)
+  # create: opcional
   [Parameter(Mandatory=$false)]
   [string]$WorkbookDisplayName,
 
   # create: opcional
   [Parameter(Mandatory=$false)]
   [string]$Location,
+
+  # list: opcional -> ruta donde exportar CSV
+  [Parameter(Mandatory=$false)]
+  [string]$CsvOutputPath,
 
   # API version Sentinel contentTemplates
   [Parameter(Mandatory=$false)]
@@ -89,7 +94,6 @@ function Get-Prop([object]$Obj, [string]$Name, $Default=$null) {
 # Auth / REST
 # ----------------------------
 function Get-ArmToken {
-  # Preferimos Azure CLI porque en GitHub Actions con azure/login OIDC queda listo.
   try {
     $t = & az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv 2>$null
     if ($t -and $t.Trim().Length -gt 100) { return $t.Trim() }
@@ -107,7 +111,7 @@ function Invoke-ArmRest {
 
   $token = Get-ArmToken
   $headers = @{
-    Authorization = "Bearer $token"
+    Authorization  = "Bearer $token"
     'Content-Type' = 'application/json'
   }
 
@@ -150,8 +154,6 @@ function Get-ContentTemplatesList {
 
 function Get-ContentTemplateById {
   param([Parameter(Mandatory=$true)][string]$Id)
-
-  # Expand para traer mainTemplate (no viene siempre por defecto)
   $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates/$Id?api-version=$ApiVersionSecurityInsights&`$expand=properties/mainTemplate"
   return Invoke-ArmRest -Method GET -Uri $uri
 }
@@ -180,6 +182,46 @@ function Match-DisplayName {
 }
 
 # ----------------------------
+# CSV helper
+# ----------------------------
+function Resolve-DefaultCsvPath {
+  param([string]$Provided)
+
+  if (-not [string]::IsNullOrWhiteSpace($Provided)) {
+    return $Provided
+  }
+
+  # Si estamos en GitHub Actions, usamos una ruta fija dentro del workspace
+  if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+    return (Join-Path $env:GITHUB_WORKSPACE "artifacts/workbook-templates.csv")
+  }
+
+  # Local fallback
+  return (Join-Path (Get-Location).Path "workbook-templates.csv")
+}
+
+function Ensure-Directory([string]$Path) {
+  $dir = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($dir)) {
+    [System.IO.Directory]::CreateDirectory($dir) | Out-Null
+  }
+}
+
+function Export-CsvUtf8NoBom {
+  param(
+    [Parameter(Mandatory=$true)][object[]]$Data,
+    [Parameter(Mandatory=$true)][string]$Path
+  )
+
+  Ensure-Directory -Path $Path
+
+  # Export-Csv no controla BOM consistentemente según PS version; hacemos un write explícito
+  $csv = $Data | ConvertTo-Csv -NoTypeInformation
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllLines($Path, $csv, $utf8NoBom)
+}
+
+# ----------------------------
 # Deployment helpers
 # ----------------------------
 function Build-DeploymentParametersFromTemplate {
@@ -203,18 +245,15 @@ function Build-DeploymentParametersFromTemplate {
   $workbookGuid = ([Guid]::NewGuid()).Guid
   $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
 
-  # IDs / name
   Set-IfExists -paramName 'workbookId' -value $workbookGuid
   Set-IfExists -paramName 'workbookName' -value $workbookGuid
   Set-IfExists -paramName 'resourceName' -value $workbookGuid
 
-  # Workspace related
   Set-IfExists -paramName 'workspace' -value $WorkspaceName
   Set-IfExists -paramName 'workspaceName' -value $WorkspaceName
   Set-IfExists -paramName 'workspaceResourceId' -value $WorkspaceResourceId
   Set-IfExists -paramName 'workspaceId' -value $WorkspaceResourceId
 
-  # sourceId suele ser workspaceResourceId o el RG (depende del template)
   Set-IfExists -paramName 'workbookSourceId' -value $WorkspaceResourceId
   Set-IfExists -paramName 'sourceId' -value $WorkspaceResourceId
   Set-IfExists -paramName 'resourceGroupId' -value $rgId
@@ -326,25 +365,33 @@ if ($Action -eq 'list') {
 
     $src = Get-Prop $p 'source' $null
 
-    # ✅ Acceso defensivo a propiedades opcionales (evita crash por packageName). [1]()
     [pscustomobject]@{
-      templateId      = Get-Prop $it 'name' ''
-      displayName     = $dn
-      contentKind     = $ck
-      contentId       = Get-Prop $p 'contentId' ''
-      contentProductId= Get-Prop $p 'contentProductId' ''
-      packageId       = Get-Prop $p 'packageId' ''
-      packageVersion  = Get-Prop $p 'packageVersion' ''
-      packageName     = Get-Prop $p 'packageName' ''   # puede no existir
-      version         = Get-Prop $p 'version' ''
-      sourceKind      = Get-Prop $src 'kind' ''
-      sourceName      = Get-Prop $src 'name' ''
+      templateId       = Get-Prop $it 'name' ''
+      displayName      = $dn
+      contentKind      = $ck
+      contentId        = Get-Prop $p 'contentId' ''
+      contentProductId = Get-Prop $p 'contentProductId' ''
+      packageId        = Get-Prop $p 'packageId' ''
+      packageVersion   = Get-Prop $p 'packageVersion' ''
+      packageName      = Get-Prop $p 'packageName' ''  # opcional
+      version          = Get-Prop $p 'version' ''
+      sourceKind       = Get-Prop $src 'kind' ''
+      sourceName       = Get-Prop $src 'name' ''
     }
   }
 
-  $filtered | Sort-Object displayName | Format-Table -AutoSize
+  $filtered = @($filtered | Sort-Object displayName)
+
+  # Mostrar en consola
+  $filtered | Format-Table -AutoSize
   Write-Host ""
   Write-Info "Total templates (Workbook/WorkbookTemplate) encontrados: $($filtered.Count)"
+
+  # Exportar CSV
+  $csvPath = Resolve-DefaultCsvPath -Provided $CsvOutputPath
+  Export-CsvUtf8NoBom -Data $filtered -Path $csvPath
+  Write-Host ""
+  Write-Info "✅ CSV generado: $csvPath"
   exit 0
 }
 
@@ -403,7 +450,6 @@ if ($Action -eq 'create') {
 
   Write-Host ""
   Write-Info "✅ Workbook desplegado desde templateId=$TemplateId (deployment=$deploymentName)"
-  Write-Info "Si no lo ves, revisa el RG del workspace y la pestaña 'My workbooks' en Sentinel."
   exit 0
 }
 
