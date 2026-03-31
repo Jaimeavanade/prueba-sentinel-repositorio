@@ -106,5 +106,18 @@ jobs:
           if (-not [string]::IsNullOrWhiteSpace($loc))               { $args += @("-Location", $loc) }
           if ($verboseSwitch) { $args += @("-VerboseOutput") }
 
+          # ✅ Solo en LIST generamos CSV en carpeta artifacts/
+          if ($action -eq "list") {
+            $args += @("-CsvOutputPath", "artifacts/workbook-templates.csv")
+          }
+
           Write-Host "➡️ Ejecutando scripts/sentinel-workbook-templates.ps1 $($args -join ' ')"
           pwsh -File "./scripts/sentinel-workbook-templates.ps1" @args
+
+      - name: Upload CSV artifact (workbook templates)
+        if: ${{ github.event.inputs.action == 'list' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-workbook-templates-csv
+          path: artifacts/workbook-templates.csv
+          if-no-files-found: error
