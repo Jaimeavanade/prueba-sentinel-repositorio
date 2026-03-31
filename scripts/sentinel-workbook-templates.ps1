@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
   Microsoft Sentinel - Workbooks Templates (List/Create)
+
 .DESCRIPTION
   - list:
       Lista templates instalados (Microsoft.SecurityInsights/contentTemplates) filtrando por contentKind
@@ -10,10 +11,10 @@
       A partir de un TemplateId (contentTemplate), obtiene properties.mainTemplate (ARM template)
       y ejecuta un deployment ARM en el Resource Group del workspace para materializar el workbook.
 
-.NOTES
-  - Acceso defensivo a propiedades opcionales.
-  - FIX create: evita bug "$Id?api-version" (PowerShell interpreta $Id?api).
-  - FIX create: normaliza mainTemplate.parameters a Hashtable (evita error 'Name' no existe). [1]()
+.FIXES
+  - FIX URL: evita bug "$Id?api-version" (PowerShell interpreta $Id?api).
+  - FIX params: normaliza mainTemplate.parameters a Hashtable (Dictionary/PSCustomObject).
+  - FIX Count: garantiza que $missing sea SIEMPRE array antes de usar .Count (evita tu error actual). [1](https://github.com/Jaimeavanade/prueba-sentinel-repositorio/actions/runs/23797015856/job/69346829151)
 #>
 
 [CmdletBinding()]
@@ -47,20 +48,23 @@ param(
   [Parameter(Mandatory=$false)]
   [string]$WorkbookDisplayName,
 
-  # create
+  # create (opcional)
   [Parameter(Mandatory=$false)]
   [string]$Location,
 
-  # list
+  # list (opcional) -> ruta donde exportar CSV
   [Parameter(Mandatory=$false)]
   [string]$CsvOutputPath,
 
+  # API version Sentinel contentTemplates
   [Parameter(Mandatory=$false)]
   [string]$ApiVersionSecurityInsights = '2025-09-01',
 
+  # API version deployments
   [Parameter(Mandatory=$false)]
   [string]$ApiVersionDeployments = '2021-04-01',
 
+  # Debug
   [Parameter(Mandatory=$false)]
   [switch]$VerboseOutput
 )
@@ -150,7 +154,7 @@ function Get-ContentTemplatesList {
 function Get-ContentTemplateById {
   param([Parameter(Mandatory=$true)][string]$Id)
 
-  # ✅ FIX: evitar "$Id?api-version" => PowerShell intenta $Id?api (variable inexistente)
+  # ✅ FIX: evitar "$Id?api-version" => PowerShell intenta leer variable "$Id?api"
   $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates/$($Id)"
   $query   = "?api-version=$ApiVersionSecurityInsights&`$expand=properties/mainTemplate"
   $uri     = $baseUri + $query
@@ -205,8 +209,7 @@ function Export-CsvUtf8NoBom {
 }
 
 # ----------------------------
-# ✅ NEW: Normalizar template.parameters a Hashtable
-# (evita error "property 'Name' cannot be found" en templates que devuelven Dictionary) [1]()
+# ✅ Normalize template.parameters to Hashtable
 # ----------------------------
 function Get-TemplateParametersHashtable {
   param([Parameter(Mandatory=$true)]$TemplateObj)
@@ -214,12 +217,10 @@ function Get-TemplateParametersHashtable {
   $raw = Get-Prop $TemplateObj 'parameters' $null
   if ($null -eq $raw) { return $null }
 
-  # Si ya es IDictionary (Hashtable/Dictionary), lo usamos directo.
   if ($raw -is [System.Collections.IDictionary]) {
     return $raw
   }
 
-  # Si es PSCustomObject, lo convertimos a Hashtable { name -> definition }
   $ht = @{}
   foreach ($prop in $raw.PSObject.Properties) {
     $ht[$prop.Name] = $prop.Value
@@ -232,7 +233,6 @@ function Param-HasDefaultValue {
 
   if ($null -eq $Definition) { return $false }
 
-  # definition puede ser IDictionary o PSCustomObject
   if ($Definition -is [System.Collections.IDictionary]) {
     if (-not $Definition.Contains('defaultValue')) { return $false }
     $dv = $Definition['defaultValue']
@@ -268,15 +268,18 @@ function Build-DeploymentParametersFromTemplate {
   $workbookGuid = ([Guid]::NewGuid()).Guid
   $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
 
+  # ids/names comunes
   Set-IfExists 'workbookId' $workbookGuid
   Set-IfExists 'workbookName' $workbookGuid
   Set-IfExists 'resourceName' $workbookGuid
 
+  # workspace
   Set-IfExists 'workspace' $WorkspaceName
   Set-IfExists 'workspaceName' $WorkspaceName
   Set-IfExists 'workspaceResourceId' $WorkspaceResourceId
   Set-IfExists 'workspaceId' $WorkspaceResourceId
 
+  # sourceId típico
   Set-IfExists 'workbookSourceId' $WorkspaceResourceId
   Set-IfExists 'sourceId' $WorkspaceResourceId
   Set-IfExists 'resourceGroupId' $rgId
@@ -301,7 +304,7 @@ function Get-MissingRequiredParams {
 
   $missing = @()
   $tmplParams = Get-TemplateParametersHashtable -TemplateObj $TemplateObj
-  if ($null -eq $tmplParams) { return $missing }
+  if ($null -eq $tmplParams) { return @() }
 
   foreach ($key in $tmplParams.Keys) {
     $def = $tmplParams[$key]
@@ -313,7 +316,8 @@ function Get-MissingRequiredParams {
     }
   }
 
-  return $missing
+  # ✅ FIX Count: devolver SIEMPRE array (aunque haya 0 o 1 elementos)
+  return ,$missing
 }
 
 function Start-ArmDeployment {
@@ -346,6 +350,7 @@ function Wait-ArmDeployment {
     if ($state -in @('Succeeded','Failed','Canceled')) { return $d }
     Start-Sleep -Seconds 5
   }
+
   throw "Timeout esperando el deployment '$DeploymentName'."
 }
 
@@ -423,12 +428,15 @@ if ($Action -eq 'create') {
   $targetName = if (-not [string]::IsNullOrWhiteSpace($WorkbookDisplayName)) { $WorkbookDisplayName } else { $defaultName }
   Write-Info "WorkbookDisplayName objetivo: $targetName"
 
-  $params  = Build-DeploymentParametersFromTemplate -TemplateObj $mainTemplate -WorkspaceResourceId $wsId -WorkbookNameOverride $targetName -LocationOverride $Location
-  $missing = Get-MissingRequiredParams -TemplateObj $mainTemplate -ProvidedParams $params
+  $params = Build-DeploymentParametersFromTemplate -TemplateObj $mainTemplate -WorkspaceResourceId $wsId -WorkbookNameOverride $targetName -LocationOverride $Location
 
-  if ($missing.Count -gt 0) {
+  $missing = Get-MissingRequiredParams -TemplateObj $mainTemplate -ProvidedParams $params
+  # ✅ FIX Count: fuerza SIEMPRE a array antes de usar .Count
+  $missingList = @($missing)
+
+  if ($missingList.Count -gt 0) {
     Write-Warn "La plantilla declara parámetros sin default que no pudimos autocompletar:"
-    $missing | ForEach-Object { Write-Warn " - $_" }
+    $missingList | ForEach-Object { Write-Warn " - $_" }
     throw "Faltan parámetros requeridos."
   }
 
