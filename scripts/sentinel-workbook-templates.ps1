@@ -16,7 +16,9 @@
   - FIX URL DeploymentName: evita "$DeploymentName?api-version" => PowerShell interpreta $DeploymentName?api
   - FIX params: normaliza mainTemplate.parameters a Hashtable (Dictionary/PSCustomObject)
   - FIX Count: missing required params siempre tratado como array
-  - FIX JSON Depth: ConvertTo-Json Depth clamp <= 100 (GitHub runner) [1](https://github.com/Jaimeavanade/prueba-sentinel-repositorio/actions/runs/23800484980/job/69359232562)
+  - FIX JSON Depth: ConvertTo-Json Depth clamp <= 100 (GitHub runner)
+  - FIX ARM deploymentName max 64: nombre corto con hash (evita InvalidDeployment length>64) [1]()
+  - FIX retry: no reintentar 4xx (excepto 408/429)
 #>
 
 [CmdletBinding()]
@@ -91,7 +93,7 @@ function Get-Prop([object]$Obj, [string]$Name, $Default=$null) {
 }
 
 # ----------------------------
-# Auth / REST
+# Helpers
 # ----------------------------
 function Get-ArmToken {
   try {
@@ -99,6 +101,23 @@ function Get-ArmToken {
     if ($t -and $t.Trim().Length -gt 100) { return $t.Trim() }
   } catch {}
   throw "No se pudo obtener token ARM. Asegura 'azure/login' (OIDC) o 'az login' antes de ejecutar."
+}
+
+function Get-HttpStatusCodeFromException($ex) {
+  # Devuelve int si puede (Invoke-RestMethod suele traer Response con StatusCode)
+  try {
+    if ($ex.Exception -and $ex.Exception.Response -and $ex.Exception.Response.StatusCode) {
+      return [int]$ex.Exception.Response.StatusCode
+    }
+  } catch {}
+  return $null
+}
+
+function Should-RetryStatus([int]$status) {
+  if ($null -eq $status) { return $true } # si no sabemos, reintentamos
+  if ($status -eq 408 -or $status -eq 429) { return $true }
+  if ($status -ge 500 -and $status -le 599) { return $true }
+  return $false # 400-499 (salvo 408/429) => no reintentar
 }
 
 function Invoke-ArmRest {
@@ -116,7 +135,7 @@ function Invoke-ArmRest {
     'Content-Type' = 'application/json'
   }
 
-  # ✅ FIX: clamp Depth para runners (máx 100) [1](https://github.com/Jaimeavanade/prueba-sentinel-repositorio/actions/runs/23800484980/job/69359232562)
+  # Clamp Depth <= 100
   if ($JsonDepth -gt 100) { $JsonDepth = 100 }
   if ($JsonDepth -lt 2)   { $JsonDepth = 2 }
 
@@ -136,10 +155,18 @@ function Invoke-ArmRest {
         return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $payload
       }
     } catch {
+      $status = Get-HttpStatusCodeFromException $_
       $msg = $_.Exception.Message
+
+      # Si es 4xx definitivo, no reintentar
+      if (-not (Should-RetryStatus $status)) {
+        throw $_
+      }
+
       if ($attempt -ge $MaxRetries) { throw $_ }
+
       $sleep = [Math]::Min(30, (2 * $attempt))
-      Write-Warn "Fallo REST (intento $attempt/$MaxRetries): $msg. Reintentando en $sleep s..."
+      Write-Warn "Fallo REST (intento $attempt/$MaxRetries): Response status code $status. $msg. Reintentando en $sleep s..."
       Start-Sleep -Seconds $sleep
     }
   }
@@ -160,7 +187,6 @@ function Get-ContentTemplatesList {
 function Get-ContentTemplateById {
   param([Parameter(Mandatory=$true)][string]$Id)
 
-  # ✅ FIX URL: evitar "$Id?api-version" => $Id?api
   $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates/$($Id)"
   $uri = $baseUri + "?api-version=$ApiVersionSecurityInsights&`$expand=properties/mainTemplate"
   return Invoke-ArmRest -Method GET -Uri $uri
@@ -243,6 +269,29 @@ function Param-HasDefaultValue {
 }
 
 # ----------------------------
+# Deployment name helper (<=64)
+# ----------------------------
+function New-ShortDeploymentName {
+  param(
+    [Parameter(Mandatory=$true)][string]$TemplateId
+  )
+
+  # ARM max length = 64. El tuyo estaba en 77 y Azure lo rechaza. [1]()
+  $prefix = "swb-"   # 4 chars incl. '-'
+  $ts = (Get-Date -Format "yyyyMMddHHmmss") # 14 chars
+
+  # hash corto del TemplateId (12 hex) para unicidad
+  $sha1 = [System.Security.Cryptography.SHA1]::Create()
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($TemplateId)
+  $hashBytes = $sha1.ComputeHash($bytes)
+  $hash = ([System.BitConverter]::ToString($hashBytes) -replace '-', '').ToLowerInvariant()
+  $shortHash = $hash.Substring(0, 12)
+
+  # formato: swb-<12hash>-<timestamp> => 4 + 12 + 1 + 14 = 31 chars
+  return "$prefix$shortHash-$ts"
+}
+
+# ----------------------------
 # Deployment helpers
 # ----------------------------
 function Build-DeploymentParametersFromTemplate {
@@ -266,18 +315,15 @@ function Build-DeploymentParametersFromTemplate {
   $workbookGuid = (New-Guid).Guid
   $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
 
-  # IDs / Name
   Set-IfExists 'workbookId' $workbookGuid
   Set-IfExists 'workbookName' $workbookGuid
   Set-IfExists 'resourceName' $workbookGuid
 
-  # Workspace info
   Set-IfExists 'workspace' $WorkspaceName
   Set-IfExists 'workspaceName' $WorkspaceName
   Set-IfExists 'workspaceResourceId' $WorkspaceResourceId
   Set-IfExists 'workspaceId' $WorkspaceResourceId
 
-  # sourceId / RG
   Set-IfExists 'workbookSourceId' $WorkspaceResourceId
   Set-IfExists 'sourceId' $WorkspaceResourceId
   Set-IfExists 'resourceGroupId' $rgId
@@ -311,7 +357,6 @@ function Get-MissingRequiredParams {
     }
   }
 
-  # ✅ siempre array
   return ,$missing
 }
 
@@ -322,7 +367,6 @@ function Start-ArmDeployment {
     [Parameter(Mandatory=$true)]$ParametersObj
   )
 
-  # ✅ FIX URL: evitar "$DeploymentName?api-version" => $DeploymentName?api
   $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$($DeploymentName)"
   $uri = $baseUri + "?api-version=$ApiVersionDeployments"
 
@@ -437,7 +481,8 @@ if ($Action -eq 'create') {
     throw "Faltan parámetros requeridos."
   }
 
-  $deploymentName = ("sentinel-wbtemplate-" + $TemplateId.Replace('/','-') + "-" + (Get-Date -Format "yyyyMMddHHmmss"))
+  # ✅ deploymentName <= 64
+  $deploymentName = New-ShortDeploymentName -TemplateId $TemplateId
   Write-Info "Lanzando deployment: $deploymentName"
 
   Start-ArmDeployment -DeploymentName $deploymentName -TemplateObj $mainTemplate -ParametersObj $params
