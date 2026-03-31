@@ -1,4 +1,3 @@
-# .github/workflows/sentinel-workbooks-from-template.yml
 name: "Sentinel - Workbooks Templates (List/Create)"
 
 on:
@@ -9,7 +8,9 @@ on:
         required: true
         type: choice
         default: list
-        options: [list, create]
+        options:
+          - list
+          - create
       templateId:
         description: "TemplateId (GUID) - obligatorio en create"
         required: false
@@ -23,7 +24,10 @@ on:
         required: true
         type: choice
         default: contains
-        options: [contains, equals, startswith]
+        options:
+          - contains
+          - equals
+          - startswith
       workbookDisplayName:
         description: "Nombre del nuevo workbook (solo create, opcional)"
         required: false
@@ -37,7 +41,9 @@ on:
         required: true
         type: choice
         default: "false"
-        options: ["false", "true"]
+        options:
+          - "false"
+          - "true"
 
 permissions:
   id-token: write
@@ -48,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
@@ -70,7 +76,7 @@ jobs:
           $workbookDisplayName = "${{ github.event.inputs.workbookDisplayName }}"
           $inputLocation = "${{ github.event.inputs.location }}"
 
-          # ✅ CAMBIO: nuevas vars
+          # ✅ Variables del repo (Actions Variables)
           $rg = "${{ vars.SENTINEL_RESOURCE_GROUP }}"
           $ws = "${{ vars.SENTINEL_WORKSPACE_NAME }}"
           $sub = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
