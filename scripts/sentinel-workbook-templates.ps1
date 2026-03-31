@@ -11,11 +11,12 @@
       A partir de un TemplateId (contentTemplate), obtiene properties.mainTemplate (ARM template)
       y ejecuta un deployment ARM en el Resource Group del workspace para materializar el workbook.
 
-.FIXES
-  - FIX URL TemplateId: evita bug "$Id?api-version" (PowerShell interpreta $Id?api).
-  - FIX URL DeploymentName: evita bug "$DeploymentName?api-version" (PowerShell interpreta $DeploymentName?api). [1]()
-  - FIX params: normaliza mainTemplate.parameters a Hashtable (Dictionary/PSCustomObject).
-  - FIX Count: garantiza que $missing sea SIEMPRE array antes de usar .Count.
+.FIXES INCLUIDOS
+  - FIX URL TemplateId: evita "$Id?api-version" => PowerShell interpreta $Id?api
+  - FIX URL DeploymentName: evita "$DeploymentName?api-version" => PowerShell interpreta $DeploymentName?api
+  - FIX params: normaliza mainTemplate.parameters a Hashtable (Dictionary/PSCustomObject)
+  - FIX Count: missing required params siempre tratado como array
+  - FIX JSON Depth: ConvertTo-Json Depth clamp <= 100 (GitHub runner) [1](https://github.com/Jaimeavanade/prueba-sentinel-repositorio/actions/runs/23800484980/job/69359232562)
 #>
 
 [CmdletBinding()]
@@ -33,9 +34,11 @@ param(
   [Parameter(Mandatory=$true)]
   [string]$WorkspaceName,
 
+  # create
   [Parameter(Mandatory=$false)]
   [string]$TemplateId,
 
+  # list
   [Parameter(Mandatory=$false)]
   [string]$DisplayNameFilter,
 
@@ -43,21 +46,26 @@ param(
   [ValidateSet('contains','equals','startswith')]
   [string]$DisplayNameFilterMode = 'contains',
 
+  # create
   [Parameter(Mandatory=$false)]
   [string]$WorkbookDisplayName,
 
+  # create (opcional)
   [Parameter(Mandatory=$false)]
   [string]$Location,
 
+  # list (opcional)
   [Parameter(Mandatory=$false)]
   [string]$CsvOutputPath,
 
+  # API versions
   [Parameter(Mandatory=$false)]
   [string]$ApiVersionSecurityInsights = '2025-09-01',
 
   [Parameter(Mandatory=$false)]
   [string]$ApiVersionDeployments = '2021-04-01',
 
+  # Debug
   [Parameter(Mandatory=$false)]
   [switch]$VerboseOutput
 )
@@ -65,9 +73,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ----------------------------
+# Logging
+# ----------------------------
 function Write-Info([string]$m) { Write-Host "ℹ️  $m" }
 function Write-Warn([string]$m) { Write-Warning $m }
 
+# ----------------------------
+# Safe property access
+# ----------------------------
 function Has-Prop([object]$Obj, [string]$Name) {
   return ($null -ne $Obj -and $Obj.PSObject.Properties.Name -contains $Name)
 }
@@ -76,6 +90,9 @@ function Get-Prop([object]$Obj, [string]$Name, $Default=$null) {
   return $Default
 }
 
+# ----------------------------
+# Auth / REST
+# ----------------------------
 function Get-ArmToken {
   try {
     $t = & az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv 2>$null
@@ -89,7 +106,8 @@ function Invoke-ArmRest {
     [Parameter(Mandatory=$true)][ValidateSet('GET','PUT','POST','DELETE')][string]$Method,
     [Parameter(Mandatory=$true)][string]$Uri,
     [Parameter(Mandatory=$false)][object]$Body,
-    [int]$MaxRetries = 6
+    [int]$MaxRetries = 6,
+    [int]$JsonDepth = 100
   )
 
   $token = Get-ArmToken
@@ -98,8 +116,14 @@ function Invoke-ArmRest {
     'Content-Type' = 'application/json'
   }
 
+  # ✅ FIX: clamp Depth para runners (máx 100) [1](https://github.com/Jaimeavanade/prueba-sentinel-repositorio/actions/runs/23800484980/job/69359232562)
+  if ($JsonDepth -gt 100) { $JsonDepth = 100 }
+  if ($JsonDepth -lt 2)   { $JsonDepth = 2 }
+
   $payload = $null
-  if ($null -ne $Body) { $payload = ($Body | ConvertTo-Json -Depth 200) }
+  if ($null -ne $Body) {
+    $payload = ($Body | ConvertTo-Json -Depth $JsonDepth -Compress)
+  }
 
   $attempt = 0
   while ($true) {
@@ -121,6 +145,9 @@ function Invoke-ArmRest {
   }
 }
 
+# ----------------------------
+# Sentinel ContentTemplates helpers
+# ----------------------------
 function Get-WorkspaceResourceId {
   return "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName"
 }
@@ -133,7 +160,7 @@ function Get-ContentTemplatesList {
 function Get-ContentTemplateById {
   param([Parameter(Mandatory=$true)][string]$Id)
 
-  # ✅ FIX: evitar "$Id?api-version" => PowerShell intenta leer $Id?api
+  # ✅ FIX URL: evitar "$Id?api-version" => $Id?api
   $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates/$($Id)"
   $uri = $baseUri + "?api-version=$ApiVersionSecurityInsights&`$expand=properties/mainTemplate"
   return Invoke-ArmRest -Method GET -Uri $uri
@@ -157,6 +184,9 @@ function Match-DisplayName {
   }
 }
 
+# ----------------------------
+# CSV helper
+# ----------------------------
 function Resolve-DefaultCsvPath {
   param([string]$Provided)
   if (-not [string]::IsNullOrWhiteSpace($Provided)) { return $Provided }
@@ -165,12 +195,14 @@ function Resolve-DefaultCsvPath {
   }
   return (Join-Path (Get-Location).Path "workbook-templates.csv")
 }
+
 function Ensure-Directory([string]$Path) {
   $dir = Split-Path -Parent $Path
   if (-not [string]::IsNullOrWhiteSpace($dir)) {
     [System.IO.Directory]::CreateDirectory($dir) | Out-Null
   }
 }
+
 function Export-CsvUtf8NoBom {
   param([Parameter(Mandatory=$true)][object[]]$Data, [Parameter(Mandatory=$true)][string]$Path)
   Ensure-Directory -Path $Path
@@ -179,19 +211,26 @@ function Export-CsvUtf8NoBom {
   [System.IO.File]::WriteAllLines($Path, $csv, $utf8NoBom)
 }
 
+# ----------------------------
+# Normalize template.parameters to Hashtable
+# ----------------------------
 function Get-TemplateParametersHashtable {
   param([Parameter(Mandatory=$true)]$TemplateObj)
   $raw = Get-Prop $TemplateObj 'parameters' $null
   if ($null -eq $raw) { return $null }
   if ($raw -is [System.Collections.IDictionary]) { return $raw }
+
   $ht = @{}
-  foreach ($prop in $raw.PSObject.Properties) { $ht[$prop.Name] = $prop.Value }
+  foreach ($prop in $raw.PSObject.Properties) {
+    $ht[$prop.Name] = $prop.Value
+  }
   return $ht
 }
 
 function Param-HasDefaultValue {
   param([object]$Definition)
   if ($null -eq $Definition) { return $false }
+
   if ($Definition -is [System.Collections.IDictionary]) {
     if (-not $Definition.Contains('defaultValue')) { return $false }
     $dv = $Definition['defaultValue']
@@ -203,6 +242,9 @@ function Param-HasDefaultValue {
   }
 }
 
+# ----------------------------
+# Deployment helpers
+# ----------------------------
 function Build-DeploymentParametersFromTemplate {
   param(
     [Parameter(Mandatory=$true)]$TemplateObj,
@@ -216,21 +258,26 @@ function Build-DeploymentParametersFromTemplate {
   if ($null -eq $tmplParams) { return $params }
 
   function Set-IfExists([string]$paramName, [object]$value) {
-    if ($tmplParams.Contains($paramName)) { $params[$paramName] = @{ value = $value } }
+    if ($tmplParams.Contains($paramName)) {
+      $params[$paramName] = @{ value = $value }
+    }
   }
 
   $workbookGuid = (New-Guid).Guid
   $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
 
+  # IDs / Name
   Set-IfExists 'workbookId' $workbookGuid
   Set-IfExists 'workbookName' $workbookGuid
   Set-IfExists 'resourceName' $workbookGuid
 
+  # Workspace info
   Set-IfExists 'workspace' $WorkspaceName
   Set-IfExists 'workspaceName' $WorkspaceName
   Set-IfExists 'workspaceResourceId' $WorkspaceResourceId
   Set-IfExists 'workspaceId' $WorkspaceResourceId
 
+  # sourceId / RG
   Set-IfExists 'workbookSourceId' $WorkspaceResourceId
   Set-IfExists 'sourceId' $WorkspaceResourceId
   Set-IfExists 'resourceGroupId' $rgId
@@ -258,9 +305,13 @@ function Get-MissingRequiredParams {
     $def = $tmplParams[$key]
     $hasDefault = Param-HasDefaultValue -Definition $def
     $provided = $ProvidedParams.ContainsKey($key)
-    if (-not $provided -and -not $hasDefault) { $missing += $key }
+
+    if (-not $provided -and -not $hasDefault) {
+      $missing += $key
+    }
   }
 
+  # ✅ siempre array
   return ,$missing
 }
 
@@ -271,7 +322,7 @@ function Start-ArmDeployment {
     [Parameter(Mandatory=$true)]$ParametersObj
   )
 
-  # ✅ FIX: evitar "$DeploymentName?api-version" => PS intenta $DeploymentName?api [1]()
+  # ✅ FIX URL: evitar "$DeploymentName?api-version" => $DeploymentName?api
   $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$($DeploymentName)"
   $uri = $baseUri + "?api-version=$ApiVersionDeployments"
 
@@ -307,6 +358,7 @@ function Wait-ArmDeployment {
 # ----------------------------
 Write-Info "Acción: $Action"
 Write-Info "Workspace: $WorkspaceName (RG: $ResourceGroupName, Sub: $SubscriptionId)"
+
 $wsId = Get-WorkspaceResourceId
 if ($VerboseOutput) { Write-Info "WorkspaceResourceId: $wsId" }
 
@@ -325,6 +377,7 @@ if ($Action -eq 'list') {
     if (-not (Match-DisplayName -Name $dn -Filter $DisplayNameFilter -Mode $DisplayNameFilterMode)) { continue }
 
     $src = Get-Prop $p 'source' $null
+
     [pscustomobject]@{
       templateId       = Get-Prop $it 'name' ''
       displayName      = $dn
@@ -353,7 +406,9 @@ if ($Action -eq 'list') {
 }
 
 if ($Action -eq 'create') {
-  if ([string]::IsNullOrWhiteSpace($TemplateId)) { throw "TemplateId es obligatorio para Action=create" }
+  if ([string]::IsNullOrWhiteSpace($TemplateId)) {
+    throw "TemplateId es obligatorio para Action=create"
+  }
 
   Write-Info "Cargando templateId: $TemplateId"
   $tpl = Get-ContentTemplateById -Id $TemplateId
