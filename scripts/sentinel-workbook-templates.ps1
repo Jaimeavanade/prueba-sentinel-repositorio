@@ -1,17 +1,20 @@
-# scripts/sentinel-workbook-templates.ps1
 <#
 .SYNOPSIS
   Microsoft Sentinel - Workbooks Templates (List/Create)
 .DESCRIPTION
-  - list: Lista templates instalados (contentTemplates) cuyo contentKind sea Workbook/WorkbookTemplate.
-  - create: Despliega (deployment ARM) el properties.mainTemplate del templateId indicado,
-            creando el Workbook en el Resource Group del workspace.
+  - list:
+      Lista templates instalados (Microsoft.SecurityInsights/contentTemplates) filtrando por contentKind
+      Workbook o WorkbookTemplate y opcionalmente por displayName.
+  - create:
+      A partir de un TemplateId (contentTemplate), obtiene properties.mainTemplate (ARM template)
+      y ejecuta un deployment ARM en el Resource Group del workspace para materializar el workbook.
 
   Requisitos:
    - Autenticación ARM disponible (recomendado: GitHub Actions con azure/login OIDC + Azure CLI).
    - El template debe estar INSTALADO en el workspace (Workbooks > Templates proviene de Content Hub).
+
 .NOTES
-  Basado en Content Templates REST API (List) y despliegue ARM por Microsoft.Resources/deployments.
+  - Evita fallos por propiedades ausentes (p.ej. packageName) con acceso defensivo. [1]()
 #>
 
 [CmdletBinding()]
@@ -57,7 +60,7 @@ param(
   [Parameter(Mandatory=$false)]
   [string]$ApiVersionDeployments = '2021-04-01',
 
-  # Si quieres ver más debug
+  # Debug
   [Parameter(Mandatory=$false)]
   [switch]$VerboseOutput
 )
@@ -66,11 +69,25 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ----------------------------
-# Helpers
+# Helpers (logging)
 # ----------------------------
 function Write-Info([string]$m) { Write-Host "ℹ️  $m" }
 function Write-Warn([string]$m) { Write-Warning $m }
 
+# ----------------------------
+# Helpers (safe property access)
+# ----------------------------
+function Has-Prop([object]$Obj, [string]$Name) {
+  return ($null -ne $Obj -and $Obj.PSObject.Properties.Name -contains $Name)
+}
+function Get-Prop([object]$Obj, [string]$Name, $Default=$null) {
+  if (Has-Prop $Obj $Name) { return $Obj.$Name }
+  return $Default
+}
+
+# ----------------------------
+# Auth / REST
+# ----------------------------
 function Get-ArmToken {
   # Preferimos Azure CLI porque en GitHub Actions con azure/login OIDC queda listo.
   try {
@@ -96,7 +113,7 @@ function Invoke-ArmRest {
 
   $payload = $null
   if ($null -ne $Body) {
-    $payload = ($Body | ConvertTo-Json -Depth 100)
+    $payload = ($Body | ConvertTo-Json -Depth 200)
   }
 
   $attempt = 0
@@ -112,7 +129,6 @@ function Invoke-ArmRest {
     } catch {
       $msg = $_.Exception.Message
       if ($attempt -ge $MaxRetries) { throw $_ }
-      # Backoff simple
       $sleep = [Math]::Min(30, (2 * $attempt))
       Write-Warn "Fallo REST (intento $attempt/$MaxRetries): $msg. Reintentando en $sleep s..."
       Start-Sleep -Seconds $sleep
@@ -120,6 +136,9 @@ function Invoke-ArmRest {
   }
 }
 
+# ----------------------------
+# Sentinel ContentTemplates helpers
+# ----------------------------
 function Get-WorkspaceResourceId {
   return "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName"
 }
@@ -160,6 +179,9 @@ function Match-DisplayName {
   }
 }
 
+# ----------------------------
+# Deployment helpers
+# ----------------------------
 function Build-DeploymentParametersFromTemplate {
   param(
     [Parameter(Mandatory=$true)]$TemplateObj,
@@ -168,36 +190,31 @@ function Build-DeploymentParametersFromTemplate {
     [Parameter(Mandatory=$false)][string]$LocationOverride
   )
 
-  # ARM template shape: { parameters: { p1: {type, defaultValue?}, ... } }
   $params = @{}
-  $tmplParams = $TemplateObj.parameters
+  $tmplParams = Get-Prop $TemplateObj 'parameters' $null
+  if ($null -eq $tmplParams) { return $params }
 
-  if ($null -eq $tmplParams) {
-    return $params
-  }
-
-  # Helper interno para setear valor si existe el parámetro
   function Set-IfExists([string]$paramName, [object]$value) {
     if ($tmplParams.PSObject.Properties.Name -contains $paramName) {
       $params[$paramName] = @{ value = $value }
     }
   }
 
-  # Valores que solemos poder inferir
-  $workbookGuid = ([Guid]::NewGuid()).ToString()
+  $workbookGuid = ([Guid]::NewGuid()).Guid
   $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
 
-  # Parámetros comunes vistos en ARM Workbooks (varían por plantilla)
+  # IDs / name
   Set-IfExists -paramName 'workbookId' -value $workbookGuid
   Set-IfExists -paramName 'workbookName' -value $workbookGuid
   Set-IfExists -paramName 'resourceName' -value $workbookGuid
 
+  # Workspace related
   Set-IfExists -paramName 'workspace' -value $WorkspaceName
   Set-IfExists -paramName 'workspaceName' -value $WorkspaceName
   Set-IfExists -paramName 'workspaceResourceId' -value $WorkspaceResourceId
   Set-IfExists -paramName 'workspaceId' -value $WorkspaceResourceId
 
-  # sourceId puede ser workspaceResourceId o el RG (según diseño de la plantilla)
+  # sourceId suele ser workspaceResourceId o el RG (depende del template)
   Set-IfExists -paramName 'workbookSourceId' -value $WorkspaceResourceId
   Set-IfExists -paramName 'sourceId' -value $WorkspaceResourceId
   Set-IfExists -paramName 'resourceGroupId' -value $rgId
@@ -221,7 +238,7 @@ function Get-MissingRequiredParams {
   )
 
   $missing = @()
-  $tmplParams = $TemplateObj.parameters
+  $tmplParams = Get-Prop $TemplateObj 'parameters' $null
   if ($null -eq $tmplParams) { return $missing }
 
   foreach ($p in $tmplParams.PSObject.Properties) {
@@ -235,7 +252,6 @@ function Get-MissingRequiredParams {
 
     $provided = $ProvidedParams.ContainsKey($name)
     if (-not $provided -and -not $hasDefault) {
-      # Puede ser opcional según plantilla; aquí lo tratamos como potencialmente requerido
       $missing += $name
     }
   }
@@ -247,28 +263,26 @@ function Start-ArmDeployment {
   param(
     [Parameter(Mandatory=$true)][string]$DeploymentName,
     [Parameter(Mandatory=$true)]$TemplateObj,
-    [Parameter(Mandatory=$true)]$ParametersObj,
-    [Parameter(Mandatory=$false)][string]$LocationOverride
+    [Parameter(Mandatory=$true)]$ParametersObj
   )
 
   $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$DeploymentName?api-version=$ApiVersionDeployments"
 
   $body = @{
     properties = @{
-      mode = 'Incremental'
-      template = $TemplateObj
+      mode       = 'Incremental'
+      template   = $TemplateObj
       parameters = $ParametersObj
     }
   }
 
-  # Algunos despliegues requieren location dentro del template (lo maneja el template); aquí no forzamos.
   Invoke-ArmRest -Method PUT -Uri $uri -Body $body | Out-Null
 }
 
 function Wait-ArmDeployment {
   param(
     [Parameter(Mandatory=$true)][string]$DeploymentName,
-    [int]$MaxWaitSeconds = 600
+    [int]$MaxWaitSeconds = 900
   )
 
   $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$DeploymentName?api-version=$ApiVersionDeployments"
@@ -276,7 +290,8 @@ function Wait-ArmDeployment {
 
   while ((Get-Date) -lt $deadline) {
     $d = Invoke-ArmRest -Method GET -Uri $uri
-    $state = $d.properties.provisioningState
+    $state = Get-Prop (Get-Prop $d 'properties' $null) 'provisioningState' $null
+
     if ($state -in @('Succeeded','Failed','Canceled')) {
       return $d
     }
@@ -291,6 +306,7 @@ function Wait-ArmDeployment {
 # ----------------------------
 Write-Info "Acción: $Action"
 Write-Info "Workspace: $WorkspaceName (RG: $ResourceGroupName, Sub: $SubscriptionId)"
+
 $wsId = Get-WorkspaceResourceId
 if ($VerboseOutput) { Write-Info "WorkspaceResourceId: $wsId" }
 
@@ -299,20 +315,30 @@ if ($Action -eq 'list') {
   $items = @($all.value)
 
   $filtered = foreach ($it in $items) {
-    $p = $it.properties
+    $p = Get-Prop $it 'properties' $null
     if ($null -eq $p) { continue }
-    if (-not (Is-WorkbookTemplateKind -contentKind $p.contentKind)) { continue }
-    if (-not (Match-DisplayName -Name $p.displayName -Filter $DisplayNameFilter -Mode $DisplayNameFilterMode)) { continue }
 
+    $ck = Get-Prop $p 'contentKind' $null
+    if (-not (Is-WorkbookTemplateKind -contentKind $ck)) { continue }
+
+    $dn = Get-Prop $p 'displayName' ''
+    if (-not (Match-DisplayName -Name $dn -Filter $DisplayNameFilter -Mode $DisplayNameFilterMode)) { continue }
+
+    $src = Get-Prop $p 'source' $null
+
+    # ✅ Acceso defensivo a propiedades opcionales (evita crash por packageName). [1]()
     [pscustomobject]@{
-      templateId    = $it.name
-      displayName   = $p.displayName
-      contentKind   = $p.contentKind
-      packageName   = $p.packageName
-      packageVersion= $p.packageVersion
-      version       = $p.version
-      sourceKind    = $p.source.kind
-      sourceName    = $p.source.name
+      templateId      = Get-Prop $it 'name' ''
+      displayName     = $dn
+      contentKind     = $ck
+      contentId       = Get-Prop $p 'contentId' ''
+      contentProductId= Get-Prop $p 'contentProductId' ''
+      packageId       = Get-Prop $p 'packageId' ''
+      packageVersion  = Get-Prop $p 'packageVersion' ''
+      packageName     = Get-Prop $p 'packageName' ''   # puede no existir
+      version         = Get-Prop $p 'version' ''
+      sourceKind      = Get-Prop $src 'kind' ''
+      sourceName      = Get-Prop $src 'name' ''
     }
   }
 
@@ -330,20 +356,22 @@ if ($Action -eq 'create') {
   Write-Info "Cargando templateId: $TemplateId"
   $tpl = Get-ContentTemplateById -Id $TemplateId
 
-  if ($null -eq $tpl.properties) { throw "El template no trae 'properties'. No se puede continuar." }
+  $props = Get-Prop $tpl 'properties' $null
+  if ($null -eq $props) { throw "El template no trae 'properties'. No se puede continuar." }
 
-  $kind = $tpl.properties.contentKind
+  $kind = Get-Prop $props 'contentKind' ''
   if (-not (Is-WorkbookTemplateKind -contentKind $kind)) {
     throw "El TemplateId indicado no parece de Workbook. contentKind='$kind'"
   }
 
-  # mainTemplate (ARM) es lo que desplegamos
-  $mainTemplate = $tpl.properties.mainTemplate
+  $mainTemplate = Get-Prop $props 'mainTemplate' $null
   if ($null -eq $mainTemplate) {
-    throw "El template no contiene properties.mainTemplate. Ejecuta list con expand o revisa si está instalado correctamente."
+    throw "El template no contiene properties.mainTemplate (expand). Revisa instalación o permisos."
   }
 
-  $targetName = if ($WorkbookDisplayName) { $WorkbookDisplayName } else { $tpl.properties.displayName }
+  $defaultName = Get-Prop $props 'displayName' ''
+  $targetName = if (-not [string]::IsNullOrWhiteSpace($WorkbookDisplayName)) { $WorkbookDisplayName } else { $defaultName }
+
   Write-Info "WorkbookDisplayName objetivo: $targetName"
 
   $params = Build-DeploymentParametersFromTemplate -TemplateObj $mainTemplate -WorkspaceResourceId $wsId -WorkbookNameOverride $targetName -LocationOverride $Location
@@ -358,21 +386,24 @@ if ($Action -eq 'create') {
   $deploymentName = ("sentinel-wbtemplate-" + $TemplateId.Replace('/','-') + "-" + (Get-Date -Format "yyyyMMddHHmmss"))
   Write-Info "Lanzando deployment: $deploymentName"
 
-  Start-ArmDeployment -DeploymentName $deploymentName -TemplateObj $mainTemplate -ParametersObj $params -LocationOverride $Location
+  Start-ArmDeployment -DeploymentName $deploymentName -TemplateObj $mainTemplate -ParametersObj $params
   $res = Wait-ArmDeployment -DeploymentName $deploymentName -MaxWaitSeconds 900
 
-  $state = $res.properties.provisioningState
+  $pRes = Get-Prop $res 'properties' $null
+  $state = Get-Prop $pRes 'provisioningState' ''
   if ($state -ne 'Succeeded') {
-    $err = $res.properties.error
+    $err = Get-Prop $pRes 'error' $null
     if ($err) {
-      throw "Deployment falló: $($err.code) - $($err.message)"
+      $code = Get-Prop $err 'code' ''
+      $msg  = Get-Prop $err 'message' ''
+      throw "Deployment falló: $code - $msg"
     }
     throw "Deployment terminó en estado: $state"
   }
 
   Write-Host ""
   Write-Info "✅ Workbook desplegado desde templateId=$TemplateId (deployment=$deploymentName)"
-  Write-Info "Nota: el workbook aparecerá en el RG del workspace; Sentinel lo mostrará en 'My workbooks' si el template lo asocia correctamente."
+  Write-Info "Si no lo ves, revisa el RG del workspace y la pestaña 'My workbooks' en Sentinel."
   exit 0
 }
 
