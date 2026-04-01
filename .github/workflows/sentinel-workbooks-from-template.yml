@@ -1,4 +1,4 @@
-name: "Sentinel - Workbooks Templates (List/Create)"
+name: Sentinel - Workbooks Templates (List/Create)
 
 on:
   workflow_dispatch:
@@ -7,43 +7,60 @@ on:
         description: "Acción a ejecutar"
         required: true
         type: choice
-        default: list
         options:
           - list
           - create
+        default: "create"
+
       templateId:
-        description: "TemplateId (GUID) - obligatorio en create"
+        description: "TemplateId del workbook (contentTemplates/{templateId})"
         required: false
-        type: string
+        default: ""
+
+      workbookDisplayName:
+        description: "DisplayName objetivo (si vacío, usa el de la plantilla)"
+        required: false
+        default: ""
+
       displayNameFilter:
-        description: "Filtro displayName (solo list)"
+        description: "Filtro para list (displayName). Vacío = sin filtro"
         required: false
-        type: string
+        default: ""
+
       displayNameFilterMode:
-        description: "Modo de filtrado por displayName"
-        required: true
+        description: "Modo de filtro para list y para detectar existentes"
+        required: false
         type: choice
-        default: contains
         options:
           - contains
           - equals
-          - startswith
-      workbookDisplayName:
-        description: "Nombre del nuevo workbook (solo create, opcional)"
-        required: false
-        type: string
+        default: "contains"
+
       location:
-        description: "Location (opcional, por defecto vars.LOCATION si existe)"
-        required: false
-        type: string
-      verbose:
-        description: "Verbose output"
+        description: "Location para deployment (ej: francecentral, westeurope)"
         required: true
+        default: "francecentral"
+
+      force:
+        description: "Si existe uno similar, crea COPIA nueva igualmente"
+        required: false
         type: choice
+        options: ["false","true"]
         default: "false"
-        options:
-          - "false"
-          - "true"
+
+      updateIfExists:
+        description: "Si existe uno similar, ACTUALIZA el existente"
+        required: false
+        type: choice
+        options: ["false","true"]
+        default: "false"
+
+      verboseOutput:
+        description: "Logs detallados (true/false)"
+        required: false
+        type: choice
+        options: ["false","true"]
+        default: "false"
 
 permissions:
   id-token: write
@@ -52,9 +69,8 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Azure Login (OIDC)
@@ -63,6 +79,7 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange
 
       - name: Run Sentinel Workbooks Templates script
         shell: pwsh
@@ -71,10 +88,13 @@ jobs:
 
           $action = "${{ github.event.inputs.action }}"
           $templateId = "${{ github.event.inputs.templateId }}"
+          $workbookDisplayName = "${{ github.event.inputs.workbookDisplayName }}"
           $displayNameFilter = "${{ github.event.inputs.displayNameFilter }}"
           $displayNameFilterMode = "${{ github.event.inputs.displayNameFilterMode }}"
-          $workbookDisplayName = "${{ github.event.inputs.workbookDisplayName }}"
-          $inputLocation = "${{ github.event.inputs.location }}"
+          $loc = "${{ github.event.inputs.location }}"
+          $force = "${{ github.event.inputs.force }}"
+          $update = "${{ github.event.inputs.updateIfExists }}"
+          $verbose = "${{ github.event.inputs.verboseOutput }}"
 
           $rg = "${{ vars.SENTINEL_RESOURCE_GROUP }}"
           $ws = "${{ vars.SENTINEL_WORKSPACE_NAME }}"
@@ -84,26 +104,22 @@ jobs:
             throw "Faltan vars.SENTINEL_RESOURCE_GROUP o vars.SENTINEL_WORKSPACE_NAME"
           }
 
-          $loc = $inputLocation
-          if ([string]::IsNullOrWhiteSpace($loc)) { $loc = "${{ vars.LOCATION }}" }
-
-          $verboseFlag = "${{ github.event.inputs.verbose }}"
-          $verboseSwitch = $false
-          if ($verboseFlag -eq "true") { $verboseSwitch = $true }
-
           $args = @(
             "-Action", $action,
             "-SubscriptionId", $sub,
             "-ResourceGroupName", $rg,
             "-WorkspaceName", $ws,
-            "-DisplayNameFilterMode", $displayNameFilterMode
+            "-DisplayNameFilterMode", $displayNameFilterMode,
+            "-Location", $loc
           )
 
           if (-not [string]::IsNullOrWhiteSpace($displayNameFilter)) { $args += @("-DisplayNameFilter", $displayNameFilter) }
-          if (-not [string]::IsNullOrWhiteSpace($templateId))        { $args += @("-TemplateId", $templateId) }
+          if (-not [string]::IsNullOrWhiteSpace($templateId)) { $args += @("-TemplateId", $templateId) }
           if (-not [string]::IsNullOrWhiteSpace($workbookDisplayName)) { $args += @("-WorkbookDisplayName", $workbookDisplayName) }
-          if (-not [string]::IsNullOrWhiteSpace($loc))               { $args += @("-Location", $loc) }
-          if ($verboseSwitch) { $args += @("-VerboseOutput") }
+
+          if ($force -eq "true") { $args += @("-Force") }
+          if ($update -eq "true") { $args += @("-UpdateIfExists") }
+          if ($verbose -eq "true") { $args += @("-VerboseOutput") }
 
           if ($action -eq "list") {
             $args += @("-CsvOutputPath", "artifacts/workbook-templates.csv")
@@ -116,6 +132,6 @@ jobs:
         if: ${{ github.event.inputs.action == 'list' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sentinel-workbook-templates-csv
+          name: workbook-templates
           path: artifacts/workbook-templates.csv
           if-no-files-found: error
