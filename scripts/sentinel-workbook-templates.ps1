@@ -78,21 +78,18 @@ function Get-WorkspaceResourceId {
   return "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName"
 }
 
-# ✅ URL segura con UriBuilder (evita contentTemplates/-version... y BadRequest HTML)
+# ✅ URL segura con UriBuilder
 function Build-SentinelUrl {
   param(
-    [Parameter(Mandatory)][string]$Path,     # path relativo desde https://management.azure.com
-    [Parameter(Mandatory)][hashtable]$Query  # pares querystring
+    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][hashtable]$Query
   )
 
   $ub = [System.UriBuilder]::new("https://management.azure.com")
   $ub.Path = $Path.TrimStart('/')
 
-  # Construir query de forma segura (incluye $expand sin romperlo)
   $pairs = New-Object System.Collections.Generic.List[string]
-  foreach ($k in $Query.Keys) {
-    $pairs.Add("$k=$($Query[$k])")
-  }
+  foreach ($k in $Query.Keys) { $pairs.Add("$k=$($Query[$k])") }
   $ub.Query = ($pairs -join "&")
 
   return $ub.Uri.AbsoluteUri
@@ -291,6 +288,9 @@ Write-Info "Workspace: $WorkspaceName (RG: $ResourceGroupName, Sub: ***)"
 
 & az account set --subscription "$SubscriptionId" --only-show-errors *> $null
 
+# ✅ FIX: ConvertTo-Json permite máximo 100
+$JsonDepth = 100
+
 if ($Action -eq "list") {
   Write-Step "Listando plantillas de Workbooks (contentTemplates)…"
   $templates = List-WorkbookTemplates
@@ -301,25 +301,18 @@ if ($Action -eq "list") {
   exit 0
 }
 
-# Action create
-if ([string]::IsNullOrWhiteSpace($TemplateId)) {
-  throw "Para -Action create debes indicar -TemplateId"
-}
-if ([string]::IsNullOrWhiteSpace($Location)) {
-  throw "Debes indicar -Location (por ejemplo: francecentral / westeurope / etc.)"
-}
+if ([string]::IsNullOrWhiteSpace($TemplateId)) { throw "Para -Action create debes indicar -TemplateId" }
+if ([string]::IsNullOrWhiteSpace($Location))  { throw "Debes indicar -Location (ej: francecentral, westeurope, etc.)" }
 
 Write-Info "Cargando templateId: $TemplateId"
 $ct = Get-ContentTemplate -TemplateId $TemplateId
 
 if (-not $ct -or -not $ct.properties -or -not $ct.properties.mainTemplate) {
-  throw "No se pudo obtener properties.mainTemplate del contentTemplate $TemplateId (¿falta `$expand=properties/mainTemplate o no está instalado?)."
+  throw "No se pudo obtener properties.mainTemplate del contentTemplate $TemplateId."
 }
 
 $targetDisplayName = $WorkbookDisplayName
-if ([string]::IsNullOrWhiteSpace($targetDisplayName)) {
-  $targetDisplayName = $ct.properties.displayName
-}
+if ([string]::IsNullOrWhiteSpace($targetDisplayName)) { $targetDisplayName = $ct.properties.displayName }
 Write-Info "WorkbookDisplayName objetivo: $targetDisplayName"
 
 $existing = $null
@@ -329,7 +322,6 @@ if ($workbooks.Count -gt 0) {
 }
 
 if ($existing -and -not $Force -and -not $UpdateIfExists) {
-  # ✅ Mensaje EXACTO solicitado por ti
   Write-Host "ℹ️ Workbook ya existe, no se lanza deployment"
   Write-Info "Coincidencia: name=$($existing.name) displayName=$($existing.displayName) location=$($existing.location)"
   exit 0
@@ -359,8 +351,9 @@ if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Forc
 $templatePath = Join-Path $tmpDir "workbook-template.json"
 $paramPath    = Join-Path $tmpDir "workbook-params.json"
 
-$templateObj | ConvertTo-Json -Depth 120 | Out-File -FilePath $templatePath -Encoding UTF8
-$paramObj    | ConvertTo-Json -Depth 80  | Out-File -FilePath $paramPath -Encoding UTF8
+# ✅ FIX REAL: Depth <= 100
+$templateObj | ConvertTo-Json -Depth $JsonDepth | Out-File -FilePath $templatePath -Encoding UTF8
+$paramObj    | ConvertTo-Json -Depth 50         | Out-File -FilePath $paramPath    -Encoding UTF8
 
 $deploymentName = "swb-$(([guid]::NewGuid().ToString('N')).Substring(0,12))-$((Get-Date).ToString('yyyyMMddHHmmss'))"
 Write-Info "Lanzando deployment: $deploymentName"
