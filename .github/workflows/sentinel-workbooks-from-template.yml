@@ -7,9 +7,7 @@ on:
         description: "Acción a ejecutar"
         required: true
         type: choice
-        options:
-          - list
-          - create
+        options: [list, create]
         default: "create"
 
       templateId:
@@ -31,9 +29,7 @@ on:
         description: "Modo de filtro para list y para detectar existentes"
         required: false
         type: choice
-        options:
-          - contains
-          - equals
+        options: [contains, equals]
         default: "contains"
 
       location:
