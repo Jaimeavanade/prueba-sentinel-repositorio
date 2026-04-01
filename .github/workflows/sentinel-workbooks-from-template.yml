@@ -1,62 +1,39 @@
-name: Sentinel - Workbooks Templates (List/Create)
+name: Sentinel – Workbooks (List / Create)
 
 on:
   workflow_dispatch:
     inputs:
       action:
         description: "Acción a ejecutar"
-        required: true
         type: choice
+        required: true
         options: [list, create]
-        default: "create"
+        default: create
 
       templateId:
-        description: "TemplateId del workbook (contentTemplates/{templateId})"
+        description: "TemplateId del workbook (solo para create)"
         required: false
         default: ""
 
       workbookDisplayName:
-        description: "DisplayName objetivo (si vacío, usa el de la plantilla)"
+        description: "DisplayName objetivo (opcional)"
         required: false
         default: ""
-
-      displayNameFilter:
-        description: "Filtro para list (displayName). Vacío = sin filtro"
-        required: false
-        default: ""
-
-      displayNameFilterMode:
-        description: "Modo de filtro para list y para detectar existentes"
-        required: false
-        type: choice
-        options: [contains, equals]
-        default: "contains"
 
       location:
-        description: "Location para deployment (ej: francecentral, westeurope)"
+        description: "Location del workbook"
         required: true
-        default: "francecentral"
-
-      force:
-        description: "Si existe uno similar, crea COPIA nueva igualmente"
-        required: false
-        type: choice
-        options: ["false","true"]
-        default: "false"
+        default: francecentral
 
       updateIfExists:
-        description: "Si existe uno similar, ACTUALIZA el existente"
-        required: false
-        type: choice
-        options: ["false","true"]
-        default: "false"
+        description: "Actualizar el workbook si ya existe"
+        type: boolean
+        default: false
 
-      verboseOutput:
-        description: "Logs detallados (true/false)"
-        required: false
-        type: choice
-        options: ["false","true"]
-        default: "false"
+      verbose:
+        description: "Logs detallados"
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -65,6 +42,7 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -77,57 +55,45 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           audience: api://AzureADTokenExchange
 
-      - name: Run Sentinel Workbooks Templates script
+      - name: Run Sentinel workbook script
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $action = "${{ github.event.inputs.action }}"
-          $templateId = "${{ github.event.inputs.templateId }}"
-          $workbookDisplayName = "${{ github.event.inputs.workbookDisplayName }}"
-          $displayNameFilter = "${{ github.event.inputs.displayNameFilter }}"
-          $displayNameFilterMode = "${{ github.event.inputs.displayNameFilterMode }}"
-          $loc = "${{ github.event.inputs.location }}"
-          $force = "${{ github.event.inputs.force }}"
-          $update = "${{ github.event.inputs.updateIfExists }}"
-          $verbose = "${{ github.event.inputs.verboseOutput }}"
-
-          $rg = "${{ vars.SENTINEL_RESOURCE_GROUP }}"
-          $ws = "${{ vars.SENTINEL_WORKSPACE_NAME }}"
-          $sub = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-
-          if ([string]::IsNullOrWhiteSpace($rg) -or [string]::IsNullOrWhiteSpace($ws)) {
-            throw "Faltan vars.SENTINEL_RESOURCE_GROUP o vars.SENTINEL_WORKSPACE_NAME"
-          }
-
           $args = @(
-            "-Action", $action,
-            "-SubscriptionId", $sub,
-            "-ResourceGroupName", $rg,
-            "-WorkspaceName", $ws,
-            "-DisplayNameFilterMode", $displayNameFilterMode,
-            "-Location", $loc
+            "-Action", "${{ inputs.action }}",
+            "-SubscriptionId", "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+            "-ResourceGroupName", "${{ vars.SENTINEL_RESOURCE_GROUP }}",
+            "-WorkspaceName", "${{ vars.SENTINEL_WORKSPACE_NAME }}",
+            "-Location", "${{ inputs.location }}"
           )
 
-          if (-not [string]::IsNullOrWhiteSpace($displayNameFilter)) { $args += @("-DisplayNameFilter", $displayNameFilter) }
-          if (-not [string]::IsNullOrWhiteSpace($templateId)) { $args += @("-TemplateId", $templateId) }
-          if (-not [string]::IsNullOrWhiteSpace($workbookDisplayName)) { $args += @("-WorkbookDisplayName", $workbookDisplayName) }
+          if ("${{ inputs.templateId }}" -ne "") {
+            $args += @("-TemplateId", "${{ inputs.templateId }}")
+          }
 
-          if ($force -eq "true") { $args += @("-Force") }
-          if ($update -eq "true") { $args += @("-UpdateIfExists") }
-          if ($verbose -eq "true") { $args += @("-VerboseOutput") }
+          if ("${{ inputs.workbookDisplayName }}" -ne "") {
+            $args += @("-WorkbookDisplayName", "${{ inputs.workbookDisplayName }}")
+          }
 
-          if ($action -eq "list") {
+          if ("${{ inputs.updateIfExists }}" -eq "true") {
+            $args += "-UpdateIfExists"
+          }
+
+          if ("${{ inputs.verbose }}" -eq "true") {
+            $args += "-VerboseOutput"
+          }
+
+          if ("${{ inputs.action }}" -eq "list") {
             $args += @("-CsvOutputPath", "artifacts/workbook-templates.csv")
           }
 
-          Write-Host "➡️ Ejecutando scripts/sentinel-workbook-templates.ps1 $($args -join ' ')"
-          pwsh -File "./scripts/sentinel-workbook-templates.ps1" @args
+          Write-Host "➡️ Ejecutando sentinel-workbook-templates.ps1 $($args -join ' ')"
+          pwsh ./scripts/sentinel-workbook-templates.ps1 @args
 
-      - name: Upload CSV artifact (workbook templates)
-        if: ${{ github.event.inputs.action == 'list' }}
+      - name: Upload CSV (solo list)
+        if: ${{ inputs.action == 'list' }}
         uses: actions/upload-artifact@v4
         with:
           name: workbook-templates
           path: artifacts/workbook-templates.csv
-          if-no-files-found: error
