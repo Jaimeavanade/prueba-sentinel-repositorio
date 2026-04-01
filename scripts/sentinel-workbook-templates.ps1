@@ -1,507 +1,394 @@
+#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-  Microsoft Sentinel - Workbooks Templates (List/Create)
+  List/Create Microsoft Sentinel Workbook templates (Content Hub contentTemplates) with robust deployment diagnostics.
 
 .DESCRIPTION
-  - list:
-      Lista templates instalados (Microsoft.SecurityInsights/contentTemplates) filtrando por contentKind
-      Workbook o WorkbookTemplate y opcionalmente por displayName.
-      Exporta CSV (para artifact) si se indica -CsvOutputPath o si estamos en GitHub Actions.
-  - create:
-      A partir de un TemplateId (contentTemplate), obtiene properties.mainTemplate (ARM template)
-      y ejecuta un deployment ARM en el Resource Group del workspace para materializar el workbook.
+  - Lists Workbook templates from Sentinel contentTemplates (expand=mainTemplate optional).
+  - Creates (deploys) a Workbook from a given templateId using ARM deployment at RG scope.
+  - Idempotent behavior:
+      * If a workbook with same displayName exists:
+          - default: SKIP (prints "ℹ️ Workbook ya existe, no se lanza deployment")
+          - -UpdateIfExists: deploy/update that workbook resource
+          - -Force: create a NEW COPY (new resource name GUID) even if displayName matches
+  - On ARM failure: dumps deployment operations to reveal the real error (not only DeploymentFailed).
 
-.FIXES INCLUIDOS
-  - FIX URL TemplateId: evita "$Id?api-version" => PowerShell interpreta $Id?api
-  - FIX URL DeploymentName: evita "$DeploymentName?api-version" => PowerShell interpreta $DeploymentName?api
-  - FIX params: normaliza mainTemplate.parameters a Hashtable (Dictionary/PSCustomObject)
-  - FIX Count: missing required params siempre tratado como array
-  - FIX JSON Depth: ConvertTo-Json Depth clamp <= 100 (GitHub runner)
-  - FIX ARM deploymentName max 64: nombre corto con hash (evita InvalidDeployment length>64) [1]()
-  - FIX retry: no reintentar 4xx (excepto 408/429)
+.NOTES
+  Requires Azure CLI logged in (azure/login@v2 OIDC is enough) and permission to deploy.
 #>
 
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)]
-  [ValidateSet('list','create')]
+  [Parameter(Mandatory)]
+  [ValidateSet("list","create")]
   [string]$Action,
 
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory)]
   [string]$SubscriptionId,
 
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory)]
   [string]$ResourceGroupName,
 
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory)]
   [string]$WorkspaceName,
 
-  # create
-  [Parameter(Mandatory=$false)]
-  [string]$TemplateId,
+  [ValidateSet("contains","equals")]
+  [string]$DisplayNameFilterMode = "contains",
 
-  # list
-  [Parameter(Mandatory=$false)]
-  [string]$DisplayNameFilter,
+  [string]$DisplayNameFilter = "",
 
-  [Parameter(Mandatory=$false)]
-  [ValidateSet('contains','equals','startswith')]
-  [string]$DisplayNameFilterMode = 'contains',
+  [string]$TemplateId = "",
 
-  # create
-  [Parameter(Mandatory=$false)]
-  [string]$WorkbookDisplayName,
+  [string]$WorkbookDisplayName = "",
 
-  # create (opcional)
-  [Parameter(Mandatory=$false)]
-  [string]$Location,
+  [string]$Location = "",
 
-  # list (opcional)
-  [Parameter(Mandatory=$false)]
-  [string]$CsvOutputPath,
+  [string]$CsvOutputPath = "artifacts/workbook-templates.csv",
 
-  # API versions
-  [Parameter(Mandatory=$false)]
-  [string]$ApiVersionSecurityInsights = '2025-09-01',
+  [switch]$Force,
 
-  [Parameter(Mandatory=$false)]
-  [string]$ApiVersionDeployments = '2021-04-01',
+  [switch]$UpdateIfExists,
 
-  # Debug
-  [Parameter(Mandatory=$false)]
   [switch]$VerboseOutput
 )
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = "Stop"
 
-# ----------------------------
-# Logging
-# ----------------------------
-function Write-Info([string]$m) { Write-Host "ℹ️  $m" }
-function Write-Warn([string]$m) { Write-Warning $m }
+function Write-Info([string]$msg) { Write-Host "ℹ️ $msg" }
+function Write-Warn([string]$msg) { Write-Host "⚠️ $msg" }
+function Write-Ok([string]$msg)   { Write-Host "✅ $msg" }
+function Write-Step([string]$msg) { Write-Host "➡️ $msg" }
 
-# ----------------------------
-# Safe property access
-# ----------------------------
-function Has-Prop([object]$Obj, [string]$Name) {
-  return ($null -ne $Obj -and $Obj.PSObject.Properties.Name -contains $Name)
-}
-function Get-Prop([object]$Obj, [string]$Name, $Default=$null) {
-  if (Has-Prop $Obj $Name) { return $Obj.$Name }
-  return $Default
-}
-
-# ----------------------------
-# Helpers
-# ----------------------------
-function Get-ArmToken {
+function Assert-AzCli {
   try {
-    $t = & az account get-access-token --resource https://management.azure.com/ --query accessToken -o tsv 2>$null
-    if ($t -and $t.Trim().Length -gt 100) { return $t.Trim() }
-  } catch {}
-  throw "No se pudo obtener token ARM. Asegura 'azure/login' (OIDC) o 'az login' antes de ejecutar."
+    $null = & az --version 2>$null
+  } catch {
+    throw "Azure CLI (az) no está disponible en el runner."
+  }
 }
 
-function Get-HttpStatusCodeFromException($ex) {
-  # Devuelve int si puede (Invoke-RestMethod suele traer Response con StatusCode)
-  try {
-    if ($ex.Exception -and $ex.Exception.Response -and $ex.Exception.Response.StatusCode) {
-      return [int]$ex.Exception.Response.StatusCode
-    }
-  } catch {}
-  return $null
-}
-
-function Should-RetryStatus([int]$status) {
-  if ($null -eq $status) { return $true } # si no sabemos, reintentamos
-  if ($status -eq 408 -or $status -eq 429) { return $true }
-  if ($status -ge 500 -and $status -le 599) { return $true }
-  return $false # 400-499 (salvo 408/429) => no reintentar
-}
-
-function Invoke-ArmRest {
+function Az-Json {
   param(
-    [Parameter(Mandatory=$true)][ValidateSet('GET','PUT','POST','DELETE')][string]$Method,
-    [Parameter(Mandatory=$true)][string]$Uri,
-    [Parameter(Mandatory=$false)][object]$Body,
-    [int]$MaxRetries = 6,
-    [int]$JsonDepth = 100
+    [Parameter(Mandatory)][string]$CommandLine
   )
-
-  $token = Get-ArmToken
-  $headers = @{
-    Authorization  = "Bearer $token"
-    'Content-Type' = 'application/json'
+  if ($VerboseOutput) { Write-Host "🔎 az $CommandLine" }
+  $raw = & az $CommandLine --only-show-errors -o json 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "Fallo ejecutando: az $CommandLine`n$raw"
   }
-
-  # Clamp Depth <= 100
-  if ($JsonDepth -gt 100) { $JsonDepth = 100 }
-  if ($JsonDepth -lt 2)   { $JsonDepth = 2 }
-
-  $payload = $null
-  if ($null -ne $Body) {
-    $payload = ($Body | ConvertTo-Json -Depth $JsonDepth -Compress)
-  }
-
-  $attempt = 0
-  while ($true) {
-    $attempt++
-    try {
-      if ($VerboseOutput) { Write-Info "$Method $Uri" }
-      if ($null -eq $payload) {
-        return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
-      } else {
-        return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $payload
-      }
-    } catch {
-      $status = Get-HttpStatusCodeFromException $_
-      $msg = $_.Exception.Message
-
-      # Si es 4xx definitivo, no reintentar
-      if (-not (Should-RetryStatus $status)) {
-        throw $_
-      }
-
-      if ($attempt -ge $MaxRetries) { throw $_ }
-
-      $sleep = [Math]::Min(30, (2 * $attempt))
-      Write-Warn "Fallo REST (intento $attempt/$MaxRetries): Response status code $status. $msg. Reintentando en $sleep s..."
-      Start-Sleep -Seconds $sleep
-    }
-  }
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+  return ($raw | ConvertFrom-Json -Depth 50)
 }
 
-# ----------------------------
-# Sentinel ContentTemplates helpers
-# ----------------------------
+function Az-Rest {
+  param(
+    [Parameter(Mandatory)][ValidateSet("get","put","post","delete","patch")]
+    [string]$Method,
+    [Parameter(Mandatory)][string]$Url
+  )
+  $cmd = "rest --method $Method --url `"$Url`""
+  return Az-Json -CommandLine $cmd
+}
+
 function Get-WorkspaceResourceId {
   return "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName"
 }
 
-function Get-ContentTemplatesList {
-  $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates?api-version=$ApiVersionSecurityInsights"
-  return Invoke-ArmRest -Method GET -Uri $uri
+function Get-ContentTemplate {
+  param([Parameter(Mandatory)][string]$TemplateId)
+
+  # Official endpoint pattern (api-version 2025-09-01). [2](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-templates/list?view=rest-securityinsights-2025-09-01)
+  $url = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates/$TemplateId?api-version=2025-09-01&`$expand=properties/mainTemplate"
+  return Az-Rest -Method get -Url $url
 }
 
-function Get-ContentTemplateById {
-  param([Parameter(Mandatory=$true)][string]$Id)
+function List-WorkbookTemplates {
+  # List installed templates; we can filter on client side for WorkbookTemplate
+  $url = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates?api-version=2025-09-01&`$expand=properties/mainTemplate"
+  $resp = Az-Rest -Method get -Url $url
 
-  $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentTemplates/$($Id)"
-  $uri = $baseUri + "?api-version=$ApiVersionSecurityInsights&`$expand=properties/mainTemplate"
-  return Invoke-ArmRest -Method GET -Uri $uri
+  $items = @()
+  if ($resp.value) { $items = $resp.value }
+
+  # Keep only workbook templates
+  $workbookTemplates = $items | Where-Object {
+    $_.properties.contentKind -eq "WorkbookTemplate" -or $_.properties.contentKind -eq "Workbook"
+  }
+
+  # Apply filter if provided
+  if (-not [string]::IsNullOrWhiteSpace($DisplayNameFilter)) {
+    if ($DisplayNameFilterMode -eq "contains") {
+      $workbookTemplates = $workbookTemplates | Where-Object { $_.properties.displayName -like "*$DisplayNameFilter*" }
+    } else {
+      $workbookTemplates = $workbookTemplates | Where-Object { $_.properties.displayName -eq $DisplayNameFilter }
+    }
+  }
+
+  return $workbookTemplates
 }
 
-function Is-WorkbookTemplateKind {
-  param($contentKind)
-  if ($null -eq $contentKind) { return $false }
-  $k = $contentKind.ToString()
-  return ($k -eq 'Workbook' -or $k -eq 'WorkbookTemplate')
+function Ensure-Folder([string]$path) {
+  $dir = Split-Path -Parent $path
+  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 }
 
-function Match-DisplayName {
-  param([string]$Name, [string]$Filter, [string]$Mode)
-  if ([string]::IsNullOrWhiteSpace($Filter)) { return $true }
-  if ($null -eq $Name) { return $false }
-  switch ($Mode) {
-    'equals'     { return ($Name -eq $Filter) }
-    'startswith' { return ($Name.StartsWith($Filter, [System.StringComparison]::OrdinalIgnoreCase)) }
-    default      { return ($Name.IndexOf($Filter, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) }
+function Export-CsvTemplates($templates, [string]$path) {
+  Ensure-Folder $path
+  $rows = $templates | ForEach-Object {
+    [pscustomobject]@{
+      templateId   = $_.name
+      displayName  = $_.properties.displayName
+      contentKind  = $_.properties.contentKind
+      packageName  = $_.properties.packageName
+      packageVersion = $_.properties.packageVersion
+      version      = $_.properties.version
+    }
+  }
+  $rows | Export-Csv -Path $path -NoTypeInformation -Encoding UTF8
+}
+
+function List-ExistingWorkbooks {
+  # List workbooks in RG
+  $cmd = "resource list -g `"$ResourceGroupName`" --resource-type Microsoft.Insights/workbooks"
+  $list = Az-Json -CommandLine $cmd
+  if (-not $list) { return @() }
+
+  # Normalize fields; 'properties.displayName' typically present
+  return $list | ForEach-Object {
+    [pscustomobject]@{
+      id          = $_.id
+      name        = $_.name
+      location    = $_.location
+      displayName = $_.properties.displayName
+    }
   }
 }
 
-# ----------------------------
-# CSV helper
-# ----------------------------
-function Resolve-DefaultCsvPath {
-  param([string]$Provided)
-  if (-not [string]::IsNullOrWhiteSpace($Provided)) { return $Provided }
-  if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
-    return (Join-Path $env:GITHUB_WORKSPACE "artifacts/workbook-templates.csv")
-  }
-  return (Join-Path (Get-Location).Path "workbook-templates.csv")
-}
-
-function Ensure-Directory([string]$Path) {
-  $dir = Split-Path -Parent $Path
-  if (-not [string]::IsNullOrWhiteSpace($dir)) {
-    [System.IO.Directory]::CreateDirectory($dir) | Out-Null
-  }
-}
-
-function Export-CsvUtf8NoBom {
-  param([Parameter(Mandatory=$true)][object[]]$Data, [Parameter(Mandatory=$true)][string]$Path)
-  Ensure-Directory -Path $Path
-  $csv = $Data | ConvertTo-Csv -NoTypeInformation
-  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::WriteAllLines($Path, $csv, $utf8NoBom)
-}
-
-# ----------------------------
-# Normalize template.parameters to Hashtable
-# ----------------------------
-function Get-TemplateParametersHashtable {
-  param([Parameter(Mandatory=$true)]$TemplateObj)
-  $raw = Get-Prop $TemplateObj 'parameters' $null
-  if ($null -eq $raw) { return $null }
-  if ($raw -is [System.Collections.IDictionary]) { return $raw }
-
-  $ht = @{}
-  foreach ($prop in $raw.PSObject.Properties) {
-    $ht[$prop.Name] = $prop.Value
-  }
-  return $ht
-}
-
-function Param-HasDefaultValue {
-  param([object]$Definition)
-  if ($null -eq $Definition) { return $false }
-
-  if ($Definition -is [System.Collections.IDictionary]) {
-    if (-not $Definition.Contains('defaultValue')) { return $false }
-    $dv = $Definition['defaultValue']
-    return ($null -ne $dv -and $dv.ToString().Length -gt 0)
+function Find-WorkbookByDisplayName($workbooks, [string]$displayName, [string]$mode) {
+  if ([string]::IsNullOrWhiteSpace($displayName)) { return $null }
+  if ($mode -eq "contains") {
+    return $workbooks | Where-Object { $_.displayName -and ($_.displayName -like "*$displayName*") } | Select-Object -First 1
   } else {
-    if (-not (Has-Prop $Definition 'defaultValue')) { return $false }
-    $dv = $Definition.defaultValue
-    return ($null -ne $dv -and $dv.ToString().Length -gt 0)
+    return $workbooks | Where-Object { $_.displayName -eq $displayName } | Select-Object -First 1
   }
 }
 
-# ----------------------------
-# Deployment name helper (<=64)
-# ----------------------------
-function New-ShortDeploymentName {
+function Patch-ArmTemplateForWorkbook {
   param(
-    [Parameter(Mandatory=$true)][string]$TemplateId
+    [Parameter(Mandatory)][object]$TemplateObject,
+    [string]$TargetWorkbookName,          # existing workbook resource name (for update)
+    [string]$NewWorkbookName,             # GUID name (for create copy)
+    [string]$OverrideDisplayName          # optional
   )
 
-  # ARM max length = 64. El tuyo estaba en 77 y Azure lo rechaza. [1]()
-  $prefix = "swb-"   # 4 chars incl. '-'
-  $ts = (Get-Date -Format "yyyyMMddHHmmss") # 14 chars
+  if (-not $TemplateObject.resources) { return $TemplateObject }
 
-  # hash corto del TemplateId (12 hex) para unicidad
-  $sha1 = [System.Security.Cryptography.SHA1]::Create()
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($TemplateId)
-  $hashBytes = $sha1.ComputeHash($bytes)
-  $hash = ([System.BitConverter]::ToString($hashBytes) -replace '-', '').ToLowerInvariant()
-  $shortHash = $hash.Substring(0, 12)
+  foreach ($r in $TemplateObject.resources) {
+    if ($r.type -eq "Microsoft.Insights/workbooks") {
 
-  # formato: swb-<12hash>-<timestamp> => 4 + 12 + 1 + 14 = 31 chars
-  return "$prefix$shortHash-$ts"
+      if (-not [string]::IsNullOrWhiteSpace($OverrideDisplayName)) {
+        if (-not $r.properties) { $r | Add-Member -MemberType NoteProperty -Name properties -Value (@{}) -Force }
+        $r.properties.displayName = $OverrideDisplayName
+      }
+
+      if (-not [string]::IsNullOrWhiteSpace($TargetWorkbookName)) {
+        # update existing resource name
+        $r.name = $TargetWorkbookName
+      }
+      elseif (-not [string]::IsNullOrWhiteSpace($NewWorkbookName)) {
+        # create copy with new name
+        $r.name = $NewWorkbookName
+      }
+    }
+
+    # Patch dependsOn if it references old workbook name literally (rare but possible)
+    if ($r.dependsOn -and ($r.dependsOn -is [System.Collections.IEnumerable])) {
+      $patched = @()
+      foreach ($d in $r.dependsOn) {
+        $patched += $d
+      }
+      $r.dependsOn = $patched
+    }
+  }
+
+  return $TemplateObject
 }
 
-# ----------------------------
-# Deployment helpers
-# ----------------------------
-function Build-DeploymentParametersFromTemplate {
-  param(
-    [Parameter(Mandatory=$true)]$TemplateObj,
-    [Parameter(Mandatory=$true)][string]$WorkspaceResourceId,
-    [Parameter(Mandatory=$false)][string]$WorkbookNameOverride,
-    [Parameter(Mandatory=$false)][string]$LocationOverride
-  )
+function Build-TemplateParameters {
+  param([Parameter(Mandatory)][object]$TemplateObject)
 
   $params = @{}
-  $tmplParams = Get-TemplateParametersHashtable -TemplateObj $TemplateObj
-  if ($null -eq $tmplParams) { return $params }
 
-  function Set-IfExists([string]$paramName, [object]$value) {
-    if ($tmplParams.Contains($paramName)) {
-      $params[$paramName] = @{ value = $value }
+  $workspaceRid = Get-WorkspaceResourceId
+
+  # Detect parameters and fill common ones
+  $tplParams = $TemplateObject.parameters
+  if ($tplParams) {
+    foreach ($pName in $tplParams.PSObject.Properties.Name) {
+      switch -Regex ($pName) {
+        '^workspace$'               { $params[$pName] = @{ value = $WorkspaceName }; break }
+        '^workspaceName$'           { $params[$pName] = @{ value = $WorkspaceName }; break }
+        '^workspaceId$'             { $params[$pName] = @{ value = $workspaceRid }; break }
+        '^workspaceResourceId$'     { $params[$pName] = @{ value = $workspaceRid }; break }
+        '^workspace-location$'      { $params[$pName] = @{ value = $Location }; break }
+        '^workspaceLocation$'       { $params[$pName] = @{ value = $Location }; break }
+        '^location$'                { $params[$pName] = @{ value = $Location }; break }
+        '^resourceGroup(Name)?$'    { $params[$pName] = @{ value = $ResourceGroupName }; break }
+        '^subscriptionId$'          { $params[$pName] = @{ value = $SubscriptionId }; break }
+        default { }
+      }
     }
   }
 
-  $workbookGuid = (New-Guid).Guid
-  $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
-
-  Set-IfExists 'workbookId' $workbookGuid
-  Set-IfExists 'workbookName' $workbookGuid
-  Set-IfExists 'resourceName' $workbookGuid
-
-  Set-IfExists 'workspace' $WorkspaceName
-  Set-IfExists 'workspaceName' $WorkspaceName
-  Set-IfExists 'workspaceResourceId' $WorkspaceResourceId
-  Set-IfExists 'workspaceId' $WorkspaceResourceId
-
-  Set-IfExists 'workbookSourceId' $WorkspaceResourceId
-  Set-IfExists 'sourceId' $WorkspaceResourceId
-  Set-IfExists 'resourceGroupId' $rgId
-
-  if (-not [string]::IsNullOrWhiteSpace($WorkbookNameOverride)) {
-    Set-IfExists 'workbookDisplayName' $WorkbookNameOverride
-    Set-IfExists 'displayName' $WorkbookNameOverride
-  }
-
-  if (-not [string]::IsNullOrWhiteSpace($LocationOverride)) {
-    Set-IfExists 'location' $LocationOverride
-  }
-
-  return $params
+  return @{ parameters = $params }
 }
 
-function Get-MissingRequiredParams {
-  param([Parameter(Mandatory=$true)]$TemplateObj, [Parameter(Mandatory=$true)]$ProvidedParams)
-
-  $missing = @()
-  $tmplParams = Get-TemplateParametersHashtable -TemplateObj $TemplateObj
-  if ($null -eq $tmplParams) { return @() }
-
-  foreach ($key in $tmplParams.Keys) {
-    $def = $tmplParams[$key]
-    $hasDefault = Param-HasDefaultValue -Definition $def
-    $provided = $ProvidedParams.ContainsKey($key)
-
-    if (-not $provided -and -not $hasDefault) {
-      $missing += $key
-    }
-  }
-
-  return ,$missing
-}
-
-function Start-ArmDeployment {
+function Dump-DeploymentOperations {
   param(
-    [Parameter(Mandatory=$true)][string]$DeploymentName,
-    [Parameter(Mandatory=$true)]$TemplateObj,
-    [Parameter(Mandatory=$true)]$ParametersObj
+    [Parameter(Mandatory)][string]$DeploymentName
   )
-
-  $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$($DeploymentName)"
-  $uri = $baseUri + "?api-version=$ApiVersionDeployments"
-
-  $body = @{
-    properties = @{
-      mode       = 'Incremental'
-      template   = $TemplateObj
-      parameters = $ParametersObj
+  Write-Warn "Dump de operaciones del deployment para ver el error real (ARM operations)…"
+  try {
+    $ops = Az-Json -CommandLine "deployment group operation list -g `"$ResourceGroupName`" -n `"$DeploymentName`""
+    if (-not $ops) {
+      Write-Warn "No se pudieron recuperar operaciones (respuesta vacía)."
+      return
     }
-  }
 
-  Invoke-ArmRest -Method PUT -Uri $uri -Body $body | Out-Null
+    $failed = $ops | Where-Object { $_.properties.provisioningState -ne "Succeeded" }
+    if (-not $failed) {
+      Write-Info "No se encontraron operaciones fallidas (pero el deployment devolvió error)."
+      return
+    }
+
+    foreach ($f in $failed) {
+      $t = $f.properties.targetResource.resourceType
+      $n = $f.properties.targetResource.resourceName
+      $st = $f.properties.provisioningState
+      $msg = $f.properties.statusMessage | ConvertTo-Json -Depth 50
+      Write-Host "❌ [$st] $t/$n"
+      Write-Host $msg
+      Write-Host "----------------------------------------"
+    }
+  } catch {
+    Write-Warn "Error intentando dumpear operaciones: $($_.Exception.Message)"
+  }
 }
 
-function Wait-ArmDeployment {
-  param([Parameter(Mandatory=$true)][string]$DeploymentName, [int]$MaxWaitSeconds = 900)
-
-  $baseUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$($DeploymentName)"
-  $uri = $baseUri + "?api-version=$ApiVersionDeployments"
-
-  $deadline = (Get-Date).AddSeconds($MaxWaitSeconds)
-  while ((Get-Date) -lt $deadline) {
-    $d = Invoke-ArmRest -Method GET -Uri $uri
-    $state = Get-Prop (Get-Prop $d 'properties' $null) 'provisioningState' $null
-    if ($state -in @('Succeeded','Failed','Canceled')) { return $d }
-    Start-Sleep -Seconds 5
-  }
-  throw "Timeout esperando el deployment '$DeploymentName'."
-}
-
-# ----------------------------
-# MAIN
-# ----------------------------
+# ---------------- MAIN ----------------
+Assert-AzCli
 Write-Info "Acción: $Action"
-Write-Info "Workspace: $WorkspaceName (RG: $ResourceGroupName, Sub: $SubscriptionId)"
+Write-Info "Workspace: $WorkspaceName (RG: $ResourceGroupName, Sub: ***)"
 
-$wsId = Get-WorkspaceResourceId
-if ($VerboseOutput) { Write-Info "WorkspaceResourceId: $wsId" }
+# Set subscription (safe even if already)
+$null = & az account set --subscription "$SubscriptionId" --only-show-errors 2>$null
 
-if ($Action -eq 'list') {
-  $all = Get-ContentTemplatesList
-  $items = @($all.value)
-
-  $filtered = foreach ($it in $items) {
-    $p = Get-Prop $it 'properties' $null
-    if ($null -eq $p) { continue }
-
-    $ck = Get-Prop $p 'contentKind' $null
-    if (-not (Is-WorkbookTemplateKind -contentKind $ck)) { continue }
-
-    $dn = Get-Prop $p 'displayName' ''
-    if (-not (Match-DisplayName -Name $dn -Filter $DisplayNameFilter -Mode $DisplayNameFilterMode)) { continue }
-
-    $src = Get-Prop $p 'source' $null
-
-    [pscustomobject]@{
-      templateId       = Get-Prop $it 'name' ''
-      displayName      = $dn
-      contentKind      = $ck
-      contentId        = Get-Prop $p 'contentId' ''
-      contentProductId = Get-Prop $p 'contentProductId' ''
-      packageId        = Get-Prop $p 'packageId' ''
-      packageVersion   = Get-Prop $p 'packageVersion' ''
-      packageName      = Get-Prop $p 'packageName' ''
-      version          = Get-Prop $p 'version' ''
-      sourceKind       = Get-Prop $src 'kind' ''
-      sourceName       = Get-Prop $src 'name' ''
-    }
-  }
-
-  $filtered = @($filtered | Sort-Object displayName)
-  $filtered | Format-Table -AutoSize
-  Write-Host ""
-  Write-Info "Total templates encontrados: $($filtered.Count)"
-
-  $csvPath = Resolve-DefaultCsvPath -Provided $CsvOutputPath
-  Export-CsvUtf8NoBom -Data $filtered -Path $csvPath
-  Write-Host ""
-  Write-Info "✅ CSV generado: $csvPath"
+if ($Action -eq "list") {
+  Write-Step "Listando plantillas de Workbooks (contentTemplates)…"
+  $templates = List-WorkbookTemplates
+  Write-Ok "Encontradas $($templates.Count) plantillas (tras filtro)."
+  Write-Step "Exportando CSV a: $CsvOutputPath"
+  Export-CsvTemplates -templates $templates -path $CsvOutputPath
+  Write-Ok "CSV generado."
   exit 0
 }
 
-if ($Action -eq 'create') {
-  if ([string]::IsNullOrWhiteSpace($TemplateId)) {
-    throw "TemplateId es obligatorio para Action=create"
-  }
+# Action create
+if ([string]::IsNullOrWhiteSpace($TemplateId)) {
+  throw "Para -Action create debes indicar -TemplateId"
+}
 
-  Write-Info "Cargando templateId: $TemplateId"
-  $tpl = Get-ContentTemplateById -Id $TemplateId
-  $props = Get-Prop $tpl 'properties' $null
-  if ($null -eq $props) { throw "No se pudo obtener el Content Template '$TemplateId'." }
+if ([string]::IsNullOrWhiteSpace($Location)) {
+  throw "Debes indicar -Location (por ejemplo: francecentral / westeurope / etc.)"
+}
 
-  $kind = Get-Prop $props 'contentKind' ''
-  if (-not (Is-WorkbookTemplateKind -contentKind $kind)) {
-    throw "El TemplateId indicado no parece de Workbook. contentKind='$kind'"
-  }
+Write-Info "Cargando templateId: $TemplateId"
+$ct = Get-ContentTemplate -TemplateId $TemplateId
 
-  $mainTemplate = Get-Prop $props 'mainTemplate' $null
-  if ($null -eq $mainTemplate) { throw "El template no contiene properties.mainTemplate." }
+if (-not $ct -or -not $ct.properties -or -not $ct.properties.mainTemplate) {
+  throw "No se pudo obtener properties.mainTemplate del contentTemplate $TemplateId (¿falta `$expand=properties/mainTemplate o no está instalado?)."
+}
 
-  $defaultName = Get-Prop $props 'displayName' ''
-  $targetName = if (-not [string]::IsNullOrWhiteSpace($WorkbookDisplayName)) { $WorkbookDisplayName } else { $defaultName }
-  Write-Info "WorkbookDisplayName objetivo: $targetName"
+# Determine target displayName
+$targetDisplayName = $WorkbookDisplayName
+if ([string]::IsNullOrWhiteSpace($targetDisplayName)) {
+  $targetDisplayName = $ct.properties.displayName
+}
+Write-Info "WorkbookDisplayName objetivo: $targetDisplayName"
 
-  $params = Build-DeploymentParametersFromTemplate -TemplateObj $mainTemplate -WorkspaceResourceId $wsId -WorkbookNameOverride $targetName -LocationOverride $Location
+# Existing workbook detection
+$existing = $null
+$workbooks = List-ExistingWorkbooks
+if ($workbooks.Count -gt 0) {
+  $existing = Find-WorkbookByDisplayName -workbooks $workbooks -displayName $targetDisplayName -mode $DisplayNameFilterMode
+}
 
-  $missing = Get-MissingRequiredParams -TemplateObj $mainTemplate -ProvidedParams $params
-  $missingList = @($missing)
-  if ($missingList.Count -gt 0) {
-    Write-Warn "La plantilla declara parámetros sin default que no pudimos autocompletar:"
-    $missingList | ForEach-Object { Write-Warn " - $_" }
-    throw "Faltan parámetros requeridos."
-  }
-
-  # ✅ deploymentName <= 64
-  $deploymentName = New-ShortDeploymentName -TemplateId $TemplateId
-  Write-Info "Lanzando deployment: $deploymentName"
-
-  Start-ArmDeployment -DeploymentName $deploymentName -TemplateObj $mainTemplate -ParametersObj $params
-  $res = Wait-ArmDeployment -DeploymentName $deploymentName -MaxWaitSeconds 900
-
-  $pRes = Get-Prop $res 'properties' $null
-  $state = Get-Prop $pRes 'provisioningState' ''
-  if ($state -ne 'Succeeded') {
-    $err = Get-Prop $pRes 'error' $null
-    if ($err) {
-      $code = Get-Prop $err 'code' ''
-      $msg  = Get-Prop $err 'message' ''
-      throw "Deployment falló: $code - $msg"
-    }
-    throw "Deployment terminó en estado: $state"
-  }
-
-  Write-Info "✅ Workbook desplegado desde templateId=$TemplateId (deployment=$deploymentName)"
+if ($existing -and -not $Force -and -not $UpdateIfExists) {
+  # REQUIRED message by you:
+  Write-Host "ℹ️ Workbook ya existe, no se lanza deployment"
+  Write-Info "Coincidencia: name=$($existing.name) displayName=$($existing.displayName) location=$($existing.location)"
   exit 0
 }
 
-throw "Acción no soportada: $Action"
+# Prepare ARM template object
+$templateObj = $ct.properties.mainTemplate
+
+# Choose workbook resource name strategy
+$targetWorkbookName = ""
+$newWorkbookName = ""
+if ($existing -and $UpdateIfExists) {
+  $targetWorkbookName = $existing.name
+  Write-Info "UpdateIfExists activado: se actualizará el workbook existente name=$targetWorkbookName"
+} else {
+  # Create new copy to avoid collisions with fixed names in templates
+  $newWorkbookName = ([guid]::NewGuid().ToString())
+  if ($existing -and $Force) {
+    Write-Info "Force activado: se creará una COPIA nueva con name=$newWorkbookName aunque exista uno similar."
+  } else {
+    Write-Info "Creación: se usará name nuevo (GUID) para evitar colisiones: $newWorkbookName"
+  }
+}
+
+# Patch template: workbook name + optional displayName override
+$templateObj = Patch-ArmTemplateForWorkbook -TemplateObject $templateObj -TargetWorkbookName $targetWorkbookName -NewWorkbookName $newWorkbookName -OverrideDisplayName $targetDisplayName
+
+# Build parameters file based on template.parameters
+$paramObj = Build-TemplateParameters -TemplateObject $templateObj
+
+# Write temp files
+$tmpDir = Join-Path $PWD ".tmp"
+if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
+$templatePath = Join-Path $tmpDir "workbook-template.json"
+$paramPath    = Join-Path $tmpDir "workbook-params.json"
+
+$templateObj | ConvertTo-Json -Depth 100 | Out-File -FilePath $templatePath -Encoding UTF8
+$paramObj    | ConvertTo-Json -Depth 50  | Out-File -FilePath $paramPath -Encoding UTF8
+
+# Deploy
+$deploymentName = "swb-$([guid]::NewGuid().ToString('N').Substring(0,12))-$((Get-Date).ToString('yyyyMMddHHmmss'))"
+Write-Info "Lanzando deployment: $deploymentName"
+try {
+  $cmd = "deployment group create -g `"$ResourceGroupName`" -n `"$deploymentName`" --mode Incremental --template-file `"$templatePath`" --parameters `"$paramPath`""
+  $result = Az-Json -CommandLine $cmd
+  Write-Ok "Deployment OK."
+  if ($existing -and $UpdateIfExists) {
+    Write-Ok "Workbook actualizado: $($existing.id)"
+  } else {
+    # Find created workbook
+    $after = List-ExistingWorkbooks
+    $created = Find-WorkbookByDisplayName -workbooks $after -displayName $targetDisplayName -mode "equals"
+    if ($created) {
+      Write-Ok "Workbook creado: $($created.id)"
+    } else {
+      Write-Info "No he podido resolver el id del workbook creado por displayName (puede haber duplicados o displayName diferente en la plantilla)."
+    }
+  }
+  exit 0
+}
+catch {
+  # Surface generic deployment failed + dump operations (real error)
+  $msg = $_.Exception.Message
+  Write-Warn "Deployment falló (mensaje genérico): $msg"
+  Dump-DeploymentOperations -DeploymentName $deploymentName
+  throw
+}
