@@ -45,7 +45,7 @@ function Assert-AzCli {
   try { & az --version *> $null } catch { throw "Azure CLI (az) no está disponible en el runner." }
 }
 
-# ✅ Ejecutar az con argumentos tokenizados (array), NO con string
+# Ejecuta az con argumentos tokenizados (array), NO con string
 function Az-Json {
   param(
     [Parameter(Mandatory)]
@@ -78,7 +78,7 @@ function Get-WorkspaceResourceId {
   return "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName"
 }
 
-# ✅ URL segura con UriBuilder
+# Construye URL segura con UriBuilder y querystring controlada
 function Build-SentinelUrl {
   param(
     [Parameter(Mandatory)][string]$Path,
@@ -193,12 +193,14 @@ function Find-WorkbookByDisplayName($workbooks, [string]$displayName, [string]$m
   }
 }
 
+# ✅ PARCHE: asegurar name + displayName + (CRÍTICO) location en Microsoft.Insights/workbooks
 function Patch-ArmTemplateForWorkbook {
   param(
     [Parameter(Mandatory)][object]$TemplateObject,
     [string]$TargetWorkbookName,
     [string]$NewWorkbookName,
-    [string]$OverrideDisplayName
+    [string]$OverrideDisplayName,
+    [string]$ForceLocation
   )
 
   if (-not $TemplateObject.resources) { return $TemplateObject }
@@ -206,16 +208,27 @@ function Patch-ArmTemplateForWorkbook {
   foreach ($r in $TemplateObject.resources) {
     if ($r.type -eq "Microsoft.Insights/workbooks") {
 
+      # displayName
       if (-not [string]::IsNullOrWhiteSpace($OverrideDisplayName)) {
         if (-not $r.properties) { $r | Add-Member -MemberType NoteProperty -Name properties -Value (@{}) -Force }
         $r.properties.displayName = $OverrideDisplayName
       }
 
+      # name (update o copia nueva)
       if (-not [string]::IsNullOrWhiteSpace($TargetWorkbookName)) {
         $r.name = $TargetWorkbookName
-      }
-      elseif (-not [string]::IsNullOrWhiteSpace($NewWorkbookName)) {
+      } elseif (-not [string]::IsNullOrWhiteSpace($NewWorkbookName)) {
         $r.name = $NewWorkbookName
+      }
+
+      # ✅ FIX del run: LocationRequired → forzamos location SI falta o viene vacío
+      $needsLocation = $false
+      if (-not $r.PSObject.Properties.Match("location")) { $needsLocation = $true }
+      elseif ($null -eq $r.location) { $needsLocation = $true }
+      elseif ([string]::IsNullOrWhiteSpace([string]$r.location)) { $needsLocation = $true }
+
+      if ($needsLocation) {
+        $r | Add-Member -MemberType NoteProperty -Name location -Value $ForceLocation -Force
       }
     }
   }
@@ -250,12 +263,13 @@ function Build-TemplateParameters {
   return @{ parameters = $params }
 }
 
+# ✅ FIX: comando correcto de operaciones: az deployment operation group list
 function Dump-DeploymentOperations {
   param([Parameter(Mandatory)][string]$DeploymentName)
 
   Write-Warn "Dump de operaciones del deployment para ver el error real (ARM operations)…"
   try {
-    $ops = Az-Json -Args @("deployment","group","operation","list","-g",$ResourceGroupName,"-n",$DeploymentName)
+    $ops = Az-Json -Args @("deployment","operation","group","list","-g",$ResourceGroupName,"-n",$DeploymentName)
     if (-not $ops) {
       Write-Warn "No se pudieron recuperar operaciones (respuesta vacía)."
       return
@@ -263,7 +277,7 @@ function Dump-DeploymentOperations {
 
     $failed = $ops | Where-Object { $_.properties.provisioningState -ne "Succeeded" }
     if (-not $failed) {
-      Write-Info "No se encontraron operaciones fallidas (pero el deployment devolvió error)."
+      Write-Info "No se encontraron operaciones fallidas."
       return
     }
 
@@ -288,7 +302,7 @@ Write-Info "Workspace: $WorkspaceName (RG: $ResourceGroupName, Sub: ***)"
 
 & az account set --subscription "$SubscriptionId" --only-show-errors *> $null
 
-# ✅ FIX: ConvertTo-Json permite máximo 100
+# ConvertTo-Json máximo 100
 $JsonDepth = 100
 
 if ($Action -eq "list") {
@@ -301,6 +315,7 @@ if ($Action -eq "list") {
   exit 0
 }
 
+# Action create
 if ([string]::IsNullOrWhiteSpace($TemplateId)) { throw "Para -Action create debes indicar -TemplateId" }
 if ([string]::IsNullOrWhiteSpace($Location))  { throw "Debes indicar -Location (ej: francecentral, westeurope, etc.)" }
 
@@ -322,6 +337,7 @@ if ($workbooks.Count -gt 0) {
 }
 
 if ($existing -and -not $Force -and -not $UpdateIfExists) {
+  # Mensaje EXACTO que pediste
   Write-Host "ℹ️ Workbook ya existe, no se lanza deployment"
   Write-Info "Coincidencia: name=$($existing.name) displayName=$($existing.displayName) location=$($existing.location)"
   exit 0
@@ -343,7 +359,14 @@ if ($existing -and $UpdateIfExists) {
   }
 }
 
-$templateObj = Patch-ArmTemplateForWorkbook -TemplateObject $templateObj -TargetWorkbookName $targetWorkbookName -NewWorkbookName $newWorkbookName -OverrideDisplayName $targetDisplayName
+# ✅ Aquí aplicamos el fix de LocationRequired
+$templateObj = Patch-ArmTemplateForWorkbook `
+  -TemplateObject $templateObj `
+  -TargetWorkbookName $targetWorkbookName `
+  -NewWorkbookName $newWorkbookName `
+  -OverrideDisplayName $targetDisplayName `
+  -ForceLocation $Location
+
 $paramObj = Build-TemplateParameters -TemplateObject $templateObj
 
 $tmpDir = Join-Path $PWD ".tmp"
@@ -351,7 +374,6 @@ if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Forc
 $templatePath = Join-Path $tmpDir "workbook-template.json"
 $paramPath    = Join-Path $tmpDir "workbook-params.json"
 
-# ✅ FIX REAL: Depth <= 100
 $templateObj | ConvertTo-Json -Depth $JsonDepth | Out-File -FilePath $templatePath -Encoding UTF8
 $paramObj    | ConvertTo-Json -Depth 50         | Out-File -FilePath $paramPath    -Encoding UTF8
 
