@@ -45,17 +45,15 @@ function Assert-AzCli {
   try { & az --version *> $null } catch { throw "Azure CLI (az) no está disponible en el runner." }
 }
 
-# ✅ FIX: ejecutar az con argumentos tokenizados (array), no con string
+# ✅ Ejecutar az con argumentos tokenizados (array), NO con string
 function Az-Json {
   param(
     [Parameter(Mandatory)]
     [string[]]$Args
   )
+
   if ($VerboseOutput) {
-    # Representación legible para logs
-    $pretty = ($Args | ForEach-Object {
-      if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
-    }) -join ' '
+    $pretty = ($Args | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
     Write-Host "🔎 az $pretty"
   }
 
@@ -80,15 +78,48 @@ function Get-WorkspaceResourceId {
   return "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName"
 }
 
+# ✅ URL segura con UriBuilder (evita contentTemplates/-version... y BadRequest HTML)
+function Build-SentinelUrl {
+  param(
+    [Parameter(Mandatory)][string]$Path,     # path relativo desde https://management.azure.com
+    [Parameter(Mandatory)][hashtable]$Query  # pares querystring
+  )
+
+  $ub = [System.UriBuilder]::new("https://management.azure.com")
+  $ub.Path = $Path.TrimStart('/')
+
+  # Construir query de forma segura (incluye $expand sin romperlo)
+  $pairs = New-Object System.Collections.Generic.List[string]
+  foreach ($k in $Query.Keys) {
+    $pairs.Add("$k=$($Query[$k])")
+  }
+  $ub.Query = ($pairs -join "&")
+
+  return $ub.Uri.AbsoluteUri
+}
+
 function Get-ContentTemplate {
   param([Parameter(Mandatory)][string]$TemplateId)
+
+  if ([string]::IsNullOrWhiteSpace($TemplateId)) {
+    throw "TemplateId vacío o nulo. No se puede consultar contentTemplates."
+  }
 
   $apiVersion = "2025-09-01"
   $expand = "properties/mainTemplate"
   $wsRid = Get-WorkspaceResourceId
 
-  # ✅ URL segura (sin espacios, con $expand escapado correctamente)
-  $url = "https://management.azure.com$wsRid/providers/Microsoft.SecurityInsights/contentTemplates/$TemplateId?api-version=$apiVersion&`$expand=$expand"
+  $path = "$wsRid/providers/Microsoft.SecurityInsights/contentTemplates/$TemplateId"
+  $url = Build-SentinelUrl -Path $path -Query @{
+    "api-version" = $apiVersion
+    "`$expand"    = $expand
+  }
+
+  if ($VerboseOutput) {
+    Write-Host "🔎 GET contentTemplate URL:"
+    Write-Host $url
+  }
+
   return Az-Rest -Method get -Url $url
 }
 
@@ -97,9 +128,13 @@ function List-WorkbookTemplates {
   $expand = "properties/mainTemplate"
   $wsRid = Get-WorkspaceResourceId
 
-  $url = "https://management.azure.com$wsRid/providers/Microsoft.SecurityInsights/contentTemplates?api-version=$apiVersion&`$expand=$expand"
-  $resp = Az-Rest -Method get -Url $url
+  $path = "$wsRid/providers/Microsoft.SecurityInsights/contentTemplates"
+  $url = Build-SentinelUrl -Path $path -Query @{
+    "api-version" = $apiVersion
+    "`$expand"    = $expand
+  }
 
+  $resp = Az-Rest -Method get -Url $url
   $items = @()
   if ($resp.value) { $items = $resp.value }
 
@@ -254,7 +289,6 @@ Assert-AzCli
 Write-Info "Acción: $Action"
 Write-Info "Workspace: $WorkspaceName (RG: $ResourceGroupName, Sub: ***)"
 
-# Set subscription
 & az account set --subscription "$SubscriptionId" --only-show-errors *> $null
 
 if ($Action -eq "list") {
@@ -295,7 +329,7 @@ if ($workbooks.Count -gt 0) {
 }
 
 if ($existing -and -not $Force -and -not $UpdateIfExists) {
-  # ✅ Mensaje requerido por ti
+  # ✅ Mensaje EXACTO solicitado por ti
   Write-Host "ℹ️ Workbook ya existe, no se lanza deployment"
   Write-Info "Coincidencia: name=$($existing.name) displayName=$($existing.displayName) location=$($existing.location)"
   exit 0
@@ -332,7 +366,7 @@ $deploymentName = "swb-$(([guid]::NewGuid().ToString('N')).Substring(0,12))-$((G
 Write-Info "Lanzando deployment: $deploymentName"
 
 try {
-  $result = Az-Json -Args @(
+  $null = Az-Json -Args @(
     "deployment","group","create",
     "-g",$ResourceGroupName,
     "-n",$deploymentName,
