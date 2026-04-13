@@ -63,8 +63,8 @@ jobs:
           $args = @(
             "-Action", "${{ inputs.action }}",
             "-SubscriptionId", "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
-            "-ResourceGroupName", "${{ vars.SENTINEL_RESOURCE_GROUP }}",
-            "-WorkspaceName", "${{ vars.SENTINEL_WORKSPACE_NAME }}",
+            "-ResourceGroupName", "${{ vars.RESOURCE_GROUP }}",
+            "-WorkspaceName", "${{ vars.WORKSPACE_NAME }}",
             "-Location", "${{ inputs.location }}"
           )
 
