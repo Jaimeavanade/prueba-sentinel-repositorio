@@ -65,8 +65,8 @@ jobs:
 
             ./scripts/sentinel-analytics-rule-templates.ps1 `
               -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
-              -ResourceGroup "${{ vars.SENTINEL_RESOURCE_GROUP }}" `
-              -WorkspaceName "${{ vars.SENTINEL_WORKSPACE_NAME }}" `
+              -ResourceGroup "${{ vars.RESOURCE_GROUP }}" `
+              -WorkspaceName "${{ vars.WORKSPACE_NAME }}" `
               -Action list `
               -TemplateDisplayName "${{ inputs.templateDisplayName }}" `
               -MatchMode "${{ inputs.matchMode }}"
@@ -75,8 +75,8 @@ jobs:
 
             ./scripts/sentinel-analytics-rule-templates.ps1 `
               -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
-              -ResourceGroup "${{ vars.SENTINEL_RESOURCE_GROUP }}" `
-              -WorkspaceName "${{ vars.SENTINEL_WORKSPACE_NAME }}" `
+              -ResourceGroup "${{ vars.RESOURCE_GROUP }}" `
+              -WorkspaceName "${{ vars.WORKSPACE_NAME }}" `
               -Action create `
               -TemplateId "${{ inputs.templateId }}" `
               -NewRuleDisplayName "${{ inputs.newRuleDisplayName }}" `
