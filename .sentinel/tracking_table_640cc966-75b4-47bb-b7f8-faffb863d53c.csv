@@ -1,0 +1,5 @@
+FileName, CommitSha
+Analytics rules/Custom/PasswordSpray.json,3531a2e5025a71028b7a9f66776038d723e23fcd
+Hunting/Custom/ProofpointPODLargeOutboundEmails.json,54e4ec40318f2679453051a79fb0e808fb4cec72
+AutomationRules/SampleAutomationRule.json,38afd7cd8dab689e2fce7fb15f79201494658a6d
+
