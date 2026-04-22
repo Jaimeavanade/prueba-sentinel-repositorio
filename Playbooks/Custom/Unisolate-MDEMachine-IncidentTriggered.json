@@ -1,0 +1,313 @@
+{
+  "resources": [
+    {
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('AzureSentinelConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('Office365ConnectionName'))]"
+      ],
+      "properties": {
+        "definition": {
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "inputs": {
+                "body": {
+                  "callback_url": "@listCallbackUrl()"
+                },
+                "path": "/incident-creation",
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                }
+              },
+              "type": "ApiConnectionWebhook"
+            }
+          },
+          "contentVersion": "1.0.0.0",
+          "actions": {
+            "Initialize_variables": {
+              "inputs": {
+                "variables": {
+                  "name": "MDEDeviceId",
+                  "type": "string"
+                }
+              },
+              "type": "InitializeVariable"
+            },
+            "Entities_-_Get_Hosts": {
+              "inputs": {
+                "path": "/entities/host",
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "method": "post",
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                }
+              },
+              "runAfter": {
+                "Machines_-_Get_list_of_machines": "Succeeded"
+              },
+              "type": "ApiConnection"
+            },
+            "Machines_-_Get_list_of_machines": {
+              "inputs": {
+                "path": "/api/machines",
+                "method": "get",
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['wdatp']['connectionId']"
+                  }
+                }
+              },
+              "runAfter": {
+                "Initialize_variables": "Succeeded"
+              },
+              "type": "ApiConnection"
+            },
+            "For_each": {
+              "runAfter": {
+                "Entities_-_Get_Hosts": "Succeeded"
+              },
+              "actions": {
+                "For_each_mde_host": {
+                  "runAfter": {
+                    "Compose_sentinel_hostname": "Succeeded"
+                  },
+                  "actions": {
+                    "Compose_MDE_host": {
+                      "inputs": "@item()?['computerDnsName']",
+                      "type": "Compose"
+                    },
+                    "Condition": {
+                      "expression": {
+                        "and": {
+                          "contains": [
+                            "@outputs('Compose_MDE_host')",
+                            "@outputs('Compose_sentinel_hostname')"
+                          ]
+                        }
+                      },
+                      "runAfter": {
+                        "Compose_MDE_host": "Succeeded"
+                      },
+                      "type": "If",
+                      "actions": {
+                        "Add_comment_to_incident_(V3)": {
+                          "inputs": {
+                            "path": "/Incidents/Comment",
+                            "body": {
+                              "message": "<p class=\"editor-paragraph\">Host- @{outputs('Compose_sentinel_hostname')}- is successfully isolated!</p>",
+                              "incidentArmId": "@triggerBody()?['object']?['id']"
+                            },
+                            "method": "post",
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                              }
+                            }
+                          },
+                          "runAfter": {
+                            "Actions_-_Unisolate_machine": "Succeeded"
+                          },
+                          "type": "ApiConnection"
+                        },
+                        "Actions_-_Unisolate_machine": {
+                          "inputs": {
+                            "path": "/api/machines/@{encodeURIComponent(variables('MDEDeviceId'))}/unisolate",
+                            "body": {
+                              "Comment": "Host is unisolated by Microsoft Sentinel using playbook Isolate-MDE-machine-incidentTrigger - incident detail : @{triggerBody()?['object']?['properties']?['incidentNumber']}: @{triggerBody()?['object']?['properties']?['title']}"
+                            },
+                            "method": "post",
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['wdatp']['connectionId']"
+                              }
+                            }
+                          },
+                          "runAfter": {
+                            "Set_variable": "Succeeded"
+                          },
+                          "type": "ApiConnection"
+                        },
+                        "Set_variable": {
+                          "inputs": {
+                            "name": "MDEDeviceId",
+                            "value": "@item()?['id']"
+                          },
+                          "type": "SetVariable"
+                        }
+                      },
+                      "else": {
+                        "actions": {
+                          "Add_comment_to_incident_(V3)1": {
+                            "inputs": {
+                              "path": "/Incidents/Comment",
+                              "body": {
+                                "message": "<p class=\"editor-paragraph\">Host- @{outputs('Compose_sentinel_hostname')}- is not unisolated!</p><p class=\"editor-paragraph\">Reason : It is not present in Defender for endpoint</p>",
+                                "incidentArmId": "@triggerBody()?['object']?['id']"
+                              },
+                              "method": "post",
+                              "host": {
+                                "connection": {
+                                  "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                                }
+                              }
+                            },
+                            "type": "ApiConnection"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "foreach": "@body('Machines_-_Get_list_of_machines')?['value']",
+                  "type": "Foreach"
+                },
+                "Compose_sentinel_hostname": {
+                  "inputs": "@item()?['HostName']",
+                  "type": "Compose"
+                }
+              },
+              "foreach": "@body('Entities_-_Get_Hosts')?['Hosts']",
+              "type": "Foreach"
+            }
+          },
+          "parameters": {
+            "$connections": {
+              "type": "Object"
+            }
+          },
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#"
+        },
+        "state": "Enabled",
+        "parameters": {
+          "$connections": {
+            "value": {
+              "office365": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('Office365ConnectionName'))]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]",
+                "connectionName": "[variables('Office365ConnectionName')]"
+              },
+              "wdatp": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('WdatpConnectionName'))]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Wdatp')]",
+                "connectionName": "[variables('WdatpConnectionName')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                }
+              },
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('AzureSentinelConnectionName'))]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionName": "[variables('AzureSentinelConnectionName')]"
+              }
+            }
+          }
+        },
+        "provisioningState": "Succeeded"
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "Unisolate-MDEMachine-IncidentTriggered",
+        "hidden-SentinelWorkspaceId": "[resourceId(parameters('WorkspaceResourceGroup'), 'Microsoft.OperationalInsights/workspaces', parameters('WorkspaceName'))]",
+        "LogicAppsCategory": "security",
+        "hidden-SentinelTemplateVersion": "1.0"
+      },
+      "name": "[parameters('PlaybookName')]",
+      "apiVersion": "2017-07-01",
+      "type": "Microsoft.Logic/workflows",
+      "identity": {
+        "type": "SystemAssigned"
+      }
+    },
+    {
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('WdatpConnectionName')]",
+        "customParameterValues": {},
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Wdatp')]"
+        },
+        "parameterValueType": "Alternative"
+      },
+      "name": "[variables('WdatpConnectionName')]",
+      "apiVersion": "2016-06-01",
+      "type": "Microsoft.Web/connections"
+    },
+    {
+      "name": "[variables('AzureSentinelConnectionName')]",
+      "properties": {
+        "displayName": "[variables('AzureSentinelConnectionName')]",
+        "customParameterValues": {},
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      },
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "apiVersion": "2016-06-01",
+      "type": "Microsoft.Web/connections"
+    },
+    {
+      "name": "[variables('Office365ConnectionName')]",
+      "properties": {
+        "displayName": "[variables('Office365ConnectionName')]",
+        "customParameterValues": {},
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]"
+        }
+      },
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "apiVersion": "2016-06-01",
+      "type": "Microsoft.Web/connections"
+    }
+  ],
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "metadata": {
+    "description": "",
+    "lastUpdateTime": "",
+    "entities": null,
+    "title": "",
+    "tags": null,
+    "prerequisitesDeployTemplateFile": "",
+    "author": {
+      "name": ""
+    },
+    "support": {
+      "tier": "community",
+      "armtemplate": "Generated from https://github.com/Azure/Azure-Sentinel/tree/master/Tools/Playbook-ARM-Template-Generator"
+    },
+    "postDeployment": null,
+    "prerequisites": ""
+  },
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "WorkspaceName": {
+      "metadata": {
+        "description": "Nombre del Log Analytics Workspace donde está habilitado Microsoft Sentinel (solo para el tag hidden-SentinelWorkspaceId)."
+      },
+      "type": "string",
+      "defaultValue": "clientejvs-sentinelwk"
+    },
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Test-Unisolate-MDEMachine-IncidentTriggered"
+    },
+    "WorkspaceResourceGroup": {
+      "metadata": {
+        "description": "RG del Log Analytics Workspace donde está habilitado Microsoft Sentinel (solo para el tag hidden-SentinelWorkspaceId)."
+      },
+      "type": "string",
+      "defaultValue": "clientejvs-sentinelrg"
+    }
+  },
+  "variables": {
+    "Office365ConnectionName": "[concat('office365-', parameters('PlaybookName'))]",
+    "AzureSentinelConnectionName": "[concat('azuresentinel-', parameters('PlaybookName'))]",
+    "WdatpConnectionName": "[concat('Wdatp-', parameters('PlaybookName'))]"
+  }
+}
