@@ -1,3 +1,4 @@
 FileName, CommitSha
+Playbooks/Custom/Restrict-MDEIpAddress.json,ba3da31584a5975cc506aaba6d343912d9e90d19
 Playbooks/Custom/Revoke-EntraIDSignInSessions-incident.json,da4d7ac6ca8ee36f24f295fd90e10c484e2e7646
 
