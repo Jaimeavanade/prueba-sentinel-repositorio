@@ -1,0 +1,241 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Restrict-MDEFileHash-IncidentTriggered"
+    },
+    "workspace": {
+      "type": "string"
+    }
+  },
+  "variables": {
+    "azuresentinelConnectionName": "[concat('azuresentinel-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "location": "[resourceGroup().location]",
+      "name": "[variables('azuresentinelConnectionName')]",
+      "apiVersion": "2016-06-01",
+      "properties": {
+        "customParameterValues": {},
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Azuresentinel')]"
+        },
+        "displayName": "[variables('azuresentinelConnectionName')]",
+        "parameterValueType": "Alternative"
+      },
+      "kind": "V1",
+      "type": "Microsoft.Web/connections"
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "LogicAppsCategory": "security",
+        "hidden-SentinelTemplateName": "Restrict-MDEFileHash-IncidentTriggered",
+        "hidden-SentinelTemplateVersion": "1.0",
+        "hidden-SentinelWorkspaceId": "/subscriptions/00d393de-162e-4a44-9005-3c829e7c070a/resourceGroups/RG-log-sentinel-segittur-020/providers/microsoft.OperationalInsights/Workspaces/log-sentinel-segittur-020"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "type": "Object"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Entities_-_Get_FileHashes": {
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "path": "/entities/filehash"
+              }
+            },
+            "For_each": {
+              "foreach": "@body('Entities_-_Get_FileHashes')?['Filehashes']",
+              "actions": {
+                "Switch": {
+                  "cases": {
+                    "Case": {
+                      "case": "SHA1",
+                      "actions": {
+                        "HTTP": {
+                          "type": "Http",
+                          "inputs": {
+                            "uri": "https://api.securitycenter.windows.com/api/indicators",
+                            "method": "POST",
+                            "body": {
+                              "action": "AlertAndBlock",
+                              "application": "Microsoft Sentinel",
+                              "description": "@{triggerBody()?['object']?['properties']?['incidentNumber']}-@{triggerBody()?['object']?['properties']?['title']}",
+                              "expirationTime": "@{addDays(triggerBody()?['object']?['properties']?['createdTimeUtc'], 90)}",
+                              "indicatorType": "FileSha1",
+                              "indicatorValue": "@{items('For_each')?['Value']}",
+                              "severity": "@{triggerBody()?['object']?['properties']?['severity']}",
+                              "title": "@{guid()}"
+                            },
+                            "authentication": {
+                              "audience": "https://api.securitycenter.windows.com/",
+                              "type": "ManagedServiceIdentity"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "Case_2": {
+                      "case": "SHA256",
+                      "actions": {
+                        "HTTP_2": {
+                          "type": "Http",
+                          "inputs": {
+                            "uri": "https://api.securitycenter.windows.com/api/indicators",
+                            "method": "POST",
+                            "body": {
+                              "action": "AlertAndBlock",
+                              "application": "Microsoft Sentinel",
+                              "description": "@{triggerBody()?['object']?['properties']?['incidentNumber']}-@{triggerBody()?['object']?['properties']?['title']}",
+                              "expirationTime": "@{addDays(triggerBody()?['object']?['properties']?['createdTimeUtc'], 90)}",
+                              "indicatorType": "FileSha256",
+                              "indicatorValue": "@{items('For_each')?['Value']}",
+                              "severity": "@{triggerBody()?['object']?['properties']?['severity']}",
+                              "title": "@{guid()}"
+                            },
+                            "authentication": {
+                              "audience": "https://api.securitycenter.windows.com/",
+                              "type": "ManagedServiceIdentity"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "expression": "@items('For_each')?['Algorithm']",
+                  "type": "Switch"
+                },
+                "Condition": {
+                  "actions": {
+                    "Add_comment_to_incident_(V3)-1": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "body": {
+                          "incidentArmId": "@triggerBody()?['object']?['id']",
+                          "message": "<p>@{items('For_each')?['Value']} was added to MDE Indicators with action: AlertandBlock via playbook.</p>"
+                        },
+                        "path": "/Incidents/Comment"
+                      }
+                    }
+                  },
+                  "runAfter": {
+                    "Switch": [
+                      "Succeeded"
+                    ]
+                  },
+                  "else": {
+                    "actions": {
+                      "Add_comment_to_incident_(V3)-2": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                            }
+                          },
+                          "method": "post",
+                          "body": {
+                            "incidentArmId": "@triggerBody()?['object']?['id']",
+                            "message": "<p class=\"editor-paragraph\">Provided Algorithm was not SHA1 or SHA256 , So no action has been taken</p>"
+                          },
+                          "path": "/Incidents/Comment"
+                        }
+                      }
+                    }
+                  },
+                  "expression": {
+                    "or": [
+                      {
+                        "equals": [
+                          "@item()?['Algorithm']",
+                          "SHA1"
+                        ]
+                      },
+                      {
+                        "equals": [
+                          "@item()?['Algorithm']",
+                          "SHA256"
+                        ]
+                      }
+                    ]
+                  },
+                  "type": "If"
+                }
+              },
+              "runAfter": {
+                "Entities_-_Get_FileHashes": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Foreach"
+            }
+          }
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('azuresentinelConnectionName'))]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/Azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                },
+                "connectionName": "[variables('azuresentinelConnectionName')]"
+              }
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('azuresentinelConnectionName'))]"
+      ]
+    }
+  ]
+}
