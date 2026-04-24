@@ -1,0 +1,166 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    },
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Restrict-MDEIpAddress"
+    }
+  },
+  "variables": {
+    "azuresentinelConnectionName": "[concat('azuresentinel-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "kind": "V1",
+      "properties": {
+        "parameterValueType": "Alternative",
+        "customParameterValues": {},
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        },
+        "displayName": "[variables('azuresentinelConnectionName')]"
+      },
+      "name": "[variables('azuresentinelConnectionName')]",
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "location": "[resourceGroup().location]"
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "LogicAppsCategory": "security",
+        "hidden-SentinelTemplateName": "Restrict-MDEIPAddress",
+        "hidden-SentinelTemplateVersion": "1.0",
+        "hidden-SentinelWorkspaceId": "/subscriptions/00d393de-162e-4a44-9005-3c829e7c070a/resourceGroups/RG-log-sentinel-segittur-020/providers/microsoft.OperationalInsights/Workspaces/log-sentinel-segittur-020"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "type": "Object"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Entities_-_Get_IPs": {
+              "type": "ApiConnection",
+              "inputs": {
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/entities/ip"
+              }
+            },
+            "For_each": {
+              "foreach": "@body('Entities_-_Get_IPs')?['IPs']",
+              "actions": {
+                "Add_comment_to_incident_(V3)": {
+                  "runAfter": {
+                    "HTTP": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "<p>@{items('For_each')?['Address']} was added to MDE Indicators with action: AlertandBlock via playbook.</p>"
+                    },
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/Incidents/Comment"
+                  }
+                },
+                "HTTP": {
+                  "type": "Http",
+                  "inputs": {
+                    "authentication": {
+                      "audience": "https://api.securitycenter.windows.com",
+                      "type": "ManagedServiceIdentity"
+                    },
+                    "body": {
+                      "action": "Block",
+                      "application": "Microsoft Sentinel",
+                      "description": "@{triggerBody()?['object']?['properties']?['incidentNumber']}-@{triggerBody()?['object']?['properties']?['title']}",
+                      "expirationTime": "@{addDays(string(triggerbody()['object']?['properties']?['createdTimeUtc']), 90)}",
+                      "indicatorType": "IpAddress",
+                      "indicatorValue": "@{items('For_each')?['Address']}",
+                      "severity": "@{triggerBody()?['object']?['properties']?['severity']}",
+                      "title": "@{guid()}"
+                    },
+                    "headers": {
+                      "Content-type": "application/json"
+                    },
+                    "method": "POST",
+                    "uri": "https://api.securitycenter.windows.com/api/indicators"
+                  }
+                }
+              },
+              "runAfter": {
+                "Entities_-_Get_IPs": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Foreach"
+            }
+          }
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionName": "[variables('azuresentinelConnectionName')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                },
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('azuresentinelConnectionName'))]"
+              }
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('azuresentinelConnectionName'))]"
+      ]
+    }
+  ]
+}
