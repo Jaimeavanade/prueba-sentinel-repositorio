@@ -1,5 +1,2 @@
 FileName, CommitSha
-Playbooks/Custom/Unisolate-MDEMachine-IncidentTriggered.json,ff871d84c292c81aad9c1dca8496185016999c4f
-Playbooks/Custom/Restrict-MDEFileHash-IncidentTriggered.json,7be5946e4fa6c88470a0f193b4d444fcbe13a7a7
-Playbooks/Custom/Reset-EntraIDPassword-IncidentTrigger.json,ba0b43b00aedf157820295338a406f9d6daa1548
 
