@@ -1,0 +1,232 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspace": {
+      "type": "string"
+    },
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Revoke-EntraIDSignInSessions-incident"
+    }
+  },
+  "variables": {
+    "azuresentinelConnectionName": "[concat('azuresentinel-', parameters('PlaybookName'))]",
+    "office365ConnectionName": "[concat('office365-', parameters('PlaybookName'))]",
+    "office365usersConnectionName": "[concat('office365users-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "kind": "V1",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "[variables('azuresentinelConnectionName')]",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        },
+        "customParameterValues": {},
+        "parameterValueType": "Alternative"
+      },
+      "apiVersion": "2016-06-01",
+      "type": "Microsoft.Web/connections",
+      "name": "[variables('azuresentinelConnectionName')]"
+    },
+    {
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-06-01",
+      "properties": {
+        "displayName": "[variables('office365usersConnectionName')]",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365users')]"
+        },
+        "customParameterValues": {}
+      },
+      "type": "Microsoft.Web/connections",
+      "name": "[variables('office365usersConnectionName')]"
+    },
+    {
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-06-01",
+      "properties": {
+        "displayName": "[variables('office365ConnectionName')]",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]"
+        },
+        "customParameterValues": {}
+      },
+      "type": "Microsoft.Web/connections",
+      "name": "[variables('office365ConnectionName')]"
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "LogicAppsCategory": "security",
+        "hidden-SentinelTemplateName": "Revoke-AADSigninSessions",
+        "hidden-SentinelTemplateVersion": "1.0",
+        "hidden-SentinelWorkspaceId": "/subscriptions/00d393de-162e-4a44-9005-3c829e7c070a/resourceGroups/RG-log-sentinel-segittur-020/providers/microsoft.OperationalInsights/Workspaces/log-sentinel-segittur-020"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "type": "Object"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Entities_-_Get_Accounts": {
+              "type": "ApiConnection",
+              "inputs": {
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/entities/account"
+              }
+            },
+            "For_each": {
+              "foreach": "@body('Entities_-_Get_Accounts')?['Accounts']",
+              "actions": {
+                "Add_comment_to_incident_(V3)": {
+                  "runAfter": {
+                    "Send_an_email_(V2)": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "<p>User @{concat(items('For_each')?['Name'], '@', items('for_each')?['UPNSuffix'])} singin sessions were revoked in AAD and their manager @{body('Get_manager_(V2)')?['displayName']} was contacted using playbook.</p>"
+                    },
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/Incidents/Comment"
+                  }
+                },
+                "Get_manager_(V2)": {
+                  "runAfter": {
+                    "HTTP": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['office365users']['connectionId']"
+                      }
+                    },
+                    "method": "get",
+                    "path": "/codeless/v1.0/users/@{encodeURIComponent(concat(items('For_each')?['Name'], '@', items('for_each')?['UPNSuffix']))}/manager"
+                  }
+                },
+                "HTTP": {
+                  "type": "Http",
+                  "inputs": {
+                    "authentication": {
+                      "audience": "https://graph.microsoft.com",
+                      "type": "ManagedServiceIdentity"
+                    },
+                    "method": "POST",
+                    "uri": "https://graph.microsoft.com/v1.0/users/@{concat(items('For_each')?['Name'], '@', items('for_each')?['UPNSuffix'])}/revokeSignInSessions"
+                  }
+                },
+                "Send_an_email_(V2)": {
+                  "runAfter": {
+                    "Get_manager_(V2)": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "body": {
+                      "Body": "<p>User, @{concat(items('For_each')?['Name'], '@', items('for_each')?['UPNSuffix'])}, was involved in part of a security incident. &nbsp;As part of remediation, the user signin sessions have been revoked. &nbsp;The user will need to reauthenticate in all applications.</p>",
+                      "Subject": "User signin sessions were reset due to security incident.",
+                      "To": "@body('Get_manager_(V2)')?['mail']"
+                    },
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['office365']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/v2/Mail"
+                  }
+                }
+              },
+              "runAfter": {
+                "Entities_-_Get_Accounts": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Foreach"
+            }
+          }
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "office365": {
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('office365ConnectionName'))]",
+                "connectionName": "[variables('office365ConnectionName')]"
+              },
+              "office365users": {
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365users')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('office365usersConnectionName'))]",
+                "connectionName": "[variables('office365usersConnectionName')]"
+              },
+              "azuresentinel": {
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                },
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('azuresentinelConnectionName'))]",
+                "connectionName": "[variables('azuresentinelConnectionName')]"
+              }
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('office365ConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('office365usersConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('azuresentinelConnectionName'))]"
+      ]
+    }
+  ]
+}
