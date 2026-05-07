@@ -58,7 +58,7 @@ jobs:
             az account get-access-token --resource https://management.azure.com/ --query expiresOn -o tsv
 
       # ✅ Guardrail: mostrar el scope real usado (vars.*)
-      - name: Show effective Sentinel scope
+      - name: Show effective Sentinel scope (vars)
         run: |
           echo "=== Sentinel TARGET (vars) ==="
           echo "RESOURCE_GROUP : ${{ vars.RESOURCE_GROUP }}"
@@ -66,7 +66,7 @@ jobs:
           echo "SUBSCRIPTION   : ${{ secrets.AZURE_SUBSCRIPTION_ID }}"
           echo "=============================="
 
-      # 1) EXPORT CATALOG (OK ya te funcionó)
+      # 1) EXPORT CATALOG
       - name: Export catalog to CSV
         if: ${{ github.event.inputs.action == 'export-catalog' }}
         uses: azure/powershell@v2
@@ -76,6 +76,7 @@ jobs:
           inlineScript: |
             $ErrorActionPreference = "Stop"
             Set-AzContext -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" | Out-Null
+
             $includePreview = ("${{ github.event.inputs.includePreview }}".ToLower() -eq "true")
             $search = "${{ github.event.inputs.catalogSearch }}"
 
@@ -113,7 +114,6 @@ jobs:
               throw "contentId es obligatorio para action=$action"
             }
 
-            # Pasamos action tal cual (install/update/uninstall)
             & "${{ github.workspace }}/scripts/10-manage-contenthub-solution.ps1" `
               -Action $action `
               -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
