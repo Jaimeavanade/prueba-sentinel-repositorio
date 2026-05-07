@@ -3,16 +3,18 @@
 .SYNOPSIS
 Gestiona una solución de Microsoft Sentinel Content Hub por contentId:
 - install  : instala/actualiza el paquete y despliega packagedContent (content items)
-- update   : si hay versión nueva, actualiza; si no, no falla (y puedes forzar con -ForceDeploy)
-- uninstall: desinstala el paquete (nota: puede no borrar items "custom/active" según comportamiento del producto)
+- update   : actualiza si hay versión nueva (o fuerza deploy con -ForceDeploy)
+- uninstall: desinstala el paquete
 
 APIs (2025-09-01):
-- Catálogo: contentProductPackages (List, con $filter / $search / $expand)  [2](https://github.com/Jaimeavanade/prueba-sentinel-repositorio/actions)
-- Install:  contentPackages/{packageId} PUT                               [3](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-packages/list?view=rest-securityinsights-2025-09-01)
-- Uninstall:contentPackages/{packageId} DELETE                            [4](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-template/install?view=rest-securityinsights-2025-09-01)[5](https://charbelnemnom.com/automate-microsoft-sentinel-content-hub-updates/)
+- Catálogo: contentProductPackages (List, con $filter / $search / $expand)  [2](https://avanade-my.sharepoint.com/personal/j_velazquez_santos_avanade_com/_layouts/15/Doc.aspx?action=edit&mobileredirect=true&wdorigin=Sharepoint&sourcedoc=%7bdcde3f4e-f42d-4456-93b2-470a520e4bb2%7d&wdsectionfileid=%7bcfe6086a-3179-430a-9536-53117009c186%7d&wdpartId=%7B375c720e-0447-42ca-b2b1-81bb5da241ae%7D%7B1%7D)
+- Install:  contentPackages/{packageId} PUT                               [3](https://charbelnemnom.com/automate-microsoft-sentinel-content-hub-updates/)
+- List installed: contentPackages GET                                     [4](https://github.com/MicrosoftDocs/azure-docs/blob/main/articles/sentinel/sentinel-solutions-deploy.md)
+- Uninstall: contentPackages/{packageId} DELETE                           [5](https://learn.microsoft.com/en-us/rest/api/securityinsights/content-package/install?view=rest-securityinsights-2025-09-01)[4](https://github.com/MicrosoftDocs/azure-docs/blob/main/articles/sentinel/sentinel-solutions-deploy.md)
 
-NOTA sobre borrado:
-Microsoft documenta que borrar una solución elimina templates, pero no necesariamente items activos/clonados/guardados/custom. [8](https://www.youtube.com/watch?v=HLn3OSRdqo4)
+NOTA:
+Borrar la solución elimina templates, pero no garantiza borrar items activos/clonados/guardados/custom. [6](https://stackoverflow.com/questions/68297643/how-to-use-nextlink-property-in-azure-pagination-in-providers-microsoft-compute)
+Para instalar/actualizar/borrar en Content Hub necesitas Microsoft Sentinel Contributor a nivel RG. [7](https://learn.microsoft.com/en-us/azure/sentinel/sentinel-solutions-delete)
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -101,20 +103,14 @@ function Invoke-Arm {
 function Test-SentinelOnboarding {
   # onboardingStates/default debe responder 200 si Sentinel está habilitado
   $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/onboardingStates/default?api-version=$ApiVersion"
-  try {
-    $resp = Invoke-Arm -Method GET -Uri $uri
-    # si no lanza excepción, consideramos OK
-    Write-Host "OK: Sentinel parece habilitado (onboardingStates/default accesible)." -ForegroundColor Green
-    return $true
-  } catch {
-    Write-Host "ERROR: Sentinel no parece habilitado o no hay permisos para onboardingStates/default." -ForegroundColor Red
-    throw
-  }
+  Invoke-Arm -Method GET -Uri $uri | Out-Null
+  Write-Host "OK: Sentinel parece habilitado (onboardingStates/default accesible)." -ForegroundColor Green
 }
 
 function Get-CatalogSolutionLatest {
   # Buscar EXACTO por contentId en catálogo, expandiendo packagedContent
-  $filter = "properties/contentId eq '$ContentId' and properties/contentKind eq 'Solution'"
+  $contentIdEscaped = $ContentId.Replace("'", "''")
+  $filter = "properties/contentId eq '$contentIdEscaped' and properties/contentKind eq 'Solution'"
   $encoded = [System.Uri]::EscapeDataString($filter)
 
   $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentProductPackages?api-version=$ApiVersion&`$filter=$encoded&`$expand=properties/packagedContent&`$top=50"
@@ -124,7 +120,7 @@ function Get-CatalogSolutionLatest {
     throw "Catálogo: no se encontró contentId='$ContentId' como Solution. Revisa el contentId."
   }
 
-  # Elegir latest por versión semver (si parsea); si no, cae a 0.0.0
+  # Elegir latest por semver (si parsea); si no, cae a 0.0.0
   $latest = $resp.value | Sort-Object -Property @{
     Expression = { try { [version]$_.properties.version } catch { [version]"0.0.0" } }
   } -Descending | Select-Object -First 1
@@ -133,7 +129,8 @@ function Get-CatalogSolutionLatest {
 }
 
 function Get-InstalledPackage {
-  $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentPackages/$ContentId?api-version=$ApiVersion"
+  # ✅ FIX: ${ContentId} antes de ?api-version
+  $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentPackages/${ContentId}?api-version=$ApiVersion"
   try {
     return Invoke-Arm -Method GET -Uri $uri
   } catch {
@@ -146,12 +143,11 @@ function Put-InstallOrUpdatePackage {
 
   $p = $CatalogItem.properties
 
-  if (-not $p.contentSchemaVersion) {
-    # En install el schema puede ser requerido; hacemos fallback defensivo
-    $p | Add-Member -NotePropertyName contentSchemaVersion -NotePropertyValue "2.0" -Force
-  }
+  $schema = $p.contentSchemaVersion
+  if (-not $schema) { $schema = "2.0" } # fallback defensivo
 
-  $pkgUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentPackages/$($p.contentId)?api-version=$ApiVersion"
+  # ✅ FIX: ${($p.contentId)} antes de ?api-version
+  $pkgUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentPackages/${($p.contentId)}?api-version=$ApiVersion"
 
   $body = @{
     properties = @{
@@ -160,7 +156,7 @@ function Put-InstallOrUpdatePackage {
       contentProductId     = $p.contentProductId
       displayName          = $p.displayName
       version              = $p.version
-      contentSchemaVersion = $p.contentSchemaVersion
+      contentSchemaVersion = $schema
     }
   }
 
@@ -168,7 +164,7 @@ function Put-InstallOrUpdatePackage {
   Write-Host " contentId: $($p.contentId)"
   Write-Host " version  : $($p.version)"
   Write-Host " productId: $($p.contentProductId)"
-  Write-Host " schema   : $($p.contentSchemaVersion)"
+  Write-Host " schema   : $schema"
 
   if ($PSCmdlet.ShouldProcess($p.displayName, "PUT contentPackages/$($p.contentId)")) {
     Invoke-Arm -Method PUT -Uri $pkgUri -Body $body | Out-Null
@@ -189,7 +185,8 @@ function Deploy-PackagedContent {
   $deploymentName = "ContentHub-$Action-$safe"
   if ($deploymentName.Length -gt 62) { $deploymentName = $deploymentName.Substring(0,62) }
 
-  $deployUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/$deploymentName?api-version=$DeploymentApiVersion"
+  # ✅ FIX: ${deploymentName} antes de ?api-version
+  $deployUri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Resources/deployments/${deploymentName}?api-version=$DeploymentApiVersion"
 
   $deployBody = @{
     properties = @{
@@ -229,9 +226,10 @@ function Deploy-PackagedContent {
 }
 
 function Delete-Package {
-  $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentPackages/$ContentId?api-version=$ApiVersion"
-  Write-Host "==> DELETE contentPackages (uninstall): $ContentId" -ForegroundColor Yellow
+  # ✅ FIX: ${ContentId} antes de ?api-version
+  $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/contentPackages/${ContentId}?api-version=$ApiVersion"
 
+  Write-Host "==> DELETE contentPackages (uninstall): $ContentId" -ForegroundColor Yellow
   if ($PSCmdlet.ShouldProcess($ContentId, "DELETE contentPackages/$ContentId")) {
     Invoke-Arm -Method DELETE -Uri $uri | Out-Null
   }
@@ -259,7 +257,6 @@ if ($Action -eq "uninstall") {
   exit 0
 }
 
-# install / update
 $catalog = Get-CatalogSolutionLatest
 $installed = Get-InstalledPackage
 
@@ -272,12 +269,12 @@ Write-Host "CatalogLatest   : $($catalog.properties.version)" -ForegroundColor D
 
 if ($Action -eq "update" -and $installed -and $installed.properties -and $installed.properties.version) {
   if ($installed.properties.version -eq $catalog.properties.version -and -not $ForceDeploy) {
-    Write-Host "Ya está en la última versión. (update no hace nada). Usa -ForceDeploy si quieres redeploy packagedContent." -ForegroundColor Green
+    Write-Host "Ya está en la última versión. (update no hace nada). Usa -ForceDeploy para redeploy packagedContent." -ForegroundColor Green
     exit 0
   }
 }
 
-# ✅ install siempre hace PUT + deploy packagedContent (para que “aparezcan” los items)
+# install/update => PUT + Deploy packagedContent
 Put-InstallOrUpdatePackage -CatalogItem $catalog
 Deploy-PackagedContent      -CatalogItem $catalog
 
