@@ -18,17 +18,21 @@ on:
         required: false
         default: ""
       includePreview:
-        description: "Incluir Preview en el catálogo (true/false)"
+        description: "Incluir Preview en el catálogo (true/false) [solo export-catalog]"
         required: false
         default: "false"
       catalogSearch:
-        description: "Filtro opcional del catálogo (vacío = todo)"
+        description: "Filtro opcional del catálogo (vacío = todo) [solo export-catalog]"
         required: false
         default: ""
 
 permissions:
   id-token: write
   contents: read
+
+concurrency:
+  group: sentinel-contenthub-${{ github.ref }}-${{ github.event.inputs.action }}
+  cancel-in-progress: false
 
 jobs:
   run:
@@ -53,7 +57,16 @@ jobs:
             az account show
             az account get-access-token --resource https://management.azure.com/ --query expiresOn -o tsv
 
-      # 1) EXPORT CATALOG
+      # ✅ Guardrail: mostrar el scope real usado (vars.*)
+      - name: Show effective Sentinel scope
+        run: |
+          echo "=== Sentinel TARGET (vars) ==="
+          echo "RESOURCE_GROUP : ${{ vars.RESOURCE_GROUP }}"
+          echo "WORKSPACE_NAME : ${{ vars.WORKSPACE_NAME }}"
+          echo "SUBSCRIPTION   : ${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          echo "=============================="
+
+      # 1) EXPORT CATALOG (OK ya te funcionó)
       - name: Export catalog to CSV
         if: ${{ github.event.inputs.action == 'export-catalog' }}
         uses: azure/powershell@v2
@@ -62,6 +75,7 @@ jobs:
           errorActionPreference: "Stop"
           inlineScript: |
             $ErrorActionPreference = "Stop"
+            Set-AzContext -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" | Out-Null
             $includePreview = ("${{ github.event.inputs.includePreview }}".ToLower() -eq "true")
             $search = "${{ github.event.inputs.catalogSearch }}"
 
@@ -90,23 +104,20 @@ jobs:
           errorActionPreference: "Stop"
           inlineScript: |
             $ErrorActionPreference = "Stop"
+            Set-AzContext -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" | Out-Null
+
             $action = "${{ github.event.inputs.action }}"
-            $cid = "${{ github.event.inputs.contentId }}"
+            $cid    = "${{ github.event.inputs.contentId }}"
 
             if ([string]::IsNullOrWhiteSpace($cid)) {
               throw "contentId es obligatorio para action=$action"
             }
 
-            $mappedAction = switch ($action) {
-              "install"   { "install" }
-              "update"    { "update" }
-              "uninstall" { "uninstall" }
-              default     { throw "Acción no soportada: $action" }
-            }
-
+            # Pasamos action tal cual (install/update/uninstall)
             & "${{ github.workspace }}/scripts/10-manage-contenthub-solution.ps1" `
-              -Action $mappedAction `
+              -Action $action `
               -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
               -ResourceGroupName "${{ vars.RESOURCE_GROUP }}" `
               -WorkspaceName "${{ vars.WORKSPACE_NAME }}" `
-              -ContentId $cid
+              -ContentId $cid `
+              -Verbose
