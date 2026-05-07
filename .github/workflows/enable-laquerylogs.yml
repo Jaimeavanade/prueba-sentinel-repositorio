@@ -1,0 +1,39 @@
+name: Enable LAQueryLogs (Diagnostic settings)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # necesario para OIDC con azure/login
+  contents: read
+
+jobs:
+  enable-laquerylogs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Show effective context
+        shell: bash
+        run: |
+          echo "RESOURCE_GROUP=${{ vars.RESOURCE_GROUP }}"
+          echo "WORKSPACE_NAME=${{ vars.WORKSPACE_NAME }}"
+          az account show --query "{name:name, id:id, tenantId:tenantId}" -o jsonc
+
+      - name: Enable Diagnostic Setting for LAQueryLogs
+        shell: bash
+        env:
+          RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+          WORKSPACE_NAME: ${{ vars.WORKSPACE_NAME }}
+        run: |
+          chmod +x scripts/enable-laquerylogs-diagnostic-setting.sh
+          ./scripts/enable-laquerylogs-diagnostic-setting.sh
