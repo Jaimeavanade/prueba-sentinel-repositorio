@@ -1,0 +1,112 @@
+name: Sentinel - Content Hub Solutions (Catalog/Install/Update/Uninstall)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Acción"
+        required: true
+        type: choice
+        default: export-catalog
+        options:
+          - export-catalog
+          - install
+          - update
+          - uninstall
+      contentId:
+        description: "contentId (obligatorio para install/update/uninstall)"
+        required: false
+        default: ""
+      includePreview:
+        description: "Incluir Preview en el catálogo (true/false)"
+        required: false
+        default: "false"
+      catalogSearch:
+        description: "Filtro opcional del catálogo (vacío = todo)"
+        required: false
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          audience: api://AzureADTokenExchange
+          enable-AzPSSession: true
+
+      - name: WhoAmI (debug)
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az account show
+            az account get-access-token --resource https://management.azure.com/ --query expiresOn -o tsv
+
+      # 1) EXPORT CATALOG
+      - name: Export catalog to CSV
+        if: ${{ github.event.inputs.action == 'export-catalog' }}
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: "latest"
+          errorActionPreference: "Stop"
+          inlineScript: |
+            $ErrorActionPreference = "Stop"
+            $includePreview = ("${{ github.event.inputs.includePreview }}".ToLower() -eq "true")
+            $search = "${{ github.event.inputs.catalogSearch }}"
+
+            & "${{ github.workspace }}/scripts/00-export-contenthub-catalog.ps1" `
+              -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
+              -ResourceGroupName "${{ vars.RESOURCE_GROUP }}" `
+              -WorkspaceName "${{ vars.WORKSPACE_NAME }}" `
+              -IncludePreview:($includePreview) `
+              -Search $search `
+              -OutCsv "${{ github.workspace }}/contenthub-solutions-catalog.csv"
+
+      - name: Upload CSV artifact
+        if: ${{ github.event.inputs.action == 'export-catalog' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: contenthub-solutions-catalog
+          path: ${{ github.workspace }}/contenthub-solutions-catalog.csv
+          if-no-files-found: error
+
+      # 2) INSTALL / UPDATE / UNINSTALL BY contentId
+      - name: Manage solution (install/update/uninstall)
+        if: ${{ github.event.inputs.action != 'export-catalog' }}
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: "latest"
+          errorActionPreference: "Stop"
+          inlineScript: |
+            $ErrorActionPreference = "Stop"
+            $action = "${{ github.event.inputs.action }}"
+            $cid = "${{ github.event.inputs.contentId }}"
+
+            if ([string]::IsNullOrWhiteSpace($cid)) {
+              throw "contentId es obligatorio para action=$action"
+            }
+
+            $mappedAction = switch ($action) {
+              "install"   { "install" }
+              "update"    { "update" }
+              "uninstall" { "uninstall" }
+              default     { throw "Acción no soportada: $action" }
+            }
+
+            & "${{ github.workspace }}/scripts/10-manage-contenthub-solution.ps1" `
+              -Action $mappedAction `
+              -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
+              -ResourceGroupName "${{ vars.RESOURCE_GROUP }}" `
+              -WorkspaceName "${{ vars.WORKSPACE_NAME }}" `
+              -ContentId $cid
